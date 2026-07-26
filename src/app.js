@@ -35,8 +35,16 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-//public routes for register
-// Use private routes for /v1/private
+// Root open route
+app.get("/", (req, res) => {
+    res.status(200).json({
+        status: "success",
+        message: "Server is running",
+        timestamp: new Date().toISOString()
+    });
+});
+
+//Api routes
 app.use('/v1/private', privateRoutes); // Private routes
 
 // Use public routes for /v1/public
