@@ -31,7 +31,11 @@ const storage = multer.diskStorage({
 
         // Ensure directory exists before saving
         if (!fs.existsSync(dest)) {
-            fs.mkdirSync(dest, { recursive: true });
+            try {
+                fs.mkdirSync(dest, { recursive: true });
+            } catch (err) {
+                console.warn(`Could not create directory ${dest}:`, err.message);
+            }
         }
 
         cb(null, dest);

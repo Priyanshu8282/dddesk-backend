@@ -6,7 +6,11 @@ const path = require('path');
 // Ensure proper backend uploads folder exists for Notices
 const noticesUploadDir = path.join(process.cwd(), 'uploads/notices');
 if (!fs.existsSync(noticesUploadDir)) {
-    fs.mkdirSync(noticesUploadDir, { recursive: true });
+    try {
+        fs.mkdirSync(noticesUploadDir, { recursive: true });
+    } catch (err) {
+        console.warn('Could not create uploads/notices directory:', err.message);
+    }
 }
 
 /**

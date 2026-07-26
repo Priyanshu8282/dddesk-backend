@@ -5,19 +5,33 @@ const fs = require('fs');
 // Path to the service account key
 const serviceAccountPath = path.join(process.cwd(), 'firebase-adminsdk.json');
 
-// Initialize Firebase Admin only if the file exists and it hasn't been initialized
-if (fs.existsSync(serviceAccountPath) && !admin.apps.length) {
-    try {
-        const serviceAccount = require(serviceAccountPath);
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount)
-        });
-        console.log('Firebase Admin initialized successfully.');
-    } catch (error) {
-        console.error('Failed to initialize Firebase Admin:', error);
+// Initialize Firebase Admin only if it hasn't been initialized
+if (!admin.apps.length) {
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        try {
+            const serviceAccount = typeof process.env.FIREBASE_SERVICE_ACCOUNT === 'string'
+                ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+                : process.env.FIREBASE_SERVICE_ACCOUNT;
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            console.log('Firebase Admin initialized successfully from environment variable.');
+        } catch (error) {
+            console.error('Failed to initialize Firebase Admin from FIREBASE_SERVICE_ACCOUNT env var:', error);
+        }
+    } else if (fs.existsSync(serviceAccountPath)) {
+        try {
+            const serviceAccount = require(serviceAccountPath);
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            console.log('Firebase Admin initialized successfully from file.');
+        } catch (error) {
+            console.error('Failed to initialize Firebase Admin from file:', error);
+        }
+    } else {
+        console.warn(`Firebase service account file not found at ${serviceAccountPath} and FIREBASE_SERVICE_ACCOUNT environment variable is not set. Push notifications will not work.`);
     }
-} else if (!fs.existsSync(serviceAccountPath)) {
-    console.warn(`Firebase service account file not found at ${serviceAccountPath}. Push notifications will not work.`);
 }
 
 /**
