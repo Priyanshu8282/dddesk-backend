@@ -1,10 +1,21 @@
 const mongoose = require("mongoose");
 const config = require("./config");
 
-const connectDB = () => {
-    return mongoose.connect(config.mongoose.url)
-        .then(() => console.log("Connected to DB at", config.mongoose.url))
-        .catch((e) => console.log("Failed to connect to DB", e));
-}
+let isConnected = false;
+
+const connectDB = async () => {
+    if (isConnected || mongoose.connection.readyState === 1) {
+        isConnected = true;
+        return;
+    }
+
+    try {
+        const db = await mongoose.connect(config.mongoose.url);
+        isConnected = db.connections[0].readyState === 1;
+        console.log("Connected to MongoDB Atlas");
+    } catch (e) {
+        console.error("Failed to connect to DB:", e.message);
+    }
+};
 
 module.exports = connectDB;
