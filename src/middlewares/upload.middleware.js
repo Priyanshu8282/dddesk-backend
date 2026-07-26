@@ -2,43 +2,54 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
+const os = require('os');
+
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
-        let dest = 'uploads/';
+        let subDir = 'uploads/';
 
         // Check if the request is for a vendor route (matches /vendors/self, /vendors/add-vendor, etc.)
         if (req.originalUrl && (req.originalUrl.includes('/vendor') || req.originalUrl.includes('/vendors'))) {
-            dest += 'vendor/';
+            subDir += 'vendor/';
             if (file.fieldname === 'profileImage') {
-                dest += 'profile/';
+                subDir += 'profile/';
             } else {
-                dest += 'business/';
+                subDir += 'business/';
             }
         } else {
             // Default routing
             if (file.fieldname === 'profileImage') {
-                dest += 'profiles/';
+                subDir += 'profiles/';
             } else if (file.fieldname === 'media' || file.fieldname === 'storyMedia') {
                 if (req.originalUrl && req.originalUrl.includes('/notices')) {
-                    dest += 'notices/';
+                    subDir += 'notices/';
                 } else {
-                    dest += 'stories/';
+                    subDir += 'stories/';
                 }
             } else {
-                dest += 'products/';
+                subDir += 'products/';
             }
         }
 
-        // Ensure directory exists before saving
-        if (!fs.existsSync(dest)) {
+        // Try local process.cwd() path first
+        let targetDir = path.join(process.cwd(), subDir);
+        try {
+            if (!fs.existsSync(targetDir)) {
+                fs.mkdirSync(targetDir, { recursive: true });
+            }
+            return cb(null, targetDir);
+        } catch (err) {
+            // Read-only filesystem (e.g. Vercel, AWS Lambda), fallback to OS temp directory (/tmp)
+            targetDir = path.join(os.tmpdir(), subDir);
             try {
-                fs.mkdirSync(dest, { recursive: true });
-            } catch (err) {
-                console.warn(`Could not create directory ${dest}:`, err.message);
+                if (!fs.existsSync(targetDir)) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                }
+            } catch (e) {
+                console.error("Failed to create temp upload directory:", e.message);
             }
+            return cb(null, targetDir);
         }
-
-        cb(null, dest);
     },
     filename: function (req, file, cb) {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
