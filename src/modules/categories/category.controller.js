@@ -149,16 +149,20 @@ exports.getPublicCategoryImage = async (req, res) => {
     try {
         const category = await Category.findById(req.params.id);
         if (!category || !category.image) {
-            return res.status(404).json({ message: 'Image not found' });
+            return res.redirect(`https://ui-avatars.com/api/?name=Category&background=4f46e5&color=fff&size=256&bold=true`);
         }
 
-        const imagePath = path.join(__dirname, '../../../../', category.image);
+        const imagePath = path.resolve(process.cwd(), category.image);
         if (fs.existsSync(imagePath)) {
-            res.sendFile(imagePath);
+            res.sendFile(imagePath, (err) => {
+                if (err && !res.headersSent) {
+                    return res.redirect(`https://ui-avatars.com/api/?name=${encodeURIComponent(category.name || 'Category')}&background=4f46e5&color=fff&size=256&bold=true`);
+                }
+            });
         } else {
-            res.status(404).json({ message: 'Image file not found' });
+            return res.redirect(`https://ui-avatars.com/api/?name=${encodeURIComponent(category.name || 'Category')}&background=4f46e5&color=fff&size=256&bold=true`);
         }
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.redirect(`https://ui-avatars.com/api/?name=Category&background=4f46e5&color=fff&size=256&bold=true`);
     }
 };

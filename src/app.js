@@ -61,6 +61,10 @@ app.use((req, res, next) => {
 // handle error
 app.use((err, req, res, next) => {
     let { statusCode, message } = err;
+    if (err.code === 'ENOENT') {
+        statusCode = 404;
+        message = 'Requested file or resource not found';
+    }
     if (!statusCode || typeof statusCode !== 'number') statusCode = 500;
 
     res.locals.errorMessage = err.message;

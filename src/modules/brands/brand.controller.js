@@ -114,16 +114,20 @@ exports.getPublicBrandLogo = async (req, res) => {
     try {
         const brand = await Brand.findById(req.params.id);
         if (!brand || !brand.logo) {
-            return res.status(404).json({ message: 'Logo not found' });
+            return res.redirect(`https://ui-avatars.com/api/?name=Brand&background=4f46e5&color=fff&size=256&bold=true`);
         }
 
-        const imagePath = path.join(__dirname, '../../../../', brand.logo);
+        const imagePath = path.resolve(process.cwd(), brand.logo);
         if (fs.existsSync(imagePath)) {
-            res.sendFile(imagePath);
+            res.sendFile(imagePath, (err) => {
+                if (err && !res.headersSent) {
+                    return res.redirect(`https://ui-avatars.com/api/?name=${encodeURIComponent(brand.name || 'Brand')}&background=4f46e5&color=fff&size=256&bold=true`);
+                }
+            });
         } else {
-            res.status(404).json({ message: 'Logo file not found' });
+            return res.redirect(`https://ui-avatars.com/api/?name=${encodeURIComponent(brand.name || 'Brand')}&background=4f46e5&color=fff&size=256&bold=true`);
         }
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.redirect(`https://ui-avatars.com/api/?name=Brand&background=4f46e5&color=fff&size=256&bold=true`);
     }
 };

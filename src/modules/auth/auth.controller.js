@@ -296,16 +296,21 @@ exports.getPublicProfileImage = async (req, res) => {
         const index = req.query.index;
         const defaultPath = path.join(__dirname, '../../../uploads/profiles/default-avatar.png');
 
+        const sendFallbackOr404 = (name = 'User') => {
+            if (fs.existsSync(defaultPath)) {
+                return res.sendFile(defaultPath);
+            }
+            return res.redirect(`https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=4f46e5&color=fff&size=256&bold=true`);
+        };
+
         // 1. Handle explicit 'default' request
         if (id === 'default') {
-            if (fs.existsSync(defaultPath)) return res.sendFile(defaultPath);
-            return res.redirect(`https://ui-avatars.com/api/?name=Admin&background=4f46e5&color=fff&size=256&bold=true`);
+            return sendFallbackOr404('Admin');
         }
 
         // 2. Validate ObjectId to prevent CastError
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            if (fs.existsSync(defaultPath)) return res.sendFile(defaultPath);
-            return res.redirect(`https://ui-avatars.com/api/?name=Admin&background=4f46e5&color=fff&size=256&bold=true`);
+            return sendFallbackOr404('Admin');
         }
 
         // 3. Handle Library Image Fields (logo, photos)
@@ -317,7 +322,7 @@ exports.getPublicProfileImage = async (req, res) => {
                     library = await Library.findById(adminUser.libraryId);
                 }
             }
-            if (!library) return res.status(404).json({ message: 'Library not found' });
+            if (!library) return sendFallbackOr404('Library');
             
             let targetImage = null;
             if (field === 'logo') {
@@ -326,30 +331,38 @@ exports.getPublicProfileImage = async (req, res) => {
                 targetImage = library.photos[parseInt(index)];
             }
             
-            if (!targetImage) return res.status(404).json({ message: 'Image not found' });
+            if (!targetImage) return sendFallbackOr404(library.name || 'Library');
             
-            const imagePath = path.join(__dirname, '../../../', path.normalize(targetImage));
-            if (fs.existsSync(imagePath)) return res.sendFile(imagePath);
-            return res.status(404).json({ message: 'Image file not found' });
+            const imagePath = path.resolve(process.cwd(), targetImage);
+            if (fs.existsSync(imagePath)) {
+                return res.sendFile(imagePath, (err) => {
+                    if (err && !res.headersSent) {
+                        return sendFallbackOr404(library.name || 'Library');
+                    }
+                });
+            }
+            return sendFallbackOr404(library.name || 'Library');
         }
 
         // 4. Default Handle Admin Profile Image
         let user = await Admin.findById(id);
 
         if (!user || !user.profileImage || user.profileImage.includes('default-avatar.png')) {
-            if (fs.existsSync(defaultPath)) return res.sendFile(defaultPath);
-            return res.redirect(`https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || 'Admin')}&background=4f46e5&color=fff&size=256&bold=true`);
+            return sendFallbackOr404(user?.name || 'Admin');
         }
 
-        const imagePath = path.join(__dirname, '../../../', path.normalize(user.profileImage));
+        const imagePath = path.resolve(process.cwd(), user.profileImage);
         if (fs.existsSync(imagePath)) {
-            res.sendFile(imagePath);
+            return res.sendFile(imagePath, (err) => {
+                if (err && !res.headersSent) {
+                    return sendFallbackOr404(user?.name || 'Admin');
+                }
+            });
         } else {
-            if (fs.existsSync(defaultPath)) return res.sendFile(defaultPath);
-            res.status(404).json({ message: 'Image file not found' });
+            return sendFallbackOr404(user?.name || 'Admin');
         }
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        return res.redirect(`https://ui-avatars.com/api/?name=User&background=4f46e5&color=fff&size=256&bold=true`);
     }
 };
 
