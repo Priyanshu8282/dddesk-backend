@@ -1,0 +1,104 @@
+{
+  "backupDate": "2026-03-05T04:57:57.200Z",
+  "database": "mgibasket",
+  "totalCollections": 24,
+  "totalDocuments": 1120,
+  "collections": [
+    {
+      "collection": "categories",
+      "count": 24
+    },
+    {
+      "collection": "permissions",
+      "count": 15
+    },
+    {
+      "collection": "productvariants",
+      "count": 26
+    },
+    {
+      "collection": "addons",
+      "count": 0
+    },
+    {
+      "collection": "taxes",
+      "count": 7
+    },
+    {
+      "collection": "vendorproductvariants",
+      "count": 161
+    },
+    {
+      "collection": "sidebarmenus",
+      "count": 21
+    },
+    {
+      "collection": "customers",
+      "count": 20
+    },
+    {
+      "collection": "varianttypes",
+      "count": 10
+    },
+    {
+      "collection": "attributes",
+      "count": 0
+    },
+    {
+      "collection": "vendors",
+      "count": 19
+    },
+    {
+      "collection": "units",
+      "count": 31
+    },
+    {
+      "collection": "brands",
+      "count": 54
+    },
+    {
+      "collection": "variantvalues",
+      "count": 35
+    },
+    {
+      "collection": "subcategories",
+      "count": 106
+    },
+    {
+      "collection": "orders",
+      "count": 80
+    },
+    {
+      "collection": "products",
+      "count": 31
+    },
+    {
+      "collection": "users",
+      "count": 1
+    },
+    {
+      "collection": "pagevisits",
+      "count": 27
+    },
+    {
+      "collection": "vendorproducts",
+      "count": 90
+    },
+    {
+      "collection": "roles",
+      "count": 3
+    },
+    {
+      "collection": "carts",
+      "count": 13
+    },
+    {
+      "collection": "notifications",
+      "count": 343
+    },
+    {
+      "collection": "admins",
+      "count": 3
+    }
+  ]
+}

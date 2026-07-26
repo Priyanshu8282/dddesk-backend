@@ -1,0 +1,136 @@
+[
+  {
+    "_id": "699f90965945eed99fd1e80f",
+    "customerId": "699f90871f9136f47b3264df",
+    "items": [],
+    "updatedAt": "2026-03-03T05:35:24.205Z",
+    "createdAt": "2026-02-26T00:15:18.259Z",
+    "__v": 69
+  },
+  {
+    "_id": "699f9d60447d6d79e5d7ae59",
+    "customerId": "699f9d181f9136f47b326644",
+    "items": [],
+    "updatedAt": "2026-02-27T03:14:17.550Z",
+    "createdAt": "2026-02-26T01:09:52.092Z",
+    "__v": 37
+  },
+  {
+    "_id": "699f9e1b447d6d79e5d7ae88",
+    "customerId": "699f9dfe1f9136f47b326645",
+    "items": [
+      {
+        "vendorProductId": "69a01a60204f5630a1bcc338",
+        "variantId": "69a01a60204f5630a1bcc343",
+        "vendorId": "69a0141d204f5630a1bcbff6",
+        "quantity": 1,
+        "price": 0,
+        "mrp": 0,
+        "name": "Aashirvaad Whole Wheat Atta",
+        "image": "uploads\\products\\image-1772086523875-966460031.jpg",
+        "sku": "",
+        "_id": "69a0871f278e10c81481e6a8",
+        "createdAt": "2026-02-26T17:47:11.813Z",
+        "updatedAt": "2026-02-26T18:15:28.577Z"
+      }
+    ],
+    "updatedAt": "2026-02-26T18:15:28.577Z",
+    "createdAt": "2026-02-26T01:12:59.030Z",
+    "__v": 10
+  },
+  {
+    "_id": "699fb50d26475c4cdf47b740",
+    "customerId": "699fb4801f9136f47b32688f",
+    "items": [],
+    "updatedAt": "2026-02-26T17:30:55.838Z",
+    "createdAt": "2026-02-26T02:50:53.628Z",
+    "__v": 17
+  },
+  {
+    "_id": "69a110890b0b74501c5e0cc6",
+    "customerId": "69a1105b1f9136f47b333217",
+    "items": [],
+    "updatedAt": "2026-03-02T08:21:58.834Z",
+    "createdAt": "2026-02-27T03:33:29.479Z",
+    "__v": 15
+  },
+  {
+    "_id": "69a16560d7edda178256cffe",
+    "customerId": "69a1605c1f9136f47b33b85a",
+    "items": [],
+    "updatedAt": "2026-02-27T10:56:33.319Z",
+    "createdAt": "2026-02-27T09:35:28.521Z",
+    "__v": 16
+  },
+  {
+    "_id": "69a170da9f11ccf9d89f5d41",
+    "customerId": "69a170d11f9136f47b33d1b4",
+    "items": [],
+    "updatedAt": "2026-02-27T11:38:36.060Z",
+    "createdAt": "2026-02-27T10:24:26.944Z",
+    "__v": 10
+  },
+  {
+    "_id": "69a266aeed0dbf40f66fde7c",
+    "customerId": "69a266741f9136f47b33eacc",
+    "items": [
+      {
+        "vendorProductId": "69a01a60204f5630a1bcc339",
+        "variantId": "69a1530f83f126f50ee2da7e",
+        "vendorId": "69a0141d204f5630a1bcbff6",
+        "quantity": 1,
+        "price": 28,
+        "mrp": 30,
+        "name": "Fortune Sunflower Oil",
+        "image": "uploads\\products\\image-1772086774828-694972908.jpg",
+        "sku": "FOR-9190-DO9",
+        "_id": "69a28a4c4ed1ab10b4fd283e",
+        "createdAt": "2026-02-28T06:25:16.428Z",
+        "updatedAt": "2026-02-28T06:25:16.428Z"
+      }
+    ],
+    "updatedAt": "2026-02-28T06:25:16.429Z",
+    "createdAt": "2026-02-28T03:53:18.688Z",
+    "__v": 2
+  },
+  {
+    "_id": "69a54401949916beac751f25",
+    "customerId": "69a536141f9136f47b3490b8",
+    "items": [],
+    "updatedAt": "2026-03-02T09:11:37.442Z",
+    "createdAt": "2026-03-02T08:02:09.904Z",
+    "__v": 9
+  },
+  {
+    "_id": "69a545b3949916beac752303",
+    "customerId": "69a545a51f9136f47b34ade7",
+    "items": [],
+    "updatedAt": "2026-03-02T08:10:01.069Z",
+    "createdAt": "2026-03-02T08:09:23.246Z",
+    "__v": 3
+  },
+  {
+    "_id": "69a56432949916beac7533c7",
+    "customerId": "69a564281f9136f47b34e8c8",
+    "items": [],
+    "updatedAt": "2026-03-02T10:20:37.067Z",
+    "createdAt": "2026-03-02T10:19:30.752Z",
+    "__v": 1
+  },
+  {
+    "_id": "69a7e0b4949916beac753a20",
+    "customerId": "69a7e09c1f9136f47b356163",
+    "items": [],
+    "updatedAt": "2026-03-04T07:35:41.680Z",
+    "createdAt": "2026-03-04T07:35:16.465Z",
+    "__v": 2
+  },
+  {
+    "_id": "69a90a60949916beac753adb",
+    "customerId": "69a7acc01f9136f47b34f226",
+    "items": [],
+    "updatedAt": "2026-03-05T04:47:48.326Z",
+    "createdAt": "2026-03-05T04:45:20.462Z",
+    "__v": 3
+  }
+]

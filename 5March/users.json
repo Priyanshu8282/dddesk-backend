@@ -1,0 +1,14 @@
+[
+  {
+    "_id": "6997955ab0ca95ee0afca58a",
+    "name": "Super Admin",
+    "email": "admin@mgibasket.com",
+    "password": "$2b$10$TMYplfGJKuJuo0d.LGvcRuMh.E0weQDynl6OJOeeFfRX9MwPCS5cS",
+    "roleId": "6997955ab0ca95ee0afca587",
+    "status": true,
+    "isDeleted": false,
+    "createdAt": "2026-02-19T22:57:30.989Z",
+    "updatedAt": "2026-02-19T22:57:30.989Z",
+    "__v": 0
+  }
+]

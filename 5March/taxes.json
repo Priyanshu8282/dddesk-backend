@@ -1,0 +1,93 @@
+[
+  {
+    "_id": "699fdd1b26475c4cdf47be30",
+    "name": "GST 0%",
+    "masterCategory": "Grocery",
+    "ownerType": "Admin",
+    "ownerId": "69979d179c0a051c08e0add9",
+    "status": true,
+    "isDeleted": false,
+    "createdBy": "69979d179c0a051c08e0add9",
+    "createdAt": "2026-02-26T05:41:47.455Z",
+    "updatedAt": "2026-02-26T05:41:47.455Z",
+    "__v": 0
+  },
+  {
+    "_id": "699fdd1b26475c4cdf47be31",
+    "name": "GST 5%",
+    "masterCategory": "Grocery",
+    "ownerType": "Admin",
+    "ownerId": "69979d179c0a051c08e0add9",
+    "status": true,
+    "isDeleted": false,
+    "createdBy": "69979d179c0a051c08e0add9",
+    "createdAt": "2026-02-26T05:45:00.000Z",
+    "updatedAt": "2026-02-26T05:45:00.000Z",
+    "__v": 0
+  },
+  {
+    "_id": "699fdd1b26475c4cdf47be32",
+    "name": "GST 12%",
+    "masterCategory": "Grocery",
+    "ownerType": "Admin",
+    "ownerId": "69979d179c0a051c08e0add9",
+    "status": true,
+    "isDeleted": false,
+    "createdBy": "69979d179c0a051c08e0add9",
+    "createdAt": "2026-02-26T05:45:00.000Z",
+    "updatedAt": "2026-02-26T05:45:00.000Z",
+    "__v": 0
+  },
+  {
+    "_id": "699fdd1b26475c4cdf47be33",
+    "name": "GST 18%",
+    "masterCategory": "Grocery",
+    "ownerType": "Admin",
+    "ownerId": "69979d179c0a051c08e0add9",
+    "status": true,
+    "isDeleted": false,
+    "createdBy": "69979d179c0a051c08e0add9",
+    "createdAt": "2026-02-26T05:45:00.000Z",
+    "updatedAt": "2026-02-26T05:45:00.000Z",
+    "__v": 0
+  },
+  {
+    "_id": "699fdd1b26475c4cdf47be34",
+    "name": "Restaurant GST 5%",
+    "masterCategory": "Food",
+    "ownerType": "Admin",
+    "ownerId": "69979d179c0a051c08e0add9",
+    "status": true,
+    "isDeleted": false,
+    "createdBy": "69979d179c0a051c08e0add9",
+    "createdAt": "2026-02-26T05:50:00.000Z",
+    "updatedAt": "2026-02-26T05:50:00.000Z",
+    "__v": 0
+  },
+  {
+    "_id": "699fdd1b26475c4cdf47be35",
+    "name": "Restaurant GST 12%",
+    "masterCategory": "Food",
+    "ownerType": "Admin",
+    "ownerId": "69979d179c0a051c08e0add9",
+    "status": true,
+    "isDeleted": false,
+    "createdBy": "69979d179c0a051c08e0add9",
+    "createdAt": "2026-02-26T05:50:00.000Z",
+    "updatedAt": "2026-02-26T05:50:00.000Z",
+    "__v": 0
+  },
+  {
+    "_id": "699fdd1b26475c4cdf47be36",
+    "name": "Restaurant GST 18%",
+    "masterCategory": "Food",
+    "ownerType": "Admin",
+    "ownerId": "69979d179c0a051c08e0add9",
+    "status": true,
+    "isDeleted": false,
+    "createdBy": "69979d179c0a051c08e0add9",
+    "createdAt": "2026-02-26T05:50:00.000Z",
+    "updatedAt": "2026-02-26T05:50:00.000Z",
+    "__v": 0
+  }
+]

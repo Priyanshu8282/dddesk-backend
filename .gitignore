@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Environment variables & Sensitive Keys
+.env
+.env.*
+!.env.example
+firebase-adminsdk*.json
+*-key.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Uploads & User Files
+uploads/
+
+# Backups & Compressed Archives
+*.zip
+*.tar.gz
+*.tgz
+db_backup*/
+
+# OS & System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+__MACOSX/
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
