@@ -8,8 +8,12 @@ const envVars = {
     PORT: process.env.PORT || 5005,
     MONGODB_URL: process.env.MONGODB_URL || process.env.MONGODB_URI,
     JWT_SECRET: process.env.JWT_SECRET,
-    JWT_EXPIRATION: process.env.JWT_EXPIRATION || '24h'
+    JWT_EXPIRATION: process.env.JWT_EXPIRATION || '7d'
 };
+
+if (!envVars.JWT_SECRET) {
+    throw new Error('FATAL: JWT_SECRET environment variable is not set. Server cannot start.');
+}
 
 const { NODE_ENV, PORT, MONGODB_URL } = envVars;
 

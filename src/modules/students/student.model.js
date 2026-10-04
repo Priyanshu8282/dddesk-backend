@@ -22,6 +22,7 @@ const studentSchema = new mongoose.Schema({
     guardianOccupation: { type: String, trim: true },
     
     seatNumber: { type: String },
+    seatId: { type: mongoose.Schema.Types.ObjectId, ref: 'Seat', default: null },
 
     address: { type: String },
     city: { type: String },

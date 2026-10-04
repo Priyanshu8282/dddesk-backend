@@ -1,0 +1,743 @@
+﻿DDdesk.ai
+Complete Feature Specification
+Production-Ready Functional Feature DocumentVersion 1.0 | September 2026
+Product: DDdesk.ai — Multi-tenant Study Library / Reading Room Management SaaS
+Target Market: Rajasthan, India initially; designed for expansion across India.
+Primary Users: Super Admin, Library Owner, Staff, Student.
+Document Purpose: Define the complete functional scope, feature behavior, business rules, permissions, workflows, and release boundaries before implementation.
+Document Contents
+1. Product Overview
+2. Product Goals
+3. User Roles
+4. Global Functional Rules
+5. Super Admin Features
+6. Library Registration & Approval
+7. Library Profile & Settings
+8. Dynamic Library Website
+9. Subdomain & Custom Domain
+10. Owner Dashboard
+11. Student Management
+12. Staff Management & Permissions
+13. Seat & Space Management
+14. Membership & Plans
+15. Fees, Credit & Payment Management
+16. Attendance Management
+17. Student App
+18. Enquiry & Admission Management
+19. Stories
+20. Notices
+21. Banners
+22. Offers & Coupons
+23. Complaints & Maintenance
+24. Notifications
+25. Reports
+26. Business Intelligence
+27. AI Owner Assistant
+28. Feedback & Reviews
+29. Subscription & Billing
+30. Multi-Branch Support
+31. Audit, Security & Data Protection
+32. Search, Filters & Exports
+33. Common UX Requirements
+34. Error, Empty & Permission States
+35. MVP Scope
+36. Post-MVP Scope
+37. Future Expansion
+38. Acceptance Criteria
+39. Feature Status Matrix
+40. Release Readiness Checklist
+1. Product Overview
+DDdesk.ai is a multi-tenant SaaS platform for study libraries, reading rooms, self-study centres and similar education spaces. Each library operates as an isolated tenant while using the same central platform.
+Each approved library receives a unique subdomain such as gyan.dddesk.ai.
+Library data, students, seats, fees, attendance, staff and reports remain tenant-isolated.
+Library owners get a simple operational dashboard rather than a technically complex ERP-style interface.
+Students receive a web/mobile experience for attendance, seat, membership, fees, payments, notices, stories and complaints.
+The platform supports offline cash/UPI workflows as well as online payments.
+Advanced analytics and AI operate only on data the current user is authorized to access.
+2. Product Goals
+Make daily library operations simple enough for non-technical owners.
+Digitize student, seat, attendance and fee management.
+Support real Rajasthan-style credit/pending-fee practices without losing accounting visibility.
+Give every library a professional public website.
+Reduce manual follow-up through reminders and notifications.
+Provide owners with actionable business insights instead of only raw reports.
+Create a scalable architecture for multi-library and multi-branch operations.
+3. User Roles
+Role
+Primary Responsibility
+Tenant Scope
+Super Admin
+Platform administration, approvals, plans, monitoring, support
+All tenants
+Library Owner
+Own library operations, staff, students, finance, website
+Own library
+Staff
+Daily operations such as attendance, seats, admissions, collections
+Assigned library/branch
+Student
+Membership, attendance, seat, fees, payments, notices, complaints
+Own profile/library
+4. Global Functional Rules
+Every tenant-owned record must contain a Library/Tenant reference.
+Every protected API must verify both authentication and tenant authorization.
+Deleted business records should preferably use soft-delete/archive where historical reporting is required.
+Money values must use a consistent currency configuration; default currency is INR (₹).
+Date/time handling must use the library's configured timezone, with India timezone as the default.
+Important financial, permission, membership and configuration actions must create audit records.
+Owner-configurable rules must not silently override explicit owner decisions.
+User-facing lists should support search, filtering, pagination and appropriate empty states.
+Exports must support the complete filtered dataset, not only the currently visible page.
+5. Super Admin Features
+5.1 Dashboard
+Total libraries, active libraries, pending approvals and suspended libraries.
+Total students, active memberships and occupied seats across the platform.
+Subscription revenue, successful payments and failed payments.
+Recent registrations, support requests and critical system events.
+High-level platform health indicators.
+5.2 Library Management
+View all libraries.
+Search by library name, owner, mobile, city, state and status.
+Approve, reject, suspend or reactivate a library.
+View tenant profile and operational summary.
+Impersonation/support access only through controlled, audited admin workflow.
+Configure platform-level limits and plan entitlements.
+5.3 Plan Management
+Create/edit/archive subscription plans.
+Set monthly/annual price.
+Define feature entitlements and usage limits.
+Configure trial period and grace period.
+View subscription status and payment history.
+5.4 Support & System Controls
+Support ticket management.
+Global announcements.
+Notification provider configuration.
+Platform settings.
+Audit log access.
+Operational monitoring and incident visibility.
+6. Library Registration & Approval
+A library owner can submit a registration request. The library becomes operational only after Super Admin approval.
+Owner submits library registration.
+System validates required fields and mobile/email.
+Request receives Pending status.
+Super Admin reviews request.
+Admin approves or rejects with reason.
+On approval, tenant/library record becomes Active.
+System provisions the library slug/subdomain.
+Owner receives login/onboarding instructions.
+Owner completes profile, seats, plans and settings.
+Field
+Required
+Notes
+Library Name
+Yes
+Public and internal identity
+Owner Name
+Yes
+Primary account holder
+Mobile
+Yes
+Login/verification/contact
+Email
+Recommended
+Notifications and recovery
+Address/City/State
+Yes
+Public library information
+Logo
+Recommended
+Website/app branding
+Seat Capacity
+Yes
+Initial capacity
+Operating Hours
+Yes
+Website and operations
+Facilities
+Optional
+AC, Wi-Fi, parking, etc.
+7. Library Profile & Settings
+Library name, logo, cover image and description.
+Address, city, state, pincode and map location.
+Contact number, email and social links.
+Opening/closing time and weekly holidays.
+Facilities and amenities.
+Gallery.
+Library rules and terms.
+Public website visibility settings.
+Branding/theme configuration.
+Fee and credit policy.
+Attendance rules and grace period.
+Notification preferences.
+Receipt settings and invoice numbering.
+Staff and permission settings.
+8. Dynamic Library Website
+Every active library gets a public website generated from its tenant configuration.
+Home page with library branding.
+About library.
+Facilities.
+Gallery.
+Membership plans.
+Live/available seat information where enabled.
+Stories.
+Notices.
+Offers.
+Student registration/enquiry.
+Contact details and map.
+Library rules and terms.
+Responsive mobile-first design.
+SEO metadata based on library profile.
+Public pages must expose only published data. Draft, private, staff-only and student-only records must never appear on the public website.
+9. Subdomain & Custom Domain
+Default tenant URL format: {library-slug}.dddesk.ai.
+Slug must be unique and normalized.
+Changing a slug must use controlled rules to avoid broken links.
+Future custom domain support: www.examplelibrary.com.
+Domain verification must be required before activation.
+Tenant website routing must identify the correct Library ID from hostname.
+Unknown or inactive tenant domains should show a controlled error/landing page.
+10. Owner Dashboard
+The dashboard should focus on actions and exceptions rather than showing every available metric.
+Today’s attendance/check-ins.
+Occupied vs available seats.
+Today’s collection.
+Pending fee amount.
+Memberships expiring soon.
+New enquiries.
+Open complaints.
+Recent payments.
+Quick actions: Add Student, Assign Seat, Collect Fee, Mark Attendance, Add Notice.
+Business health summary.
+Important alerts requiring owner action.
+11. Student Management
+Create student manually or from website enquiry/admission.
+Student profile: name, photo, mobile, email, address, emergency contact and optional documents.
+Student ID/registration number.
+Membership history.
+Current plan and seat.
+Attendance history.
+Fee ledger and payment history.
+Expiry and renewal status.
+Leave/status management.
+Notes and internal remarks.
+Student search by name, mobile, ID, seat or membership status.
+Archive/deactivate student without losing financial history.
+12. Staff Management & Permissions
+Create staff accounts.
+Assign role.
+Assign branch/operational scope where applicable.
+Enable/disable account.
+Reset password/OTP recovery.
+Permission groups for students, seats, attendance, fees, reports, content and settings.
+Restrict financial visibility where required.
+Track staff actions in audit logs.
+Permission Area
+Example Actions
+Students
+View, create, edit, archive
+Seats
+View, assign, transfer, block
+Attendance
+Check-in, check-out, corrections
+Fees
+View dues, collect payment, refund where allowed
+Content
+Create/publish stories, notices, banners
+Reports
+View/export selected reports
+Settings
+Manage selected operational settings
+13. Seat & Space Management
+Create floors, rooms/halls and seats.
+Seat number/code.
+Seat type: standard, premium, window, AC/non-AC or custom types.
+Seat status: Available, Occupied, Reserved, Blocked, Maintenance.
+Assign student to seat.
+Transfer student between seats with history.
+Temporary reservation.
+Seat release on membership end.
+No-show auto-release according to configured policy.
+Maintenance blocking.
+Visual seat map/grid.
+Occupancy percentage.
+Seat availability on public website if enabled.
+Seat recovery/action list for likely vacant seats.
+No-show rule example: if a student has a reservation and does not check in within the configured grace period, the system can release the seat if the owner has enabled auto-release.
+14. Membership & Plans
+Daily, weekly, monthly, quarterly, half-yearly, yearly and custom plans.
+Plan price.
+Duration.
+Seat eligibility.
+Shift/timing eligibility.
+Renewal settings.
+Optional deposit.
+Optional joining fee.
+Plan active/inactive status.
+Plan-specific benefits.
+Membership start and expiry dates.
+Pause/extend membership according to owner policy.
+15. Fees, Credit & Payment Management
+DDdesk.ai must support full payment, partial payment and credit/pending payment because a library may allow a student to use the facility before paying.
+15.1 Fee States
+State
+Example
+System Behavior
+Paid
+₹600 paid
+Due = ₹0; receipt generated
+Partial
+₹300 paid of ₹600
+Due = ₹300; status Partial
+Credit/Pending
+₹0 paid of ₹600
+Due = ₹600; status Credit
+Overdue
+Due date passed
+Show overdue and reminder/action
+Cancelled
+Charge cancelled
+Preserve audit history
+15.2 Credit Policy
+Allow credit: ON/OFF.
+Maximum credit amount.
+Maximum credit days.
+Grace period.
+Reminder frequency.
+Block membership after due date: configurable.
+Owner may allow continued access even when dues exist.
+System must show total outstanding amount clearly.
+15.3 Payment Methods
+Cash.
+UPI.
+Online payment gateway.
+Bank transfer.
+Other configurable method.
+15.4 Multiple Outstanding Months
+Example: monthly fee ₹600. Previous month due ₹600 and current month due ₹600. Total outstanding = ₹1,200. The ledger must preserve each charge and each payment allocation.
+15.5 Payment Allocation
+Payment can be allocated to oldest due first by default.
+Owner/staff with permission may allocate differently if business rules allow.
+Every allocation must remain traceable.
+Partial payment must update the relevant due amount.
+Successful online payment requires verified gateway webhook/status.
+Receipt should be available after confirmed payment.
+15.6 Refunds & Adjustments
+Refund with reason.
+Adjustment/waiver with permission.
+Financial action must create audit log.
+Refunded amounts must not disappear from historical reports.
+16. Attendance Management
+Check-in/check-out.
+Manual attendance by authorized staff.
+Student app attendance.
+QR-based attendance.
+Late/early indicators.
+Leave marking.
+Attendance correction with permission and reason.
+Daily/monthly attendance reports.
+Attendance percentage.
+Optional future biometric integration.
+Optional notification after check-in/out.
+17. Student App
+Login/OTP or secure credentials.
+Dashboard.
+My library.
+My seat.
+Membership plan and expiry.
+Attendance.
+Fees and outstanding balance.
+Online payment.
+Renew membership.
+Payment receipts.
+Stories.
+Notices.
+Offers/coupons.
+Complaints.
+Profile.
+Notifications.
+Library contact/location.
+Logout/account security.
+18. Enquiry & Admission Management
+Student opens library website.
+Student submits enquiry/registration.
+Owner receives notification.
+Owner reviews enquiry.
+Owner contacts/approves student.
+Student record is created or linked.
+Membership plan is selected.
+Seat is assigned.
+Payment is collected or credit is recorded.
+Student receives login/app access.
+Enquiry status: New, Contacted, Interested, Approved, Converted, Rejected, Closed.
+Follow-up date and notes.
+Source tracking: Website, Walk-in, Referral, Other.
+Conversion report.
+19. Stories
+Owner/staff can create image, video, text or offer story.
+Stories can be published immediately or scheduled if supported.
+Default expiry can be 24 hours.
+Expired stories are hidden from active feeds but retained if historical retention is required.
+Student app displays active stories.
+Public website may display active stories when enabled.
+Story view analytics can be tracked in later phases.
+20. Notices
+General announcement.
+Holiday.
+Timing change.
+Fee reminder.
+Exam-related notice.
+Maintenance.
+Emergency.
+Important announcement.
+Target audience: all students, selected students, branch, membership group.
+Schedule start/end.
+Publish/unpublish.
+Notification delivery.
+21. Banners
+Banner image.
+Title.
+Description.
+Start/end date.
+CTA text.
+CTA URL or internal destination.
+Display location.
+Active/inactive status.
+Ordering/priority.
+Website and student-app display.
+22. Offers & Coupons
+Create discount/offer.
+Percentage or fixed discount.
+Validity dates.
+Applicable membership plans.
+New-student offer.
+Referral offer.
+Festival offer.
+First-month offer.
+Limited-seat campaign.
+Coupon code.
+Usage limit.
+Per-student usage limit.
+Active/inactive status.
+23. Complaints & Maintenance
+Student can submit complaint.
+Category: AC, fan, light, Wi-Fi, chair, table, charging, washroom, cleanliness, noise, other.
+Optional photo/video attachment.
+Priority.
+Assigned staff.
+Status: Open, Assigned, In Progress, Resolved, Closed.
+Resolution note.
+Student can see status.
+Owner can review recurring issues.
+Maintenance history.
+24. Notifications
+Push notification.
+WhatsApp where provider/integration is configured.
+SMS.
+Email.
+In-app notification center.
+Events: approval, fee due, payment received, membership expiry, renewal, enquiry, notice, complaint update, important announcement.
+Notification templates with variables.
+Delivery status where provider supports it.
+Respect user notification preferences and applicable consent requirements.
+25. Reports
+Report Group
+Reports
+Student
+Student master, active/inactive, joining, expiry, renewal
+Seat
+Occupancy, available seats, seat utilization, seat history
+Attendance
+Daily, monthly, student-wise, attendance percentage
+Finance
+Collection, pending dues, overdue, payment method, refunds
+Membership
+New, renewals, expiring, expired
+Enquiry
+New enquiries, follow-ups, conversion
+Content
+Published notices/stories/banners/offers
+Complaints
+Open, resolved, category and turnaround
+Website
+Enquiry conversions and selected engagement metrics
+Date filters.
+Branch/floor/room filters where applicable.
+Student/plan/status filters.
+Search.
+Pagination.
+Export complete filtered data to CSV/Excel where supported.
+Report totals must match source transactions.
+26. Business Intelligence
+Business intelligence should convert operational data into simple owner actions.
+Occupancy trend.
+Revenue/collection trend.
+Renewal trend.
+Outstanding fee trend.
+New admission trend.
+Enquiry conversion.
+Seat utilization.
+Membership expiry pipeline.
+Business health indicators.
+Action list such as follow-up with expiring students or overdue accounts.
+Anonymous benchmarking, if introduced, must use aggregated data and minimum cohort thresholds so individual libraries cannot be identified.
+27. AI Owner Assistant
+Answer questions from authorized tenant data.
+Examples: How many seats are occupied? Who has pending fees? Which memberships expire soon?
+Explain changes in collection/occupancy using available data.
+Generate concise action summaries.
+Never expose another tenant's data.
+AI responses should identify when data is unavailable or insufficient.
+Financial or operational actions should require explicit user confirmation before execution.
+28. Feedback & Reviews
+Student feedback on library service.
+Optional rating and text review.
+Owner response.
+Internal feedback separate from public review.
+Spam/abuse controls.
+Public review publishing only when enabled and moderated.
+29. Subscription & Billing
+Library SaaS plan.
+Monthly and future annual billing.
+Trial period.
+Renewal.
+Payment history.
+Invoice/receipt.
+Failed payment state.
+Grace period.
+Feature entitlement checks.
+Plan upgrade/downgrade.
+Cancellation.
+Suspension after defined grace rules.
+Super Admin controls pricing and feature limits.
+30. Multi-Branch Support
+One owner/company can manage multiple branches.
+Branch-specific students, seats, attendance and collections.
+Central owner can view consolidated reports.
+Staff can be assigned to one or multiple branches.
+Branch-level permissions.
+Branch-specific website/content options where required.
+Tenant remains the top-level isolation boundary.
+31. Audit, Security & Data Protection
+Secure authentication.
+Password hashing.
+OTP verification where used.
+Role-based access control.
+Tenant-level authorization.
+Input validation and sanitization.
+Rate limiting.
+Secure file upload validation.
+Payment webhook verification.
+Secure cookies/token handling.
+HTTPS.
+Secrets stored outside source code.
+Audit logs for sensitive operations.
+Database backups and restore testing.
+Data retention/deletion policy.
+Least-privilege staff access.
+Session/device security controls as applicable.
+32. Search, Filters & Exports
+Consistent search behavior across modules.
+Server-side pagination for large lists.
+Date range filters.
+Status filters.
+Branch/floor/plan filters where relevant.
+Clear filter/reset controls.
+Export respects active filters.
+Export contains all matching records, not only current page.
+Large exports should use background processing when necessary.
+33. Common UX Requirements
+Mobile-responsive owner web panel.
+Simple navigation and minimal technical terminology.
+Consistent create/edit/view patterns.
+Confirmation before destructive actions.
+Success/error feedback.
+Loading states.
+Skeletons for major lists where appropriate.
+Empty states with useful next action.
+Accessible form labels and keyboard navigation.
+Indian currency formatting and date formats.
+Search should be fast and forgiving for names/mobile/IDs.
+34. Error, Empty & Permission States
+State
+Expected Behavior
+No Data
+Show friendly empty state and relevant action
+Loading
+Show progress/skeleton; prevent accidental duplicate submission
+Validation Error
+Show field-level actionable message
+Unauthorized
+Do not expose data; show permission message
+Session Expired
+Require secure re-authentication
+Tenant Mismatch
+Reject request and log security event where appropriate
+Payment Pending
+Do not mark paid until verified
+Payment Failed
+Keep due unchanged and show retry option
+Network Error
+Show retry without losing entered data where possible
+Deleted/Archived
+Preserve history when required; hide from active views
+35. MVP Scope
+MVP should focus on the operational loop needed for a library to run successfully from day one.
+Super Admin and library approval.
+Library profile and settings.
+Dynamic subdomain website.
+Owner authentication and dashboard.
+Student management.
+Staff and basic roles.
+Floor/room/seat management.
+Membership plans.
+Full/partial/credit fee handling.
+Cash/UPI/online payment recording.
+Attendance.
+Student app/web experience.
+Enquiry/admission.
+Notices.
+Stories.
+Banners.
+Basic offers.
+Notifications.
+Core reports.
+Audit/security foundation.
+Subscription billing foundation.
+36. Post-MVP Scope
+Advanced occupancy forecasting.
+Smart pricing suggestions.
+No-show auto-release.
+Business health intelligence.
+Renewal/churn risk indicators.
+Maintenance workflow improvements.
+Anonymous benchmarking.
+AI owner assistant.
+Advanced website analytics.
+Multi-branch enhancements.
+Advanced staff operations app.
+Advanced WhatsApp automation.
+Custom domains.
+37. Future Expansion
+AI study assistant.
+Study material repository.
+Current affairs and exam calendar.
+Quiz and practice modules.
+Student leaderboard.
+Student community.
+Marketplace/discovery.
+Biometric attendance.
+IoT seat/energy integration.
+Electricity/AC cost intelligence.
+Advanced CRM and marketing automation.
+Pan-India localization and additional languages.
+38. Acceptance Criteria
+Each tenant can operate independently without seeing another tenant's records.
+Owner can complete student admission, seat assignment, membership and payment/credit flow end-to-end.
+Owner can collect partial and pending fees and see accurate outstanding balances.
+Attendance updates reflect correctly in student and owner views.
+Website content published by a library appears only on that library's public website.
+Student can access only their own profile, membership, attendance and financial information.
+Reports reconcile with source records.
+Online payments are marked paid only after verified confirmation.
+Critical actions are permission-protected and audited.
+System can recover from common errors without corrupting financial or membership data.
+39. Feature Status Matrix
+Module
+MVP
+Post-MVP
+Future
+Tenant & Subdomain
+Yes
+Library Website
+Yes
+Students
+Yes
+Seats
+Yes
+Advanced forecasting
+IoT
+Memberships
+Yes
+Fees/Credit
+Yes
+Advanced automation
+Attendance
+Yes
+Biometric
+Student App
+Yes
+Advanced study tools
+Stories/Notices/Banners
+Yes
+Advanced analytics
+Offers
+Yes
+Marketing automation
+Complaints
+Basic
+Advanced workflow
+Reports
+Core
+Advanced BI
+AI Assistant
+Yes
+AI Study Assistant
+Multi-Branch
+Foundation
+Yes
+Enterprise expansion
+Custom Domain
+Yes
+Advanced domain management
+Marketplace
+Yes
+40. Release Readiness Checklist
+Requirements approved.
+Database models reviewed.
+API contracts reviewed.
+Tenant isolation tested.
+Roles/permissions tested.
+Fee/credit edge cases tested.
+Payment webhook verified.
+Seat allocation/concurrency tested.
+Attendance correction audited.
+Website/subdomain routing tested.
+Mobile responsiveness checked.
+Security testing completed.
+Backup and restore tested.
+Monitoring and error logging enabled.
+Pilot library onboarding completed.
+Production runbook prepared.
+Support process prepared.
+Pricing/subscription configuration verified.
+Legal pages and consent requirements reviewed.
+Go-live approval recorded.
+Appendix A — Key End-to-End Business Flows
+A.1 Library Onboarding
+Registration → Admin Review → Approval → Subdomain Provisioning → Owner Login → Profile Setup → Seat Setup → Plans → Website Publish → Student Acquisition.
+A.2 Student Admission
+Website/Walk-in Enquiry → Follow-up → Student Creation → Plan Selection → Seat Assignment → Payment or Credit → Membership Activation → Student Login.
+A.3 Monthly Fee with Credit
+Monthly charge created → Paid/Partial/Credit → Due date tracked → Reminder → Owner-configured grace period → Payment allocation → Receipt → Membership status updated.
+A.4 Renewal
+Expiry alert → Student chooses renewal → Plan selected → Payment/credit → New membership period → Seat retained or reassigned according to policy.
+A.5 Complaint
+Student complaint → Staff assignment → In Progress → Resolution → Student update → Close → Report/analytics.
+Appendix B — Product Principles
+Simple for owners.
+Clear for students.
+Safe for financial data.
+Isolated by tenant.
+Action-oriented dashboards.
+Configurable business rules.
+Auditable important actions.
+Scalable architecture.
+Build MVP first; add intelligence after operational stability.
+Document Approval
+Role
+Name
+Approval
+Date
+Product Owner
+Technical Lead
+Business/Operations

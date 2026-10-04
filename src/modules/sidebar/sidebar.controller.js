@@ -1,89 +1,27 @@
-const SidebarMenu = require('./sidebar.model');
+const catchAsync = require('../../utils/catchAsync');
+const svc        = require('../../services/sidebar.service');
 
-exports.createSidebarMenu = async (req, res) => {
-    try {
-        const menu = await SidebarMenu.create(req.body);
-        res.status(201).json(menu);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
+exports.createSidebarMenu = catchAsync(async (req, res) => {
+  const menu = await svc.createMenu(req.body);
+  res.status(201).json(menu);
+});
 
-exports.getSidebarMenus = async (req, res) => {
-    try {
-        if (req.userType === 'student') {
-            const menus = await SidebarMenu.find({ userType: 'student' }).sort({ module_priority: 1, module_menu_priority: 1 });
-            return res.json(menus);
-        }
+exports.getSidebarMenus = catchAsync(async (req, res) => {
+  const menus = await svc.getMenusForUser(req.user, req.userType);
+  res.json(menus);
+});
 
-        const admin = req.user;
+exports.getAllSidebarMenus = catchAsync(async (req, res) => {
+  const menus = await svc.getAllMenus();
+  res.json(menus);
+});
 
-        if (admin.userType === 'superadmin') {
-            const menus = await SidebarMenu.find({ 
-                userType: { $nin: ['student'] },
-                title: { $nin: ['Role Management', 'Access Control'] }
-            }).sort({ module_priority: 1, module_menu_priority: 1 });
-            return res.json(menus);
-        }
+exports.updateSidebarMenu = catchAsync(async (req, res) => {
+  const menu = await svc.updateMenu(req.params.id, req.body);
+  res.json(menu);
+});
 
-        if (admin.userType === 'admin') {
-            const menus = await SidebarMenu.find({ 
-                userType: { $nin: ['student'] },
-                title: { $nin: ['Libraries', 'Library Management'] }
-            }).sort({ module_priority: 1, module_menu_priority: 1 });
-            return res.json(menus);
-        }
-
-        await admin.populate('roleId');
-        if (!admin.roleId) {
-            return res.json([]);
-        }
-
-        const menus = await SidebarMenu.find({
-            _id: { $in: admin.roleId.sidebarMenuIds }
-        }).sort({ module_priority: 1, module_menu_priority: 1 });
-
-        res.json(menus);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.getAllSidebarMenus = async (req, res) => {
-    try {
-        const menus = await SidebarMenu.find().sort({ module_priority: 1, module_menu_priority: 1 });
-        res.json(menus);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.updateSidebarMenu = async (req, res) => {
-    try {
-        const menu = await SidebarMenu.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        res.json(menu);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-exports.deleteSidebarMenu = async (req, res) => {
-    try {
-        const Role = require('../roles/role.model');
-        const roleUsingMenu = await Role.findOne({ sidebarMenuIds: req.params.id });
-        
-        if (roleUsingMenu) {
-            return res.status(400).json({ 
-                message: `Cannot delete menu item. It is currently assigned to the '${roleUsingMenu.name}' role.` 
-            });
-        }
-
-        const deletedMenu = await SidebarMenu.findByIdAndDelete(req.params.id);
-        if (!deletedMenu) {
-            return res.status(404).json({ message: 'Menu item not found' });
-        }
-        res.json({ message: 'Menu item deleted' });
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
+exports.deleteSidebarMenu = catchAsync(async (req, res) => {
+  await svc.deleteMenu(req.params.id);
+  res.json({ message: 'Menu item deleted' });
+});

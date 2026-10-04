@@ -1,0 +1,165 @@
+﻿DDdesk.ai
+Product Requirements Document (PRD)
+Version: 1.0
+Status: Product Planning
+Target Market: India — Initial focus on Rajasthan
+Target Launch: Diwali 2026
+Product Type: Multi-tenant SaaS Platform
+Primary Users: Study Library Owners, Staff, Students
+1. Product Overview
+DDdesk.ai is a simple digital management platform designed for study libraries, reading rooms, self-study centres, and competitive-exam libraries.
+DDdesk.ai allows a library owner to manage the complete library from one system: library management, student management, seats, attendance, memberships, fees and payments, pending/credit fees, renewals, library website, student mobile application, stories, notices, banners, offers, complaints, reports, notifications, business intelligence, and AI assistance.
+The product should remain simple for the library owner even though the underlying system is technically advanced.
+2. Product Vision
+Make every study library digitally manageable without requiring technical knowledge.
+DDdesk should help the owner quickly understand: how many seats are occupied, how much money has been collected, who has pending fees, which memberships are expiring, and what needs attention today.
+3. Product Mission
+Help library owners save time, reduce manual registers, reduce fee-collection problems, reduce empty seats, improve student communication, increase renewals, get new students, and build a professional online presence.
+4. Target Customers
+Primary customers are small and medium-sized private study libraries, reading rooms, and self-study centres, from roughly 30 seats to 200+ seats.
+Initial geography: Rajasthan, with potential early focus on Udaipur, Jaipur, Kota, Ajmer, Bhilwara, Jodhpur, Bikaner, Sikar, and Alwar. After validation, expand to other Indian states.
+5. Target Users
+Super Admin — controls the DDdesk platform.
+Library Owner — owns and manages a library.
+Library Staff — helps with daily operations.
+Student — uses the library and student application.
+6. Product Architecture
+DDdesk is a multi-tenant SaaS application. One DDdesk platform can contain many libraries.
+Each library gets isolated data and a dynamic website/subdomain such as gyan.dddesk.ai, success.dddesk.ai, or xyz.dddesk.ai.
+Library A must never access Library B's students, payments, attendance, fees, reports, staff, or website settings.
+7. Library Website
+Every approved library receives a dynamic website generated from its DDdesk data.
+Website sections: Home, About, Facilities, Gallery, Membership Plans, Available Seats, Offers, Stories, Notices, Contact, Location, and Student Registration.
+Website features: logo, library name, cover/banner, photos, facilities, timings, pricing, available seats, online enquiry, online admission, online payment, WhatsApp contact, and Google Maps location.
+Future: custom domain support such as www.gyanstudylibrary.com.
+8. Super Admin Requirements
+Dashboard: total libraries, active libraries, pending approvals, expired subscriptions, revenue, new registrations, active students, and system activity.
+Library management: view, search, filter, approve, reject, suspend, activate, and view library details.
+Subscription management: plans, pricing, trial period, subscription status, payment history, renewal, and expiry.
+System management: notifications, support, global settings, activity logs, and website/domain management.
+9. Library Registration
+Owner registration fields: library name, owner name, mobile, email, address, city, state, pincode, and number of seats. Optional: logo, cover image, photos, and facilities.
+Flow: Owner Registration → Verification → Pending Approval → Super Admin Review → Approved → Library Account Created → Subdomain Created.
+10. Library Profile
+Owner can manage library name, logo, cover image, about, address, Google Maps, phone, email, opening/closing time, facilities, rules, gallery, and social media.
+11. Seat Management
+Create floors, rooms, halls, and seats. Seat information includes seat number, floor, room, type, price, and status.
+Seat types: Normal, AC, Premium, Window, and Custom.
+Seat status: Available, Occupied, Reserved, Blocked, and Maintenance.
+Advanced features: live occupancy, seat transfer, seat history, no-show detection, automatic release, empty-seat alerts, occupancy forecast, and smart seat recommendation.
+12. Student Management
+Owner can add, edit, view, search, block, activate, assign seats, change seats, and assign memberships.
+Student information: name, photo, mobile, email, address, emergency contact, joining date, membership, seat, shift, and status.
+13. Membership Management
+Create daily, weekly, monthly, 3-month, 6-month, yearly, and custom plans.
+Plans can include price, duration, seat type, shift, facilities, and discount.
+14. Fee Management
+DDdesk must support full payment, partial payment, pending payment, credit payment, offline payment, and online payment.
+15. Credit / Pending Fee Requirement
+A student may join without paying immediately. Example: student joins on 1 October, monthly fee is ₹600, and asks to pay next month.
+System records: Total Fee ₹600, Paid ₹0, Pending ₹600, Status Credit, Due Date 1 November.
+The student may continue using the library according to the owner's credit policy.
+16. Partial Payment
+Example: fee ₹600, student pays ₹300. System shows Total ₹600, Paid ₹300, Pending ₹300, Status Partial. When the remaining ₹300 is paid, status becomes Paid.
+17. Multiple Pending Months
+Example: October ₹600 pending and November ₹600 new fee. Total Due becomes ₹1,200. When payment is received, the due balance is updated and payment history is retained.
+18. Credit Policy
+Owner can configure: allow credit, maximum credit amount, maximum credit days, grace period, reminder frequency, and whether membership can be blocked after the due date.
+The system should not automatically block every student; the owner controls the final action.
+19. Payment Management
+Payment methods: cash, UPI, online payment, bank transfer, and other.
+Online payment should support payment creation, success, failure, webhook verification, refund, and payment history. Generate a digital receipt after successful payment.
+20. Attendance Management
+Attendance methods: QR, manual, student app, and future biometric integration.
+Records: check-in, check-out, late, early exit, absent, and leave.
+21. Student App
+Keep the application simple. Main screens: Dashboard, My Seat, Attendance, Fees, Payments, Renew, Stories, Notices, Offers, Complaints, and Profile.
+22. Student Dashboard
+Show student name, library, seat, membership status, validity, pending fee, attendance, stories, latest notice, and quick actions.
+23. Library Stories
+Owner can upload image, short video, text, offer, or announcement. Stories appear in the student app and may automatically expire after 24 hours.
+24. Notices
+Owner can create general notices, holidays, timing changes, fee reminders, exam notices, maintenance notices, emergency notices, and important announcements.
+Notices appear in the student app and library website.
+25. Banners
+Owner can create promotional banners with image, title, description, start date, end date, button, link, and status.
+Banners can appear on the library website and student app.
+26. Offers & Coupons
+Create new-admission, festival, referral, first-month, limited-seat offers, and coupon codes.
+27. Enquiry / Admission
+Student visits the library website and clicks Join Now. Flow: Registration → Enquiry → Owner Notification → Approval → Membership → Seat → Payment/Credit → Student Account.
+28. Notifications
+Events include new admission, payment received, payment pending, membership expiry, renewal, new notice, new story, new offer, and complaint updates.
+Possible channels: push notification, WhatsApp, SMS, and email.
+29. Complaint & Maintenance
+Students can report AC, fan, light, Wi-Fi, chair, table, charging point, washroom, or other issues.
+Workflow: Open → Assigned → In Progress → Resolved.
+30. Owner Dashboard
+Keep the dashboard simple. Show total seats, occupied seats, available seats, today's collection, pending fees, new enquiries, expiring memberships, and open complaints.
+Quick actions: Add Student, Add Fee, Add Notice, Upload Story, Upload Banner, View Pending Fees, and View Empty Seats.
+31. Reports
+Student reports: active students, new students, expired students, renewals.
+Seat reports: total seats, occupied, available, occupancy.
+Attendance reports: daily, monthly, student-wise, shift-wise.
+Finance reports: daily collection, monthly collection, pending fees, credit students, partial payments, payment history, refunds.
+Website reports: enquiries, registrations, admission requests.
+32. Business Intelligence
+DDdesk can provide occupancy forecasts, empty-seat alerts, renewal alerts, pending-fee alerts, and smart-offer suggestions.
+33. DDdesk AI Assistant
+Owner can ask: How is my library doing? How much did I collect this month? Who has pending fees? Which memberships expire this week? How many seats are empty? Why did revenue decrease?
+AI answers using the library's own authorized data.
+34. Staff Management
+Owner can create Manager, Receptionist, and Staff users. Permissions can control access to students, seats, attendance, fees, complaints, and reports. Important staff activity should be logged.
+35. Multi-Branch Management
+For larger customers, support multiple branches under one owner account, with branch-level students, seats, staff, fees, and performance.
+36. Student Feedback
+Students can submit ratings, feedback, suggestions, and complaints. Owners can review feedback.
+37. Security Requirements
+Secure authentication, OTP/login, password hashing, role-based permissions, tenant isolation, API authorization, input validation, rate limiting, secure file uploads, secure payment webhooks, audit logs, database backups, HTTPS, and secure secrets management.
+38. Multi-Tenant Security
+Every business record must belong to a library. The API must verify that the logged-in user's library ID matches the requested data's library ID. If not, access must be rejected.
+39. Subscription System
+DDdesk will have subscription plans for library owners. Flow: Free Trial → Choose Plan → Payment → Subscription Active → Renewal. Possible plans: Starter, Professional, Business. Final pricing should be validated with pilot libraries.
+40. Technical Requirements
+Recommended initial technology: Next.js/React/TypeScript for web; Node.js/Express/TypeScript for backend; MongoDB for database; React Native for mobile; Cloudinary/object storage for media; Razorpay for payments; Firebase Cloud Messaging plus WhatsApp/SMS providers for notifications.
+41. Environments
+Maintain Development, Staging, and Production environments. Production must not be used for development testing.
+42. Domain Structure
+Main: dddesk.ai. Admin: admin.dddesk.ai. API: api.dddesk.ai. Library websites: gyan.dddesk.ai, success.dddesk.ai, xyz.dddesk.ai. Wildcard DNS should support *.dddesk.ai.
+43. Development Workflow
+Requirement → UI/UX → Database → API → Frontend → Integration → Testing → Code Review → Staging → Production.
+Git branches: main, develop, feature/*, hotfix/*.
+44. Testing Requirements
+Test unit, API, integration, UI, permission, and security scenarios.
+Payment tests: full payment, partial payment, credit, pending, refund, failed payment, duplicate payment, and webhook failure.
+Tenant tests: Library A cannot access Library B; students cannot access other students; staff cannot access unauthorized modules.
+45. Production Monitoring
+Monitor API health, website uptime, database, server resources, storage, application errors, payment failures, and notification failures. Use centralized application/error logging.
+46. Backup
+Production database must have automatic backups, retention rules, a restore process, and regular restore testing.
+47. Pilot Launch
+Start with approximately 5–10 real libraries. Test students, seats, attendance, fees, credit payments, renewals, website, stories, notices, and student app. Collect real feedback before scaling.
+48. Production Launch
+Pilot → Fix bugs → Improve UX → Security review → Production deployment → Public registration → Subscription activation → Customer support.
+49. MVP Scope
+Must-have: Super Admin, library registration/approval, Library Admin, profile, dynamic subdomain, library website, student management, seat management, membership plans, attendance, fees, credit/pending fees, partial payments, renewals, student app, stories, notices, banners, enquiries, notifications, basic reports, staff, and security.
+50. Post-MVP Features
+Occupancy forecasting, smart seat recovery, no-show auto-release, renewal risk, smart offers, business health, AI assistant, multi-branch, custom domains, advanced analytics, exam/current-affairs features, and AI study assistant.
+51. Success Metrics
+Business: registered libraries, active libraries, paid libraries, subscription renewal rate.
+Library usage: active students, seat occupancy, fee collection, renewal rate, pending fees.
+Product: daily active owners, daily active students, website enquiries, app usage, notification delivery.
+52. Final Product Principle
+Simple interface, powerful system.
+The owner should see: Dashboard, Students, Seats, Attendance, Fees, Content, Reports, Settings.
+Behind the simple interface, DDdesk handles multi-tenancy, payments, credit fees, partial payments, notifications, subdomains, website generation, analytics, AI, security, and audit logs.
+53. Complete DDdesk Flow
+Library Owner → Register → Super Admin Approval → Library Account → xyz.dddesk.ai → Library Setup → Seats + Plans → Student Registration → Membership → Seat Assignment → Attendance → Fee → Paid / Partial / Credit → Reminder → Renewal → Reports → Business Insights.
+54. Product Definition
+DDdesk.ai is a simple multi-tenant SaaS platform that gives study-library owners their own digital website, student app, and complete library-management system.
+For owners: Manage the library.
+For students: Manage membership and stay connected with the library.
+For DDdesk: Help libraries manage better, collect fees on time, reduce empty seats, and grow.
+55. PRD Approval
+Before development begins, confirm product scope, user roles, feature list, fee/credit rules, multi-tenant architecture, subdomain architecture, student flow, payment flow, website flow, security requirements, and MVP scope.
+Next documents: Feature Specification, Roles & Permissions, Complete System Flow, UI/UX Design System, System Architecture, Database Design, and API Specification.

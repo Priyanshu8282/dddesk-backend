@@ -1,98 +1,75 @@
 const mongoose = require('mongoose');
 
-const libraryPlanSchema = new mongoose.Schema(
-  {
-    // 🔹 Link to Library (VERY IMPORTANT 🔥)
+const libraryPlanSchema = new mongoose.Schema({
     libraryId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Library",
-      required: true,
-      index: true
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Library',
+        required: true,
+        index: true
     },
-
-    // 🔹 Plan Basic Info
     name: {
-      type: String,
-      required: true,
-      trim: true
+        type: String,
+        required: true,
+        trim: true
+    },
+    description: { type: String },
+
+    // Duration type as per DDdesk spec
+    durationType: {
+        type: String,
+        enum: ['daily', 'weekly', 'monthly', 'quarterly', 'half-yearly', 'yearly', 'custom'],
+        required: true,
+        default: 'monthly'
+    },
+    // Number of days for 'custom'; auto-filled for standard types
+    durationDays: {
+        type: Number
     },
 
-    description: {
-      type: String
-    },
+    // Pricing
+    price: { type: Number, required: true },
+    discount: { type: Number, default: 0 },  // flat ₹ discount
+    finalPrice: { type: Number },
 
-    // 🔹 Plan Type
-    type: {
-      type: String,
-      enum: ["premium", "non-premium"],
-      default: "non-premium",
-      required: true
-    },
+    // Optional extras
+    depositAmount: { type: Number, default: 0 },
+    joiningFee: { type: Number, default: 0 },
 
-    // 🔹 Duration (months)
-    duration: {
-      type: Number, // 1, 3, 6, 12
-      required: true
-    },
+    // Features (e.g. "AC Room", "WiFi", "Locker")
+    features: [{ type: String }],
 
-    // 🔹 Pricing
-    price: {
-      type: Number,
-      required: true
-    },
+    // Seat eligibility
+    seatTypes: [{
+        type: String,
+        enum: ['standard', 'premium', 'window', 'ac', 'non-ac', 'custom', 'all']
+    }],
 
-    discount: {
-      type: Number,
-      default: 0
-    },
+    status: { type: Boolean, default: true },
+    isDeleted: { type: Boolean, default: false },
 
-    finalPrice: {
-      type: Number
-    },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
+}, { timestamps: true });
 
-    // 🔹 Features
-    features: [
-      {
-        type: String
-        // e.g. "Attendance", "AC Room", "WiFi"
-      }
-    ],
+const DURATION_DAYS = {
+    daily: 1,
+    weekly: 7,
+    monthly: 30,
+    quarterly: 90,
+    'half-yearly': 180,
+    yearly: 365
+};
 
-    // 🔹 Optional: Seat Limit
-    seatLimit: {
-      type: Number
-    },
-
-    // 🔹 Status
-    status: {
-      type: Boolean,
-      default: true
-    },
-
-    isDeleted: {
-        type: Boolean,
-        default: false
-    },
-
-    // 🔹 Created By (Admin User)
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Admin"
+libraryPlanSchema.pre('save', function () {
+    // Auto-set durationDays for standard types
+    if (this.durationType !== 'custom') {
+        this.durationDays = DURATION_DAYS[this.durationType];
     }
-  },
-  {
-    timestamps: true
-  }
-);
-
-// 🔥 Auto calculate final price
-libraryPlanSchema.pre("save", function () {
-  this.finalPrice = this.price - (this.price * this.discount) / 100;
+    // Calculate final price
+    this.finalPrice = Math.max(0, this.price - (this.discount || 0));
 });
 
-// Middleware for soft delete filtering
 libraryPlanSchema.pre(['find', 'findOne'], function () {
     this.where({ isDeleted: false });
 });
 
-module.exports = mongoose.model("Plan", libraryPlanSchema);
+module.exports = mongoose.model('Plan', libraryPlanSchema);

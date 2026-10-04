@@ -7,18 +7,27 @@ exports.createStudent = async (req, res, next) => {
         const creatorInfo = req.user ? { id: req.user.id } : null;
         const studentData = { ...req.body };
 
-        console.log("req.body:", req.body);
-        console.log("req.files:", req.files);
-        console.log("req.userType:", req.userType);
-        console.log("req.user:", req.user);
-        
         // If logged in as Admin, automatically set the libraryId from their profile link
         if (req.userType === 'admin' || (req.user && req.user.libraryId)) {
             studentData.libraryId = req.user.libraryId;
         }
 
-        console.log("studentData.libraryId:", studentData.libraryId);
-        
+        // Enforce subscription maxStudents limit
+        if (studentData.libraryId) {
+            const Library = require('../libraries/library.model');
+            const library = await Library.findById(studentData.libraryId).select('planLimits name');
+            if (library) {
+                const maxStudents = library.planLimits?.maxStudents ?? 100;
+                const currentCount = await Student.countDocuments({ libraryId: studentData.libraryId, isDeleted: false });
+                if (currentCount >= maxStudents) {
+                    return res.status(403).json({
+                        success: false,
+                        message: `Student limit reached (${maxStudents}). Upgrade your subscription plan to add more students.`
+                    });
+                }
+            }
+        }
+
         // Handle file uploads (profile image)
         if (req.files && req.files.profileImage) {
             studentData.profileImage = req.files.profileImage[0].path;

@@ -128,8 +128,39 @@ const librarySchema = new mongoose.Schema(
     // 🔹 Status Control
     status: {
       type: String,
-      enum: ["active", "inactive", "suspended"],
-      default: "active"
+      enum: ["active", "pending", "suspended", "rejected"],
+      default: "pending"
+    },
+
+    // Reason given when SA rejects or suspends
+    statusReason: {
+      type: String,
+      default: null
+    },
+
+    // Platform subscription (managed by SA)
+    // subscriptionPlanId links to the PlatformPlan document in the catalog
+    subscriptionPlanId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'PlatformPlan',
+      default: null
+    },
+    // subscriptionPlan stores the plan name string for quick display without a join
+    subscriptionPlan: {
+      type: String,
+      default: 'free'
+    },
+
+    subscriptionExpiry: {
+      type: Date,
+      default: null
+    },
+
+    // Entitlement snapshot — copied from PlatformPlan at assignment time for fast enforcement
+    planLimits: {
+      maxStudents: { type: Number, default: 100 },
+      maxSeats: { type: Number, default: 50 },
+      maxStaff: { type: Number, default: 3 }
     },
 
     isDeleted: {
