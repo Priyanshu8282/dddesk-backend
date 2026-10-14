@@ -1,8 +1,8 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
-const Role = require('../modules/roles/role.model');
-const SidebarMenu = require('../modules/sidebar/sidebar.model');
-const Permission = require('../modules/permissions/permission.model');
+const Role = require('../models/role.model');
+const SidebarMenu = require('../models/sidebar.model');
+const Permission = require('../models/permission.model');
 const config = require('../config/config');
 
 const syncRBAC = async () => {

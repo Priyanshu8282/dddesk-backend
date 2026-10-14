@@ -1,5 +1,5 @@
-const Permission = require('../modules/permissions/permission.model');
-const Role       = require('../modules/roles/role.model');
+const Permission = require('../models/permission.model');
+const Role       = require('../models/role.model');
 
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 

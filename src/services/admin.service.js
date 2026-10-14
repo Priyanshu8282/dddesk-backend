@@ -1,21 +1,21 @@
-const Admin   = require('../modules/admins/admin.model');
-const Library = require('../modules/libraries/library.model');
-const Role    = require('../modules/roles/role.model');
+const Admin   = require('../models/admin.model');
+const Library = require('../models/library.model');
+const Role    = require('../models/role.model');
 
-const err = (msg, status) => Object.assign(new Error(msg), { status });
+// ── Staff / Employee ──────────────────────────────────────────────────────────
 
 exports.createStaff = async (body, files, requestingUser) => {
   let { name, email, password, roleId, libraryId, mobile,
         alternativeMobileNumber, joiningDate, documentNames,
         address, city, state, country, pincode } = body;
 
-  if (await Admin.findOne({ email })) throw err('Email already exists', 400);
+  if (await Admin.findOne({ email })) throw Object.assign(new Error('Email already exists'), { status: 400 });
 
   if (requestingUser.userType === 'admin' || requestingUser.libraryId) {
     libraryId = requestingUser.libraryId;
     if (!roleId) {
       const staffRole = await Role.findOne({ name: 'Staff' });
-      if (!staffRole) throw err("System Error: 'Staff' role is missing.", 500);
+      if (!staffRole) throw Object.assign(new Error("System Error: 'Staff' role is missing."), { status: 500 });
       roleId = staffRole._id;
     }
   }
@@ -48,7 +48,8 @@ exports.createStaff = async (body, files, requestingUser) => {
 };
 
 exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
-  if (await Admin.findOne({ email: input.email })) throw err('Admin with this email already exists', 400);
+  if (await Admin.findOne({ email: input.email }))
+    throw Object.assign(new Error('Admin with this email already exists'), { status: 400 });
 
   if (typeof input.settings     === 'string') { try { input.settings     = JSON.parse(input.settings);     } catch (_) {} }
   if (typeof input.workingHours === 'string') { try { input.workingHours = JSON.parse(input.workingHours); } catch (_) {} }
@@ -56,7 +57,7 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
   let roleId = input.roleId;
   if (!roleId) {
     const adminRole = await Role.findOne({ name: 'Admin' });
-    if (!adminRole) throw err("System Error: 'Admin' role missing.", 500);
+    if (!adminRole) throw Object.assign(new Error("System Error: 'Admin' role missing."), { status: 500 });
     roleId = adminRole._id;
   }
 
@@ -122,13 +123,12 @@ exports.listStaff = async (query, requestingUser) => {
     Admin.countDocuments(filter),
   ]);
 
-  const base = { isDeleted: false };
-  if (userType !== 'all') base.userType = userType;
-  if (filter.libraryId) base.libraryId = filter.libraryId;
+  const summaryBase = { isDeleted: false, userType: filter.userType };
+  if (filter.libraryId) summaryBase.libraryId = filter.libraryId;
   const [totalCount, activeCount, inactiveCount] = await Promise.all([
-    Admin.countDocuments(base),
-    Admin.countDocuments({ ...base, status: true }),
-    Admin.countDocuments({ ...base, status: false }),
+    Admin.countDocuments(summaryBase),
+    Admin.countDocuments({ ...summaryBase, status: true }),
+    Admin.countDocuments({ ...summaryBase, status: false }),
   ]);
 
   return { data, total, page: p, limit: l, totalPages: Math.ceil(total/l), summary: { total: totalCount, active: activeCount, inactive: inactiveCount } };
@@ -139,7 +139,7 @@ exports.getAdminById = async (id) =>
 
 exports.updateAdmin = async (id, body, files, requestingUser) => {
   let updateData = { ...body };
-  const isSelf = id.toString() === requestingUser._id.toString();
+  const isSelf = !body._targetId || id.toString() === requestingUser._id.toString();
 
   if (!isSelf && requestingUser.userType === 'admin') {
     if (!updateData.roleId) {
@@ -162,7 +162,7 @@ exports.updateAdmin = async (id, body, files, requestingUser) => {
       updateData.documents = names.map((docName, i) => {
         const docFile = Array.isArray(files) ? files.find(f => f.fieldname === `docFile_${i}`) : null;
         if (docFile) return { name: docName, files: [docFile.path] };
-        return admin.documents?.find(d => d.name === docName) || { name: docName, files: [] };
+        return admin.documents.find(d => d.name === docName) || { name: docName, files: [] };
       });
     }
   }
@@ -179,7 +179,7 @@ exports.updateAdmin = async (id, body, files, requestingUser) => {
       if (files.photos)       ph = files.photos.map(f => f.path);
     }
     if (pf) updateData.profileImage = pf.path;
-    if (lf) updateData.logo         = lf.path;
+    if (lf) updateData.logo = lf.path;
     if (ph.length) updateData.photos = ph;
   }
 
@@ -190,19 +190,20 @@ exports.updateAdmin = async (id, body, files, requestingUser) => {
     } catch (_) {}
   }
 
-  const NULL_VALS = ['null','','REMOVE_IMAGE','uploads/profiles/default-avatar.png'];
+  const NULL_VALS = ['null', '', 'REMOVE_IMAGE', 'uploads/profiles/default-avatar.png'];
   if (NULL_VALS.includes(updateData.profileImage)) updateData.profileImage = null;
   if (['null','','REMOVE_IMAGE'].includes(updateData.logo)) updateData.logo = null;
 
   const updated = await Admin.findByIdAndUpdate(id, { ...updateData, updatedBy: requestingUser._id }, { new: true });
-  if (!updated) throw err('User not found', 404);
+  if (!updated) throw Object.assign(new Error('User not found'), { status: 404 });
 
   if (updated.userType === 'admin' && updated.libraryId) {
     const libUpdate = {};
     ['name','ownerName','mobile','alternativeMobileNumber','email','address','city','state','country','pincode','logo','photos','settings','workingHours','website','gstNumber']
       .forEach(k => { if (body[k] !== undefined) libUpdate[k] = body[k]; });
     if (Object.keys(libUpdate).length) {
-      await Library.findByIdAndUpdate(updated.libraryId._id || updated.libraryId, libUpdate);
+      const libId = updated.libraryId._id || updated.libraryId;
+      await Library.findByIdAndUpdate(libId, libUpdate);
     }
   }
 
@@ -212,7 +213,7 @@ exports.updateAdmin = async (id, body, files, requestingUser) => {
 exports.updateStatus = async (id, status, updatedBy) => {
   const adminStatus = status === 'active' ? true : status === 'inactive' ? false : status;
   const admin = await Admin.findByIdAndUpdate(id, { status: adminStatus, updatedBy }, { new: true }).populate('libraryId');
-  if (!admin) throw err('User not found', 404);
+  if (!admin) throw Object.assign(new Error('User not found'), { status: 404 });
   if (admin.userType === 'admin' && admin.libraryId) {
     const libId = admin.libraryId._id || admin.libraryId;
     await Library.findByIdAndUpdate(libId, { status: adminStatus ? 'active' : 'inactive' });
@@ -221,14 +222,14 @@ exports.updateStatus = async (id, status, updatedBy) => {
 };
 
 exports.softDelete = async (id, requestingUserId) => {
-  if (id === requestingUserId.toString()) throw err('Cannot delete your own account', 400);
+  if (id === requestingUserId.toString()) throw Object.assign(new Error('Cannot delete your own account'), { status: 400 });
   const admin = await Admin.findByIdAndUpdate(id, { isDeleted: true });
-  if (!admin) throw err('User not found', 404);
+  if (!admin) throw Object.assign(new Error('User not found'), { status: 404 });
 };
 
 exports.changePassword = async (userId, newPassword) => {
   const admin = await Admin.findById(userId);
-  if (!admin) throw err('User not found', 404);
+  if (!admin) throw Object.assign(new Error('User not found'), { status: 404 });
   admin.password = newPassword;
   await admin.save();
   if (admin.userType === 'admin' && admin.libraryId) {

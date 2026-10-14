@@ -1,4 +1,4 @@
-const GlobalSetting = require('../modules/settings/setting.model');
+const GlobalSetting = require('../models/setting.model');
 
 exports.getSettings = async (key) => {
   const settings = await GlobalSetting.find(key ? { key } : {});
@@ -7,6 +7,7 @@ exports.getSettings = async (key) => {
 
 exports.upsertSetting = async (key, value, description) =>
   GlobalSetting.findOneAndUpdate(
-    { key }, { key, value, description },
+    { key },
+    { key, value, description },
     { new: true, upsert: true, runValidators: true }
   );

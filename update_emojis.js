@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const SidebarMenu = require('./src/modules/sidebar/sidebar.model');
+const SidebarMenu = require('./src/models/sidebar.model');
 require('dotenv').config();
 
 const run = async () => {

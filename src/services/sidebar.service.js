@@ -1,5 +1,5 @@
-const SidebarMenu = require('../modules/sidebar/sidebar.model');
-const Role        = require('../modules/roles/role.model');
+const SidebarMenu = require('../models/sidebar.model');
+const Role        = require('../models/role.model');
 
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 

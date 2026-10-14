@@ -1,7 +1,7 @@
 const cron = require('node-cron');
-const Student = require('../modules/students/student.model');
-const Attendance = require('../modules/attendance/attendance.model');
-const Library = require('../modules/libraries/library.model');
+const Student = require('../models/student.model');
+const Attendance = require('../models/attendance.model');
+const Library = require('../models/library.model');
 const { notifyLibraryAdmins, notifyMultipleStudents } = require('./firebase.service');
 
 const initCronJobs = () => {

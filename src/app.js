@@ -3,8 +3,9 @@ const cors = require("cors");
 const httpStatus = require("http-status");
 const ApiError = require("./utils/ApiError");
 const helmet = require("helmet");
-const publicRoutes = require('./routes/v1/public');
-const privateRoutes = require('./routes/v1/private');
+const publicRoutes = require('./routes/public');
+const privateRoutes = require('./routes/private');
+const errorHandler = require('./middlewares/error.middleware');
 
 const app = express();
 
@@ -73,28 +74,7 @@ app.use((req, res, next) => {
     next(new ApiError(httpStatus.NOT_FOUND, "Not found"));
 });
 
-// handle error
-app.use((err, req, res, next) => {
-    let { statusCode, message } = err;
-    if (err.code === 'ENOENT') {
-        statusCode = 404;
-        message = 'Requested file or resource not found';
-    }
-    if (!statusCode || typeof statusCode !== 'number') statusCode = 500;
-
-    res.locals.errorMessage = err.message;
-
-    const response = {
-        code: statusCode,
-        message,
-        ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-    };
-
-    if (process.env.NODE_ENV === "development") {
-        console.error(err);
-    }
-
-    res.status(statusCode).send(response);
-});
+// Centralized error handling middleware
+app.use(errorHandler);
 
 module.exports = app;

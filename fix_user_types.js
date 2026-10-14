@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const Admin = require('./src/modules/admins/admin.model');
+const Admin = require('./src/models/admin.model');
 require('dotenv').config();
 
 const updateData = async () => {

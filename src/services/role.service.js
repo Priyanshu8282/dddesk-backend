@@ -1,6 +1,4 @@
-const Role    = require('../modules/roles/role.model');
-const Admin   = require('../modules/admins/admin.model');
-const Library = require('../modules/libraries/library.model');
+const Role = require('../models/role.model');
 
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 
@@ -31,6 +29,9 @@ exports.deleteRole = async (id) => {
   const role = await Role.findById(id);
   if (!role) throw err('Role not found', 404);
   if (role.isDefault) throw err('Cannot delete default system roles', 400);
+
+  const Admin   = require('../models/admin.model');
+  const Library = require('../models/library.model');
   const [adminCount, libCount] = await Promise.all([
     Admin.countDocuments({ roleId: id, isDeleted: false }),
     Library.countDocuments({ roleId: id, isDeleted: false }),
@@ -38,7 +39,7 @@ exports.deleteRole = async (id) => {
   if (adminCount > 0 || libCount > 0) {
     const deps = [];
     if (adminCount > 0) deps.push(`${adminCount} Admin/Staff members`);
-    if (libCount > 0)   deps.push(`${libCount} Library accounts`);
+    if (libCount > 0) deps.push(`${libCount} Library accounts`);
     throw err(`Cannot delete role. It is assigned to: ${deps.join(', ')}.`, 400);
   }
   await Role.findByIdAndDelete(id);

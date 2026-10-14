@@ -1,5 +1,5 @@
-const LibraryWebsite = require('../modules/website/libraryWebsite.model');
-const Library        = require('../modules/libraries/library.model');
+const LibraryWebsite = require('../models/libraryWebsite.model');
+const Library        = require('../models/library.model');
 
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 

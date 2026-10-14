@@ -6,7 +6,7 @@ const dotenv = require('dotenv');
 // Load environment variables
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
-const Library = require('./src/modules/libraries/library.model');
+const Library = require('./src/models/library.model');
 
 const migrateLibraryCodes = async () => {
     try {

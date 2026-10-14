@@ -123,8 +123,8 @@ const sendToTopic = async (topic, title, body, data = {}) => {
 const notifyLibraryAdmins = async (libraryId, title, body, data = {}, type = 'system_alert') => {
     try {
         console.log(`[FIREBASE DEBUG] notifyLibraryAdmins called. libraryId:`, libraryId, `title: ${title}`);
-        const Admin = require('../modules/admins/admin.model');
-        const Notification = require('../modules/notifications/notification.model');
+        const Admin = require('../models/admin.model');
+        const Notification = require('../models/notification.model');
         
         // If libraryId is a populated object, extract the _id
         const libIdStr = (libraryId && typeof libraryId === 'object' && libraryId._id) ? libraryId._id.toString() : libraryId;
@@ -172,8 +172,8 @@ const notifyLibraryAdmins = async (libraryId, title, body, data = {}, type = 'sy
 
 const notifyStudent = async (studentId, title, body, data = {}, type = 'system_alert') => {
     try {
-        const Student = require('../modules/students/student.model');
-        const Notification = require('../modules/notifications/notification.model');
+        const Student = require('../models/student.model');
+        const Notification = require('../models/notification.model');
         
         const student = await Student.findById(studentId);
         if (!student || student.isDeleted) return;
@@ -196,8 +196,8 @@ const notifyStudent = async (studentId, title, body, data = {}, type = 'system_a
 
 const notifyMultipleStudents = async (studentIds, title, body, data = {}, type = 'system_alert') => {
     try {
-        const Student = require('../modules/students/student.model');
-        const Notification = require('../modules/notifications/notification.model');
+        const Student = require('../models/student.model');
+        const Notification = require('../models/notification.model');
         
         const students = await Student.find({ _id: { $in: studentIds }, isDeleted: false });
         

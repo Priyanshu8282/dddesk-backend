@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-const SidebarMenu = require('../src/modules/sidebar/sidebar.model');
+const SidebarMenu = require('../src/models/sidebar.model');
 
 const rearrangeSidebar = async () => {
     try {

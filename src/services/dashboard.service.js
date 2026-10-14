@@ -1,16 +1,16 @@
-const mongoose  = require('mongoose');
-const Student    = require('../modules/students/student.model');
-const Payment    = require('../modules/payments/payment.model');
-const Attendance = require('../modules/attendance/attendance.model');
-const Seat       = require('../modules/seats/seat.model');
-const Library    = require('../modules/libraries/library.model');
+const mongoose = require('mongoose');
+const Student    = require('../models/student.model');
+const Payment    = require('../models/payment.model');
+const Attendance = require('../models/attendance.model');
+const Seat       = require('../models/seat.model');
+const Library    = require('../models/library.model');
 
 exports.getAdminDashboardData = async (libraryId) => {
   const libId = new mongoose.Types.ObjectId(libraryId.toString());
 
-  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   const todayEnd = new Date(today); todayEnd.setHours(23, 59, 59, 999);
-  const in30Days = new Date(); in30Days.setDate(in30Days.getDate() + 30);
+  const thirtyDaysOut = new Date(); thirtyDaysOut.setDate(thirtyDaysOut.getDate() + 30);
 
   const [
     totalStudents, activeStudents, trialStudents,
@@ -21,7 +21,7 @@ exports.getAdminDashboardData = async (libraryId) => {
     Student.countDocuments({ libraryId }),
     Student.countDocuments({ libraryId, status: 'active', planStatus: 'active' }),
     Student.countDocuments({ libraryId, planStatus: 'none' }),
-    Student.countDocuments({ libraryId, expiryDate: { $gte: today, $lte: in30Days }, planStatus: 'active' }),
+    Student.countDocuments({ libraryId, expiryDate: { $gte: today, $lte: thirtyDaysOut }, planStatus: 'active' }),
     Student.countDocuments({ libraryId, planStatus: 'expired' }),
     Attendance.countDocuments({ libraryId, date: { $gte: today, $lte: todayEnd } }),
     Payment.aggregate([
@@ -52,7 +52,8 @@ exports.getAdminDashboardData = async (libraryId) => {
     students: { total: totalStudents, active: activeStudents, trial: trialStudents, expiringIn30Days: expiringMemberships, expired: expiredMemberships },
     today:    { attendance: todayAttendance, collection: todayCollection[0]?.total || 0 },
     fees:     { pendingTotal: pendingFees[0]?.total || 0 },
-    seats, recentPayments,
+    seats,
+    recentPayments,
     monthlyCollection: monthlyCollection.reverse(),
   };
 };
@@ -93,14 +94,14 @@ exports.getSuperAdminDashboardData = async () => {
     Seat.aggregate([{ $match: { status: 'occupied', isDeleted: false } }, { $count: 'total' }]),
   ]);
 
-  const M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return {
     libraries: { total: totalLibraries, active: activeLibraries, pending: pendingLibraries, suspended: suspendedLibraries, rejected: rejectedLibraries },
     totalStudents, activeStudents,
     totalRevenue: totalRevenue[0]?.total || 0,
     occupiedSeats: occupiedSeats[0]?.total || 0,
     recentLibraries,
-    monthlyRevenue: monthlyRevenue.map(r => ({ label: `${M[r._id.month-1]} ${r._id.year}`, total: r.total })),
-    libraryTrend:   libraryTrend.map(r   => ({ label: `${M[r._id.month-1]} ${r._id.year}`, count: r.count })),
+    monthlyRevenue: monthlyRevenue.map(r => ({ label: `${MONTHS[r._id.month-1]} ${r._id.year}`, total: r.total })),
+    libraryTrend:   libraryTrend.map(r   => ({ label: `${MONTHS[r._id.month-1]} ${r._id.year}`, count: r.count })),
   };
 };

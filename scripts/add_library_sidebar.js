@@ -1,9 +1,9 @@
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-const SidebarMenu = require('../src/modules/sidebar/sidebar.model');
-const Permission = require('../src/modules/permissions/permission.model');
-const Role = require('../src/modules/roles/role.model');
+const SidebarMenu = require('../src/models/sidebar.model');
+const Permission = require('../src/models/permission.model');
+const Role = require('../src/models/role.model');
 
 const addLibrarySidebar = async () => {
     try {

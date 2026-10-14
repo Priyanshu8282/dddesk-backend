@@ -1,10 +1,10 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const Admin = require('../modules/admins/admin.model');
-const Role = require('../modules/roles/role.model');
-const Permission = require('../modules/permissions/permission.model');
-const SidebarMenu = require('../modules/sidebar/sidebar.model');
+const Admin = require('../models/admin.model');
+const Role = require('../models/role.model');
+const Permission = require('../models/permission.model');
+const SidebarMenu = require('../models/sidebar.model');
 const config = require('../config/config');
 
 const permissionsData = [

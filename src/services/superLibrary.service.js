@@ -1,9 +1,9 @@
-const Library      = require('../modules/libraries/library.model');
-const Admin        = require('../modules/admins/admin.model');
-const Student      = require('../modules/students/student.model');
-const PlatformPlan = require('../modules/platformPlans/platformPlan.model');
-const AuditLog     = require('../modules/audit/auditLog.model');
-const Role         = require('../modules/roles/role.model');
+const Library      = require('../models/library.model');
+const Admin        = require('../models/admin.model');
+const Student      = require('../models/student.model');
+const PlatformPlan = require('../models/platformPlan.model');
+const AuditLog     = require('../models/auditLog.model');
+const Role         = require('../models/role.model');
 
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 

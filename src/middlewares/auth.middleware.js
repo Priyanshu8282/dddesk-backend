@@ -1,24 +1,23 @@
 const jwt = require('jsonwebtoken');
-const Admin = require('../modules/admins/admin.model');
-const Role = require('../modules/roles/role.model');
+const Admin = require('../models/admin.model');
+const Role = require('../models/role.model');
 const config = require('../config/config');
 
 const Authentication = async (req, res, next) => {
     try {
         const token = req.headers.authorization?.split(' ')[1];
         if (!token) {
-            return res.status(401).json({ message: 'Authentication required' });
+            return res.status(401).json({ success: false, code: 401, message: 'Authentication required' });
         }
 
         const decoded = jwt.verify(token, config.jwt.secret);
-        console.log('Decoded Token:', decoded);
         let user;
 
         if (decoded.type === 'student') {
-            const Student = require('../modules/students/student.model');
+            const Student = require('../models/student.model');
             user = await Student.findById(decoded.id).populate('libraryId');
             if (!user || user.isDeleted) {
-                return res.status(401).json({ message: 'Student not found or inactive' });
+                return res.status(401).json({ success: false, code: 401, message: 'Student not found or inactive' });
             }
             user.userType = 'student';
         } else {
@@ -30,12 +29,10 @@ const Authentication = async (req, res, next) => {
                 })
                 .populate('libraryId');
             if (!user || !user.status) {
-                return res.status(401).json({ message: 'User not found or inactive' });
+                return res.status(401).json({ success: false, code: 401, message: 'User not found or inactive' });
             }
             // user.userType is already defined in the model
         }
-
-        console.log('User Found:', user ? user._id : 'NONE');
 
         // Attach permissions to request for easy access in middleware
         req.user = user;
@@ -45,8 +42,7 @@ const Authentication = async (req, res, next) => {
 
         next();
     } catch (error) {
-        console.error('Auth Middleware Error:', error);
-        return res.status(401).json({ message: 'Invalid token' });
+        return res.status(401).json({ success: false, code: 401, message: 'Invalid or expired token' });
     }
 };
 

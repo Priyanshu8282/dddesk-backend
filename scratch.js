@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const Payment = require('./src/modules/payments/payment.model');
+const Payment = require('./src/models/payment.model');
 require('dotenv').config();
 
 async function test() {

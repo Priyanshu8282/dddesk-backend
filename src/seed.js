@@ -1,10 +1,10 @@
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-const SidebarMenu = require('./modules/sidebar/sidebar.model');
-const Permission = require('./modules/permissions/permission.model');
-const Role = require('./modules/roles/role.model');
-const Admin = require('./modules/admins/admin.model');
+const SidebarMenu = require('./models/sidebar.model');
+const Permission = require('./models/permission.model');
+const Role = require('./models/role.model');
+const Admin = require('./models/admin.model');
 
 const seedDB = async () => {
     try {
@@ -87,7 +87,7 @@ const seedDB = async () => {
         });
 
         const libraryAdminRole = await Role.create({
-            name: 'Admin
+            name: 'Admin',
             isDefault: true,
             status: true,
             sidebarMenuIds: allMenus.map(m => m._id),
@@ -101,7 +101,7 @@ const seedDB = async () => {
             sidebarMenuIds: [],
             permissionIds: []
         });
-        console.log('Created Super Admin, Adminaff roles.');
+        console.log('Created Super Admin, Admin, and Staff roles.');
 
         // 4. Create Default Super Admin
         await Admin.create({
