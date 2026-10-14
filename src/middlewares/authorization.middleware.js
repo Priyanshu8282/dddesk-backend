@@ -11,9 +11,10 @@ const Authorization = async (req, res, next) => {
                 return next();
             }
 
-            return res.status(401).json({
+            return res.status(403).json({
                 success: false,
-                message: `You do not have sufficient permissions to perform this action. Please contact your administrator for permissions.`
+                code: 403,
+                message: 'You do not have sufficient permissions to perform this action. Please contact your administrator for permissions.'
             });
         }
 
@@ -47,8 +48,9 @@ const Authorization = async (req, res, next) => {
             const normalizedAction = actionSegment.replace(/s$/, '');
             if (normalizedRoute === normalizedAction) return true;
 
-            // Special case: Allow update-status if any update- permission is present
-            if (actionSegment === 'update-status' && route.startsWith('update-')) return true;
+            // update-status is governed by the update permission of the same resource (update-admin),
+            // never by an unrelated update-* permission such as update-student
+            if (actionSegment === 'update-status' && route === 'update-admin') return true;
             
             return false;
         });

@@ -1,20 +1,24 @@
 const express = require('express');
-const router = express.Router();
 const noticeController = require('../../controllers/notice.controller');
 const upload = require('../../middlewares/upload.middleware');
 const validate = require('../../middlewares/validate.middleware');
-const { noticeValidation } = require('../../validations');
+const { requireStaff, requireStudent, requirePermission } = require('../../middlewares/access.middleware');
+const { noticeValidation: v } = require('../../validations');
 
-// Admin-facing endpoints
-router.post('/', upload.single('media'), validate(noticeValidation.createNotice), noticeController.createNotice);
-router.get('/', noticeController.getNotices);
-router.get('/:id', noticeController.getNoticeById);
-router.put('/toggle/:id', noticeController.toggleNoticeActive);
-router.put('/:id', upload.single('media'), noticeController.updateNotice);
-router.delete('/:id', noticeController.deleteNotice);
+const router = express.Router();
 
-// Student-facing endpoints
-router.get('/student', noticeController.getNoticesForStudent);
-router.post('/view/:id', noticeController.markNoticeViewed);
+// ── Student-facing (static paths before /:id) ───────────────────────────────
+router.get('/student', requireStudent, noticeController.getNoticesForStudent);
+router.post('/view/:id', requireStudent, validate(v.idParam), noticeController.markNoticeViewed);
+
+// ── Staff-only management ───────────────────────────────────────────────────
+router.post('/', requireStaff, requirePermission('content.create'), upload.single('media'), validate(v.createNotice), noticeController.createNotice);
+router.get('/', requireStaff, requirePermission('content.view'), validate(v.listNotices), noticeController.getNotices);
+router.put('/toggle/:id', requireStaff, requirePermission('content.publish'), validate(v.idParam), noticeController.toggleNoticeActive);
+router.patch('/:id/publish', requireStaff, requirePermission('content.publish'), validate(v.idParam), noticeController.publishNotice);
+router.patch('/:id/unpublish', requireStaff, requirePermission('content.publish'), validate(v.idParam), noticeController.unpublishNotice);
+router.get('/:id', requireStaff, requirePermission('content.view'), validate(v.idParam), noticeController.getNoticeById);
+router.put('/:id', requireStaff, requirePermission('content.create'), upload.single('media'), validate(v.updateNotice), noticeController.updateNotice);
+router.delete('/:id', requireStaff, requirePermission('content.publish'), validate(v.idParam), noticeController.deleteNotice);
 
 module.exports = router;

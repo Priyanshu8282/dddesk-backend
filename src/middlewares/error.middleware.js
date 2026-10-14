@@ -1,6 +1,7 @@
 const ApiError = require('../utils/ApiError');
 
 const errorHandler = (err, req, res, next) => {
+    require('./upload.middleware').cleanupUploadsOnError(req, res);
     let statusCode = err.statusCode || err.status;
     let message = err.message;
 

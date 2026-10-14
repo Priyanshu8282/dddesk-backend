@@ -2,9 +2,10 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const adminSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    password: { type: String, required: true },
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    // Never selected by default; login/change-password use .select('+password')
+    password: { type: String, required: true, select: false },
 
     userType: { 
         type: String, 
@@ -14,6 +15,9 @@ const adminSchema = new mongoose.Schema({
     },
 
     roleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Role' },
+
+    // Branches this staff member operates in (empty = all branches of the library)
+    branchIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Branch' }],
 
     // 🔹 Contact Info
     mobile: {
@@ -49,9 +53,14 @@ const adminSchema = new mongoose.Schema({
     isDeleted: { type: Boolean, default: false },
 
     lastLogin: Date,
+    // Tokens issued before this instant are rejected (set on password reset so a stolen session dies)
+    tokensValidAfter: { type: Date },
     profileImage: String,
 
-    otp: { type: String },
+    // OTP state (otp is stored as a SHA-256 hash)
+    otp: { type: String, select: false },
+    otpExpires: { type: Date, select: false },
+    otpAttempts: { type: Number, default: 0, select: false },
     fcmTokens: [{ type: String }],
     libraryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Library' }, // Links user to the library institution
     tenantId: { type: mongoose.Schema.Types.ObjectId }, // For future SaaS scalability
@@ -59,8 +68,17 @@ const adminSchema = new mongoose.Schema({
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
 }, {
-    timestamps: true
+    timestamps: true,
+    toJSON: {
+        transform: (doc, ret) => { delete ret.password; delete ret.otp; delete ret.otpExpires; delete ret.otpAttempts; return ret; }
+    },
+    toObject: {
+        transform: (doc, ret) => { delete ret.password; delete ret.otp; delete ret.otpExpires; delete ret.otpAttempts; return ret; }
+    }
 });
+
+adminSchema.index({ libraryId: 1, userType: 1, isDeleted: 1 });
+adminSchema.index({ mobile: 1 });
 
 // Middleware for soft delete filtering
 adminSchema.pre(['find', 'findOne', 'countDocuments'], function () {
@@ -74,7 +92,7 @@ adminSchema.pre('save', async function () {
     }
 });
 
-// Compare password method
+// Compare password method (requires the document to be loaded with +password)
 adminSchema.methods.comparePassword = async function (candidatePassword) {
     return await bcrypt.compare(candidatePassword, this.password);
 };

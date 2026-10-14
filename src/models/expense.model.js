@@ -7,6 +7,7 @@ const expenseSchema = new mongoose.Schema({
         required: true,
         index: true
     },
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
     title: { type: String, required: true, trim: true },
     category: {
         type: String,

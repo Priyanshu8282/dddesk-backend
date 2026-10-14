@@ -1,302 +1,87 @@
+const catchAsync = require('../utils/catchAsync');
+const ApiError = require('../utils/ApiError');
 const libraryService = require('../services/library.service');
+const superLibraryService = require('../services/superLibrary.service');
+const authService = require('../services/auth.service');
+const auditService = require('../services/audit.service');
+const audit = require('../utils/audit');
+const { tenantId } = require('../middlewares/access.middleware');
 
-// Create a new library registration
-exports.createLibrary = async (req, res, next) => {
-    try {
-        const creatorInfo = req.user ? { id: req.user.id } : null;
-        const libraryData = { ...req.body };
-
-        // Parse settings/workingHours if it comes as a string (from form-data)
-        if (typeof libraryData.settings === 'string') {
-            try {
-                libraryData.settings = JSON.parse(libraryData.settings);
-            } catch (e) {
-                // Keep as is or handle error
-            }
-        }
-        if (typeof libraryData.workingHours === 'string') {
-            try {
-                libraryData.workingHours = JSON.parse(libraryData.workingHours);
-            } catch (e) {
-                // Keep as is or handle error
-            }
-        }
-
-        // Handle file uploads
-        if (req.files) {
-            if (req.files.profileImage) {
-                libraryData.profileImage = req.files.profileImage[0].path;
-            }
-            if (req.files.logo) {
-                libraryData.logo = req.files.logo[0].path;
-            }
-            if (req.files.photos) {
-                libraryData.photos = req.files.photos.map(file => file.path);
-            }
-        }
-
-        const library = await libraryService.registerLibrary(libraryData, creatorInfo);
-
-        res.status(201).json({
-            success: true,
-            message: "Library registered successfully",
-            data: library
-        });
-    } catch (error) {
-        next(error);
-    }
+const requireTenant = (req) => {
+    const id = tenantId(req);
+    if (!id) throw new ApiError(400, 'No library associated with this account');
+    return id;
 };
 
-// Library Login
-exports.loginLibrary = async (req, res, next) => {
-    try {
-        const { mobile, email, password } = req.body;
-        const identifier = mobile || email;
-        const result = await libraryService.loginLibrary(identifier, password);
+// GET /libraries/profile
+exports.getProfile = catchAsync(async (req, res) => {
+    const library = await libraryService.getProfile(requireTenant(req));
+    res.status(200).json({ success: true, message: 'Profile fetched successfully', data: library });
+});
 
-        res.status(200).json({
-            success: true,
-            message: "Library login successful",
-            data: result.library || result,
-            ...result
-        });
-    } catch (error) {
-        next(error);
+// PUT /libraries/profile
+exports.updateProfile = catchAsync(async (req, res) => {
+    const library = await libraryService.updateProfile(req, requireTenant(req));
+    res.status(200).json({ success: true, message: 'Profile updated successfully', data: library });
+});
+
+// PATCH /libraries/change-password (current password required; hashed once by the Admin model hook)
+exports.changePassword = catchAsync(async (req, res) => {
+    await authService.changePassword(req.user._id, req.userType, req.body.currentPassword, req.body.newPassword);
+    await audit(req, 'auth.password_change', 'Admin', req.user._id);
+    res.status(200).json({ success: true, message: 'Password updated successfully' });
+});
+
+// GET /libraries/my-plan
+exports.getMyPlan = catchAsync(async (req, res) => {
+    const data = await libraryService.getMyPlan(requireTenant(req));
+    res.json({ success: true, message: 'Plan retrieved successfully', data });
+});
+
+// GET /libraries/audit-logs (owner: own library only)
+exports.getAuditLogs = catchAsync(async (req, res) => {
+    const { data, pagination } = await auditService.queryLogs(req.query, { forceLibraryId: requireTenant(req) });
+    res.json({ success: true, message: 'Audit logs retrieved successfully', data, pagination });
+});
+
+// ---- Superadmin library management (legacy endpoints under /libraries, delegating to superLibrary service) ----
+
+exports.getAllLibraries = catchAsync(async (req, res) => {
+    const data = await superLibraryService.listLibraries(req.query);
+    res.json({ success: true, message: 'Libraries retrieved successfully', data: data.libraries, ...data });
+});
+
+exports.getLibraryById = catchAsync(async (req, res) => {
+    const data = await superLibraryService.getLibraryById(req.params.id);
+    res.json({ success: true, message: 'Library retrieved successfully', data });
+});
+
+exports.updateLibrary = catchAsync(async (req, res) => {
+    const lib = await superLibraryService.updateLibrary(req.params.id, req.body, req.user._id, req.ip);
+    res.json({ success: true, message: 'Library updated successfully', data: lib });
+});
+
+exports.deleteLibrary = catchAsync(async (req, res) => {
+    await superLibraryService.deleteLibrary(req.params.id, req.user._id, req.ip);
+    res.json({ success: true, message: 'Library deleted successfully' });
+});
+
+// PATCH /libraries/status/:id  body: { status: 'active'|'suspended'|'inactive'|'rejected', reason? }
+// Library status only moves through the superadmin workflow (approve / reject / suspend / reinstate).
+exports.updateLibraryStatus = catchAsync(async (req, res) => {
+    const { status, reason } = req.body;
+    const current = await superLibraryService.getLibraryById(req.params.id);
+    let lib;
+    if (status === 'active') {
+        lib = current.status === 'pending'
+            ? (await superLibraryService.approveLibrary(req.params.id, req.user._id, req.ip)).library
+            : await superLibraryService.reinstateLibrary(req.params.id, req.user._id, req.ip);
+    } else if (status === 'suspended' || status === 'inactive') {
+        lib = await superLibraryService.suspendLibrary(req.params.id, reason, req.user._id, req.ip);
+    } else if (status === 'rejected') {
+        lib = await superLibraryService.rejectLibrary(req.params.id, reason, req.user._id, req.ip);
+    } else {
+        throw new ApiError(400, "status must be one of 'active', 'suspended', 'inactive', 'rejected'");
     }
-};
-
-// Get all libraries with search and pagination
-exports.getAllLibraries = async (req, res, next) => {
-    try {
-        const { page = 1, limit = 10, search = "", status = "" } = req.query;
-
-        const filter = { isDeleted: false };
-        if (status) filter.status = status;
-        if (search) {
-            filter.$or = [
-                { name: { $regex: search, $options: "i" } },
-                { ownerName: { $regex: search, $options: "i" } },
-                { mobile: { $regex: search, $options: "i" } },
-                { email: { $regex: search, $options: "i" } }
-            ];
-        }
-
-        const result = await libraryService.queryLibraries(filter, { page, limit });
-
-        res.status(200).json({
-            success: true,
-            message: "Libraries retrieved successfully",
-            data: result.results || result,
-            ...result
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// Get single library
-exports.getLibraryById = async (req, res, next) => {
-    try {
-        const library = await libraryService.getLibraryById(req.params.id);
-        res.status(200).json({
-            success: true,
-            message: "Library retrieved successfully",
-            data: library
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// Update library
-exports.updateLibrary = async (req, res, next) => {
-    try {
-        const updateData = { ...req.body };
-
-        // Parse settings/workingHours if it comes as a string (from form-data)
-        if (typeof updateData.settings === 'string') {
-            try {
-                updateData.settings = JSON.parse(updateData.settings);
-            } catch (e) {
-                // Keep as is or handle error
-            }
-        }
-        if (typeof updateData.workingHours === 'string') {
-            try {
-                updateData.workingHours = JSON.parse(updateData.workingHours);
-            } catch (e) {
-                // Keep as is or handle error
-            }
-        }
-
-        // Handle file uploads
-        if (req.files) {
-            if (req.files.profileImage) {
-                updateData.profileImage = req.files.profileImage[0].path;
-            }
-            if (req.files.logo) {
-                updateData.logo = req.files.logo[0].path;
-            }
-            if (req.files.photos) {
-                updateData.photos = req.files.photos.map(file => file.path);
-            }
-        }
-
-        if (updateData.existingPhotos !== undefined) {
-            try {
-                const existing = JSON.parse(updateData.existingPhotos);
-                updateData.photos = updateData.photos ? [...existing, ...updateData.photos] : existing;
-            } catch (e) {
-                console.error("Error parsing existingPhotos", e);
-            }
-        }
-
-        if (updateData.profileImage === 'null' || updateData.profileImage === '' || updateData.profileImage === 'REMOVE_IMAGE' || updateData.profileImage === 'uploads/profiles/default-avatar.png') {
-            updateData.profileImage = null;
-        }
-        if (updateData.logo === 'null' || updateData.logo === '' || updateData.logo === 'REMOVE_IMAGE') {
-            updateData.logo = null;
-        }
-
-        const library = await libraryService.updateLibraryById(req.params.id, updateData);
-        res.status(200).json({
-            success: true,
-            message: "Library updated successfully",
-            data: library
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// Update library status
-exports.updateLibraryStatus = async (req, res, next) => {
-    try {
-        const { status } = req.body;
-        const library = await libraryService.updateStatus(req.params.id, status);
-
-        res.status(200).json({
-            success: true,
-            message: `Library status updated to ${status}`,
-            data: library
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// Soft delete library
-exports.deleteLibrary = async (req, res, next) => {
-    try {
-        await libraryService.deleteLibraryById(req.params.id);
-        res.status(200).json({
-            success: true,
-            message: "Library deleted successfully"
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-/**
- * Get logged in library profile
- */
-exports.getProfile = async (req, res, next) => {
-    try {
-        // req.user is already the Library document (populated) from the Authentication middleware
-        if (!req.user) {
-            return res.status(404).json({ success: false, message: "Profile not found" });
-        }
-
-        console.log('Fetching Profile for Library ID:', req.user._id);
-        console.log('Profile Data Sample:', { name: req.user.name, email: req.user.email });
-
-        res.status(200).json({
-            success: true,
-            message: "Profile fetched successfully",
-            data: req.user
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-/**
- * Update logged in library profile
- */
-exports.updateProfile = async (req, res, next) => {
-    try {
-        const updateData = { ...req.body };
-
-        // Parse settings/workingHours if it comes as a string (from form-data)
-        if (typeof updateData.settings === 'string') {
-            try {
-                updateData.settings = JSON.parse(updateData.settings);
-            } catch (e) {
-                // Keep as is or handle error
-            }
-        }
-        if (typeof updateData.workingHours === 'string') {
-            try {
-                updateData.workingHours = JSON.parse(updateData.workingHours);
-            } catch (e) {
-                // Keep as is or handle error
-            }
-        }
-
-        // Handle image removal flags
-        if (req.files) {
-            if (req.files.profileImage) {
-                updateData.profileImage = req.files.profileImage[0].path;
-            }
-            if (req.files.logo) {
-                updateData.logo = req.files.logo[0].path;
-            }
-            if (req.files.photos) {
-                updateData.photos = req.files.photos.map(file => file.path);
-            }
-        }
-
-        if (updateData.existingPhotos !== undefined) {
-            try {
-                const existing = JSON.parse(updateData.existingPhotos);
-                updateData.photos = updateData.photos ? [...existing, ...updateData.photos] : existing;
-            } catch (e) {
-                console.error("Error parsing existingPhotos", e);
-            }
-        }
-
-        if (updateData.profileImage === 'null' || updateData.profileImage === '' || updateData.profileImage === 'REMOVE_IMAGE' || updateData.profileImage === 'uploads/profiles/default-avatar.png') {
-            updateData.profileImage = null;
-        }
-        if (updateData.logo === 'null' || updateData.logo === '' || updateData.logo === 'REMOVE_IMAGE') {
-            updateData.logo = null;
-        }
-
-        const library = await libraryService.updateLibraryById(req.user._id, updateData);
-        res.status(200).json({
-            success: true,
-            message: "Profile updated successfully",
-            data: library
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-/**
- * Change library password
- */
-exports.changePassword = async (req, res, next) => {
-    try {
-        const { newPassword } = req.body;
-        if (!newPassword) {
-            return res.status(400).json({ success: false, message: 'New password is required' });
-        }
-        
-        await libraryService.changePassword(req.user._id, newPassword);
-        res.status(200).json({ success: true, message: 'Password updated successfully' });
-    } catch (error) {
-        next(error);
-    }
-};
+    res.json({ success: true, message: `Library status updated to ${lib.status}`, data: lib });
+});

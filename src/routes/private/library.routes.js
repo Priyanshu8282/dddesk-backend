@@ -1,34 +1,34 @@
 const express = require('express');
-const catchAsync = require('../../utils/catchAsync');
-const adminController = require('../../controllers/admin.controller');
+const ctrl = require('../../controllers/library.controller');
 const multerUpload = require('../../middlewares/upload.middleware');
-const Library = require('../../models/library.model');
-const Authorization = require('../../middlewares/authorization.middleware');
+const validate = require('../../middlewares/validate.middleware');
+const { requireStaff, requireOwner, requireSuperAdmin, requirePermission } = require('../../middlewares/access.middleware');
+const libraryValidation = require('../../validations/library.validation');
+const v = require('../../validations/platform.validation');
 
 const router = express.Router();
 
-// Profile management for current library
-router.get('/profile', adminController.getAdminById);
-router.put('/profile', multerUpload.any(), adminController.updateAdmin);
-router.patch('/change-password', adminController.changePassword);
+// ---- Library owner / staff (own tenant; students never reach these) ----
 
-// My subscription plan details
-router.get('/my-plan', catchAsync(async (req, res) => {
-    const libraryId = req.user.libraryId || req.user._id;
-    const lib = await Library.findById(libraryId)
-        .select('subscriptionPlan subscriptionPlanId subscriptionExpiry planLimits')
-        .populate('subscriptionPlanId', 'name description monthlyPrice annualPrice features trialDays graceDays');
-    if (!lib) return res.status(404).json({ success: false, message: 'Library not found' });
-    const now = new Date();
-    const isExpired = lib.subscriptionExpiry ? lib.subscriptionExpiry < now : false;
-    res.json({ success: true, data: { ...lib.toObject(), isExpired } });
-}));
+// Profile & settings (spec section 7)
+router.get('/profile', requireStaff, ctrl.getProfile);
+router.put('/profile', requireStaff, requirePermission('settings.manage', 'UPDATE_LIBRARY'),
+    multerUpload.any(), validate(libraryValidation.updateProfile), ctrl.updateProfile);
 
-// Admin management
-router.get('/all', adminController.getLibraries);
-router.get('/:id', adminController.getAdminById);
-router.put('/:id', Authorization, multerUpload.any(), adminController.updateAdmin);
-router.patch('/status/:id', Authorization, adminController.updateAdminStatus);
-router.delete('/:id', Authorization, adminController.deleteAdmin);
+// Own account password (current password required)
+router.patch('/change-password', requireStaff, validate(libraryValidation.changePassword), ctrl.changePassword);
+
+// Subscription state (trial / active / grace / expired) and usage vs plan limits
+router.get('/my-plan', requireStaff, ctrl.getMyPlan);
+
+// Owner audit trail for their own library
+router.get('/audit-logs', requireOwner, validate(libraryValidation.auditQuery), ctrl.getAuditLogs);
+
+// ---- Platform level library management (superadmin only) ----
+router.get('/all', requireSuperAdmin, ctrl.getAllLibraries);
+router.patch('/status/:id', requireSuperAdmin, validate(v.idParam), ctrl.updateLibraryStatus);
+router.get('/:id', requireSuperAdmin, validate(v.idParam), ctrl.getLibraryById);
+router.put('/:id', requireSuperAdmin, validate(v.superUpdateLibrary), ctrl.updateLibrary);
+router.delete('/:id', requireSuperAdmin, validate(v.idParam), ctrl.deleteLibrary);
 
 module.exports = router;

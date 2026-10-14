@@ -6,8 +6,13 @@ const Permission = require('./models/permission.model');
 const Role = require('./models/role.model');
 const Admin = require('./models/admin.model');
 
+// DESTRUCTIVE dev-only reset (wipes admins, roles, permissions, menus). For normal setup use `npm run seed` (idempotent).
 const seedDB = async () => {
     try {
+        if (process.env.CONFIRM_RESET !== 'yes') {
+            console.error('Refusing to wipe the database. Set CONFIRM_RESET=yes to run this destructive reset, or use npm run seed.');
+            process.exit(1);
+        }
         await mongoose.connect(process.env.MONGODB_URL || 'mongodb://localhost:27017/MgiBasket');
         console.log('Connected to MongoDB');
 

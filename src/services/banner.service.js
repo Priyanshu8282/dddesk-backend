@@ -1,104 +1,123 @@
+const mongoose = require('mongoose');
 const Banner = require('../models/banner.model');
 const ApiError = require('../utils/ApiError');
-const fs = require('fs');
+const escapeRegex = require('../utils/escapeRegex');
+const pick = require('../utils/pick');
+const { branchVisibility } = require('../utils/branchScope');
+const { startOfDayIST, endOfDayIST } = require('../utils/time');
 
-/**
- * Create a banner
- */
-const createBanner = async (bannerBody, reqFile) => {
-    if (reqFile) {
-        bannerBody.image = reqFile.path;
-    }
-    const banner = await Banner.create(bannerBody);
-    return banner;
+// 'YYYY-MM-DD' (date-only) means the whole IST day; full timestamps are kept as given
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const parseStart = (v) => (DATE_ONLY.test(String(v)) ? startOfDayIST(new Date(v)) : new Date(v));
+const parseEnd = (v) => (DATE_ONLY.test(String(v)) ? endOfDayIST(new Date(v)) : new Date(v));
+
+const FIELDS = ['title', 'description', 'bannerType', 'ctaText', 'ctaUrl', 'displayLocation', 'displayOrder', 'priority', 'isActive', 'branchId']; // branchId validated by the controller (null = all branches)
+
+const assertId = (id) => {
+    if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid banner ID');
 };
 
-/**
- * Query for banners
- */
-const queryBanners = async (filter, options = {}) => {
-    const { page = 1, limit = 10, search = '' } = options;
-    const skip = (page - 1) * limit;
+const checkDates = (start, end) => {
+    if (start && end && new Date(start) > new Date(end)) throw new ApiError(400, 'End date must not be before the start date');
+};
 
-    const query = { ...filter, isDeleted: false };
-    if (search) {
-        query.title = { $regex: search, $options: 'i' };
-    }
+// Banner image must be a real image
+const imagePath = (file) => {
+    if (!file) return undefined;
+    if (file.mediaKind !== 'image') throw new ApiError(400, 'Banner must be an image');
+    return file.path;
+};
 
-    const banners = await Banner.find(query)
-        .populate('createdBy', 'name userType roleId')
-        .sort({ displayOrder: 1, createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit));
+const createBanner = async (libraryId, body, file, creatorId) => {
+    const data = pick(body, FIELDS);
+    if (body.redirectUrl && !data.ctaUrl) data.ctaUrl = body.redirectUrl; // legacy field
+    data.redirectUrl = data.ctaUrl;
+    data.startDate = parseStart(body.startDate);
+    data.endDate = parseEnd(body.endDate);
+    checkDates(data.startDate, data.endDate);
+    const image = imagePath(file);
+    if (!image) throw new ApiError(400, 'Image is required for banner');
+    return Banner.create({ ...data, image, libraryId, createdBy: creatorId });
+};
 
-    const totalResults = await Banner.countDocuments(query);
-    const totalPages = Math.ceil(totalResults / limit);
+const sortSpec = { priority: -1, displayOrder: 1, createdAt: -1 };
 
+// `scope` = branch filter fragment from utils/branchScope.branchFilter(req): banners of those branches + all-branch banners
+const queryBanners = async (libraryId, { page = 1, limit = 10, search = '' } = {}, scope = {}) => {
     const now = new Date();
-    const activeCount = await Banner.countDocuments({ ...filter, isActive: true, endDate: { $gte: now } });
-    const expiredCount = await Banner.countDocuments({ ...filter, endDate: { $lt: now } });
+    const query = { libraryId };
+    if (scope.branchId) query.$and = [{ $or: [{ branchId: null }, scope] }];
+    if (search) query.title = new RegExp(escapeRegex(String(search).trim()), 'i');
 
-    const summary = {
-        total: totalResults,
-        active: activeCount,
-        expired: expiredCount,
-        totalViews: 0
-    };
-
+    const p = Math.max(parseInt(page, 10) || 1, 1);
+    const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    const [banners, totalResults, active, expired] = await Promise.all([
+        Banner.find(query).populate('createdBy', 'name userType').sort(sortSpec).skip((p - 1) * l).limit(l).lean(),
+        Banner.countDocuments(query),
+        Banner.countDocuments({ libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now } }),
+        Banner.countDocuments({ libraryId, endDate: { $lt: now } })
+    ]);
     return {
-        results: banners,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        totalPages,
-        totalResults,
-        summary
+        results: banners, page: p, limit: l, totalPages: Math.ceil(totalResults / l), totalResults,
+        summary: { total: totalResults, active, expired, totalViews: 0 }
     };
 };
 
-/**
- * Get banner by id
- */
 const getBannerById = async (id, libraryId) => {
-    const banner = await Banner.findOne({ _id: id, libraryId, isDeleted: false });
-    if (!banner) {
-        throw new ApiError(404, 'Banner not found');
-    }
+    assertId(id);
+    const banner = await Banner.findOne({ _id: id, libraryId });
+    if (!banner) throw new ApiError(404, 'Banner not found');
     return banner;
 };
 
-/**
- * Update banner by id
- */
-const updateBannerById = async (id, libraryId, updateBody, reqFile) => {
+const updateBannerById = async (id, libraryId, body, file) => {
     const banner = await getBannerById(id, libraryId);
-    
-    if (reqFile) {
-        // Option to delete old image if required
-        // if (banner.image && fs.existsSync(banner.image)) {
-        //     fs.unlinkSync(banner.image);
-        // }
-        updateBody.image = reqFile.path;
-    }
-
-    Object.assign(banner, updateBody);
+    const set = pick(body, FIELDS);
+    if (body.redirectUrl && body.ctaUrl === undefined) set.ctaUrl = body.redirectUrl;
+    if (set.ctaUrl !== undefined) set.redirectUrl = set.ctaUrl;
+    if (body.startDate) set.startDate = parseStart(body.startDate);
+    if (body.endDate) set.endDate = parseEnd(body.endDate);
+    checkDates(set.startDate || banner.startDate, set.endDate || banner.endDate);
+    const image = imagePath(file);
+    if (image) set.image = image;
+    banner.set(set);
     await banner.save();
     return banner;
 };
 
-/**
- * Delete banner by id (Soft Delete)
- */
+const toggleBanner = async (id, libraryId) => {
+    assertId(id);
+    const banner = await Banner.findOneAndUpdate({ _id: id, libraryId }, [{ $set: { isActive: { $not: '$isActive' } } }], { new: true });
+    if (!banner) throw new ApiError(404, 'Banner not found');
+    return banner;
+};
+
 const deleteBannerById = async (id, libraryId) => {
-    const banner = await getBannerById(id, libraryId);
-    banner.isDeleted = true;
-    await banner.save();
+    assertId(id);
+    const banner = await Banner.findOneAndUpdate({ _id: id, libraryId }, { $set: { isDeleted: true, isActive: false } }, { new: true });
+    if (!banner) throw new ApiError(404, 'Banner not found');
     return banner;
+};
+
+/**
+ * Banners currently live for a library, highest priority first.
+ * location: 'website' | 'app' (banners marked 'both' always match); omit for any.
+ * Safe to call from public (unauthenticated) code: only presentation fields are returned.
+ */
+// branchId: undefined = no branch filter; null = only all-branch banners; id = all-branch + that branch's banners
+const getActiveBanners = async (libraryId, location, branchId) => {
+    if (!libraryId || !mongoose.Types.ObjectId.isValid(libraryId)) return [];
+    const now = new Date();
+    const filter = {
+        libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now }
+    };
+    if (location === 'website' || location === 'app') filter.displayLocation = { $in: [location, 'both'] };
+    if (branchId !== undefined) filter.$and = [branchVisibility(branchId)];
+    return Banner.find(filter)
+        .select('title description bannerType image ctaText ctaUrl redirectUrl displayLocation priority displayOrder startDate endDate')
+        .sort(sortSpec).lean();
 };
 
 module.exports = {
-    createBanner,
-    queryBanners,
-    getBannerById,
-    updateBannerById,
-    deleteBannerById
+    createBanner, queryBanners, getBannerById, updateBannerById, toggleBanner, deleteBannerById, getActiveBanners
 };

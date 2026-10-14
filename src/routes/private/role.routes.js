@@ -1,12 +1,18 @@
 const express = require('express');
 const roleController = require('../../controllers/role.controller');
+const validate = require('../../middlewares/validate.middleware');
+const { requireStaff, requireOwner, requirePermission } = require('../../middlewares/access.middleware');
+const v = require('../../validations/platform.validation');
 
 const router = express.Router();
 
-router.post('/create-role', roleController.createRole);
-router.get('/get-roles', roleController.getRoles);
-router.get('/get-role/:id', roleController.getRoleById);
-router.put('/update-role/:id', roleController.updateRole);
-router.delete('/delete-role/:id', roleController.deleteRole);
+// Reading roles: owners, superadmin, and staff holding a role permission (needed for staff forms)
+router.get('/get-roles', requireStaff, requirePermission('VIEW_ROLES', 'staff.view', 'staff.create', 'staff.edit'), roleController.getRoles);
+router.get('/get-role/:id', requireStaff, requirePermission('VIEW_ROLES', 'staff.view', 'staff.create', 'staff.edit'), validate(v.idParam), roleController.getRoleById);
+
+// Writing roles: library owner (own tenant) or superadmin only
+router.post('/create-role', requireOwner, validate(v.createRole), roleController.createRole);
+router.put('/update-role/:id', requireOwner, validate(v.updateRole), roleController.updateRole);
+router.delete('/delete-role/:id', requireOwner, validate(v.idParam), roleController.deleteRole);
 
 module.exports = router;

@@ -21,6 +21,10 @@ const Setting = require('./setting.model');
 const SidebarMenu = require('./sidebar.model');
 const Story = require('./story.model');
 const Student = require('./student.model');
+const Complaint = require('./complaint.model');
+const Coupon = require('./coupon.model');
+const Review = require('./review.model');
+const AiChat = require('./aiChat.model');
 
 module.exports = {
     // Primary exports
@@ -47,6 +51,10 @@ module.exports = {
     SidebarMenu,
     Story,
     Student,
+    Complaint,
+    Coupon,
+    Review,
+    AiChat,
 
     // Aliases for backward compatibility
     Admins: Admin,

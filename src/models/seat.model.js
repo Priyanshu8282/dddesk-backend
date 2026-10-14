@@ -7,6 +7,7 @@ const seatSchema = new mongoose.Schema({
         required: true,
         index: true
     },
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
     seatNumber: {
         type: String,
         required: true,
@@ -50,6 +51,11 @@ const seatSchema = new mongoose.Schema({
         type: Date,
         default: null
     },
+    // Temporary reservation (auto-expires via cron)
+    reservedFor: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', default: null },
+    reservedUntil: { type: Date, default: null },
+    reservedReason: { type: String, trim: true },
+    // Reason for blocked / maintenance status
     blockedReason: {
         type: String,
         trim: true
@@ -65,7 +71,12 @@ const seatSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Unique seat number per library
-seatSchema.index({ libraryId: 1, seatNumber: 1 }, { unique: true });
+// (partial: a soft-deleted seat's number can be reused)
+seatSchema.index(
+    { libraryId: 1, seatNumber: 1 },
+    { unique: true, partialFilterExpression: { isDeleted: false }, name: 'uniq_library_seat_active' }
+);
+seatSchema.index({ libraryId: 1, studentId: 1 });
 
 // Soft delete filter
 seatSchema.pre(['find', 'findOne', 'countDocuments'], function () {

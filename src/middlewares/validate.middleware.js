@@ -14,7 +14,10 @@ const validate = (schema) => (req, res, next) => {
 
         // Assign sanitized / coerced values back to request
         if (validated.body) req.body = validated.body;
-        if (validated.query) req.query = validated.query;
+        // Express 5: req.query is getter-only, so redefine it
+        if (validated.query) {
+            Object.defineProperty(req, 'query', { value: validated.query, writable: true, configurable: true, enumerable: true });
+        }
         if (validated.params) req.params = validated.params;
 
         return next();

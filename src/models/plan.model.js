@@ -44,7 +44,17 @@ const libraryPlanSchema = new mongoose.Schema({
         enum: ['standard', 'premium', 'window', 'ac', 'non-ac', 'custom', 'all']
     }],
 
+    // Shift / timing eligibility (e.g. Morning 06:00-14:00)
+    shiftName: { type: String, trim: true },
+    shiftStart: { type: String, trim: true },   // HH:mm
+    shiftEnd: { type: String, trim: true },     // HH:mm
+
+    // Renewal settings
+    allowRenewal: { type: Boolean, default: true },
+    autoRenewReminderDays: { type: Number, default: 3, min: 0 },
+
     status: { type: Boolean, default: true },
+    isArchived: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
 
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
@@ -68,7 +78,11 @@ libraryPlanSchema.pre('save', function () {
     this.finalPrice = Math.max(0, this.price - (this.discount || 0));
 });
 
-libraryPlanSchema.pre(['find', 'findOne'], function () {
+libraryPlanSchema.index({ libraryId: 1, isDeleted: 1, status: 1 });
+
+libraryPlanSchema.statics.DURATION_DAYS = DURATION_DAYS;
+
+libraryPlanSchema.pre(['find', 'findOne', 'countDocuments'], function () {
     this.where({ isDeleted: false });
 });
 

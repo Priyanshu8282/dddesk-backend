@@ -8,6 +8,8 @@ const createBranch = z.object({
         state: z.string().optional(),
         pincode: z.string().optional(),
         mobile: z.string().optional(),
+        managerId: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid manager id').optional().or(z.literal('')),
+        notes: z.string().max(500).optional(),
         email: z.string().email().optional().or(z.literal('')),
         maxStudents: z.coerce.number().optional().default(0),
         maxSeats: z.coerce.number().optional().default(0),

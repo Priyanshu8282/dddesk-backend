@@ -10,6 +10,12 @@ const storyValidation = require('./story.validation');
 const bannerValidation = require('./banner.validation');
 const expenseValidation = require('./expense.validation');
 const branchValidation = require('./branch.validation');
+const complaintValidation = require('./complaint.validation');
+const couponValidation = require('./coupon.validation');
+const reviewValidation = require('./review.validation');
+const reportValidation = require('./report.validation');
+const aiValidation = require('./ai.validation');
+const websiteValidation = require('./website.validation');
 
 module.exports = {
     authValidation,
@@ -23,5 +29,11 @@ module.exports = {
     storyValidation,
     bannerValidation,
     expenseValidation,
-    branchValidation
+    branchValidation,
+    complaintValidation,
+    couponValidation,
+    reviewValidation,
+    reportValidation,
+    aiValidation,
+    websiteValidation
 };

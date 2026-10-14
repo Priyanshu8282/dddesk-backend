@@ -12,8 +12,8 @@ exports.getLibraryById = catchAsync(async (req, res) => {
 });
 
 exports.approveLibrary = catchAsync(async (req, res) => {
-  const lib = await svc.approveLibrary(req.params.id, req.user._id, req.ip);
-  res.json({ success: true, message: 'Library approved', data: lib });
+  const { library, onboarding } = await svc.approveLibrary(req.params.id, req.user._id, req.ip);
+  res.json({ success: true, message: 'Library approved', data: library, onboarding });
 });
 
 exports.rejectLibrary = catchAsync(async (req, res) => {
@@ -32,7 +32,9 @@ exports.reinstateLibrary = catchAsync(async (req, res) => {
 });
 
 exports.assignPlan = catchAsync(async (req, res) => {
-  const { lib, planName } = await svc.assignPlan(req.params.id, req.body.planId, req.body.subscriptionExpiry, req.user._id, req.ip);
+  const { lib, planName } = await svc.assignPlan(
+    req.params.id, req.body.planId, req.body.subscriptionExpiry, req.user._id, req.ip, { isTrial: req.body.isTrial }
+  );
   res.json({ success: true, message: `Plan "${planName}" assigned to ${lib.name}`, data: lib });
 });
 
@@ -42,7 +44,7 @@ exports.getLibraryPlan = catchAsync(async (req, res) => {
 });
 
 exports.createLibrary = catchAsync(async (req, res) => {
-  const data = await svc.createLibrary(req.body, req.user._id, req.ip);
+  const data = await svc.createLibrary(req.body, req.user, req.ip);
   res.status(201).json({ success: true, message: 'Library created successfully', data });
 });
 
@@ -54,4 +56,17 @@ exports.updateLibrary = catchAsync(async (req, res) => {
 exports.deleteLibrary = catchAsync(async (req, res) => {
   await svc.deleteLibrary(req.params.id, req.user._id, req.ip);
   res.json({ success: true, message: 'Library deleted' });
+});
+
+exports.changeSlug = catchAsync(async (req, res) => {
+  const lib = await svc.changeSlug(req.params.id, req.body.slug, req.user._id, req.ip);
+  res.json({
+    success: true, message: 'Slug updated. The previous address will keep redirecting.',
+    data: { id: lib._id, slug: lib.slug, previousSlugs: lib.previousSlugs, subdomain: lib.subdomain, websiteUrl: lib.websiteUrl },
+  });
+});
+
+exports.impersonate = catchAsync(async (req, res) => {
+  const data = await svc.impersonate(req.params.id, req.user, req.ip);
+  res.json({ success: true, message: 'Impersonation token issued (valid for 30 minutes)', data });
 });

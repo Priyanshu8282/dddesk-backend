@@ -17,7 +17,7 @@ if (!admin.apps.length) {
             });
             console.log('Firebase Admin initialized successfully from environment variable.');
         } catch (error) {
-            console.error('Failed to initialize Firebase Admin from FIREBASE_SERVICE_ACCOUNT env var:', error);
+            console.error('Failed to initialize Firebase Admin from FIREBASE_SERVICE_ACCOUNT env var:', error.message);
         }
     } else if (fs.existsSync(serviceAccountPath)) {
         try {
@@ -27,146 +27,121 @@ if (!admin.apps.length) {
             });
             console.log('Firebase Admin initialized successfully from file.');
         } catch (error) {
-            console.error('Failed to initialize Firebase Admin from file:', error);
+            console.error('Failed to initialize Firebase Admin from file:', error.message);
         }
     } else {
         console.warn(`Firebase service account file not found at ${serviceAccountPath} and FIREBASE_SERVICE_ACCOUNT environment variable is not set. Push notifications will not work.`);
     }
 }
 
+const FCM_BATCH = 500; // sendEachForMulticast limit
+const INVALID_TOKEN_CODES = new Set([
+    'messaging/registration-token-not-registered',
+    'messaging/invalid-registration-token',
+    'messaging/invalid-argument'
+]);
+
+const isConfigured = () => admin.apps.length > 0;
+
+// FCM data payload values must all be strings
+const stringifyData = (data = {}) =>
+    Object.fromEntries(
+        Object.entries(data || {})
+            .filter(([, v]) => v !== undefined && v !== null)
+            .map(([k, v]) => [k, typeof v === 'string' ? v : JSON.stringify(v)])
+    );
+
+const baseMessage = (title, body, data) => ({
+    notification: { title, body },
+    data: stringifyData(data),
+    android: { priority: 'high', notification: { sound: 'default', channelId: 'dddesk_alerts' } },
+    apns: { payload: { aps: { sound: 'default' } } }
+});
+
+// Remove tokens FCM reported as dead from every user that holds them
+const pruneInvalidTokens = async (tokens) => {
+    if (!tokens.length) return;
+    try {
+        const Admin = require('../models/admin.model');
+        const Student = require('../models/student.model');
+        await Promise.all([
+            Admin.updateMany({ fcmTokens: { $in: tokens } }, { $pull: { fcmTokens: { $in: tokens } } }),
+            Student.updateMany({ fcmTokens: { $in: tokens } }, { $pull: { fcmTokens: { $in: tokens } } })
+        ]);
+    } catch (e) {
+        console.error('Failed to prune FCM tokens:', e.message);
+    }
+};
+
 /**
- * Send a notification to a specific token or array of tokens
- * @param {string|string[]} tokens - FCM token(s)
- * @param {string} title - Notification title
- * @param {string} body - Notification body
- * @param {object} data - Optional data payload
+ * Send a push notification to one token or many (batched by 500).
+ * Returns { configured, successCount, failureCount, results: [{token, success, error}], invalidTokens }.
+ * Dead tokens are pruned from the database automatically.
  */
 const sendToTokens = async (tokens, title, body, data = {}) => {
-    if (!admin.apps.length) return false;
-    
-    try {
-        const message = {
-            notification: { title, body },
-            data: data,
-            android: {
-                priority: 'high',
-                notification: {
-                    sound: 'default',
-                    channelId: 'dddesk_alerts',
-                }
-            },
-            apns: {
-                payload: {
-                    aps: {
-                        sound: 'default',
-                    }
-                }
-            }
-        };
+    const list = [...new Set((Array.isArray(tokens) ? tokens : [tokens]).filter(Boolean))];
+    const out = { configured: isConfigured(), successCount: 0, failureCount: 0, results: [], invalidTokens: [] };
+    if (!out.configured || list.length === 0) return out;
 
-        if (Array.isArray(tokens)) {
-            if (tokens.length === 0) return false;
-            const response = await admin.messaging().sendMulticast({ ...message, tokens });
-            console.log('Successfully sent multicast message:', response.successCount, 'successes');
-            return response;
-        } else {
-            if (!tokens) return false;
-            const response = await admin.messaging().send({ ...message, token: tokens });
-            console.log('Successfully sent message:', response);
-            return response;
+    const message = baseMessage(title, body, data);
+    for (let i = 0; i < list.length; i += FCM_BATCH) {
+        const batch = list.slice(i, i + FCM_BATCH);
+        try {
+            const response = await admin.messaging().sendEachForMulticast({ ...message, tokens: batch });
+            response.responses.forEach((r, idx) => {
+                const token = batch[idx];
+                const code = r.error && r.error.code;
+                out.results.push({ token, success: r.success, error: code || null });
+                if (r.success) out.successCount += 1;
+                else {
+                    out.failureCount += 1;
+                    if (INVALID_TOKEN_CODES.has(code)) out.invalidTokens.push(token);
+                }
+            });
+        } catch (error) {
+            console.error('Error sending multicast batch:', error.message);
+            batch.forEach((token) => out.results.push({ token, success: false, error: error.code || 'send-failed' }));
+            out.failureCount += batch.length;
         }
-    } catch (error) {
-        console.error('Error sending message to tokens:', error);
-        return false;
     }
+    await pruneInvalidTokens(out.invalidTokens);
+    return out;
 };
 
 /**
  * Send a notification to a specific topic
- * @param {string} topic - The topic name (e.g., 'admin_library_12345')
- * @param {string} title - Notification title
- * @param {string} body - Notification body
- * @param {object} data - Optional data payload
  */
 const sendToTopic = async (topic, title, body, data = {}) => {
-    if (!admin.apps.length) return false;
-
+    if (!isConfigured()) return false;
     try {
-        const message = {
-            notification: { title, body },
-            data: data,
-            topic: topic,
-            android: {
-                priority: 'high',
-                notification: {
-                    sound: 'default',
-                    channelId: 'dddesk_alerts',
-                }
-            },
-            apns: {
-                payload: {
-                    aps: {
-                        sound: 'default',
-                    }
-                }
-            }
-        };
-
-        const response = await admin.messaging().send(message);
-        return response;
+        return await admin.messaging().send({ ...baseMessage(title, body, data), topic });
     } catch (error) {
-        console.error('Error sending message to topic:', error);
+        console.error('Error sending message to topic:', error.message);
         return false;
     }
 };
 
+const toId = (v) => (v && typeof v === 'object' && v._id ? v._id : v);
+
 const notifyLibraryAdmins = async (libraryId, title, body, data = {}, type = 'system_alert') => {
     try {
-        console.log(`[FIREBASE DEBUG] notifyLibraryAdmins called. libraryId:`, libraryId, `title: ${title}`);
         const Admin = require('../models/admin.model');
         const Notification = require('../models/notification.model');
-        
-        // If libraryId is a populated object, extract the _id
-        const libIdStr = (libraryId && typeof libraryId === 'object' && libraryId._id) ? libraryId._id.toString() : libraryId;
-        console.log(`[FIREBASE DEBUG] Extracted libIdStr:`, libIdStr);
+        const libId = toId(libraryId);
+        if (!libId) return;
 
-        const admins = await Admin.find({ libraryId: libIdStr, isDeleted: false });
-        console.log(`[FIREBASE DEBUG] Found ${admins.length} admins for library ${libIdStr}`);
+        const admins = await Admin.find({ libraryId: libId, isDeleted: false, status: true });
+        const tokens = admins.flatMap((a) => a.fcmTokens || []);
 
-        let allTokens = [];
-        let dbNotifications = [];
-
-        for (const adminUser of admins) {
-            // Collect tokens
-            if (adminUser.fcmTokens && adminUser.fcmTokens.length > 0) {
-                allTokens.push(...adminUser.fcmTokens);
-            }
-
-            // Prepare DB Notification
-            dbNotifications.push({
-                recipientId: adminUser._id,
-                recipientType: 'Admin',
-                type: type,
-                title: title,
-                message: body,
-            });
+        if (admins.length > 0) {
+            await Notification.insertMany(admins.map((a) => ({
+                recipientId: a._id, recipientType: 'Admin', libraryId: libId,
+                type, title, message: body, data: data || {}
+            })));
         }
-
-        console.log(`[FIREBASE DEBUG] Preparing to insert ${dbNotifications.length} DB notifications.`);
-        // Insert into DB
-        if (dbNotifications.length > 0) {
-            await Notification.insertMany(dbNotifications);
-            console.log(`[FIREBASE DEBUG] Successfully inserted ${dbNotifications.length} DB notifications.`);
-        }
-
-        // Send Push Notifications
-        if (allTokens.length > 0) {
-            await sendToTokens(allTokens, title, body, data);
-        } else {
-            console.log(`No FCM tokens found for admins of library ${libraryId}`);
-        }
+        if (tokens.length > 0) await sendToTokens(tokens, title, body, data);
     } catch (error) {
-        console.error('Error notifying library admins:', error);
+        console.error('Error notifying library admins:', error.message);
     }
 };
 
@@ -174,57 +149,46 @@ const notifyStudent = async (studentId, title, body, data = {}, type = 'system_a
     try {
         const Student = require('../models/student.model');
         const Notification = require('../models/notification.model');
-        
+
         const student = await Student.findById(studentId);
         if (!student || student.isDeleted) return;
 
         await Notification.create({
-            recipientId: student._id,
-            recipientType: 'Student',
-            type: type,
-            title: title,
-            message: body,
+            recipientId: student._id, recipientType: 'Student', libraryId: toId(student.libraryId),
+            type, title, message: body, data: data || {}
         });
-
         if (student.fcmTokens && student.fcmTokens.length > 0) {
             await sendToTokens(student.fcmTokens, title, body, data);
         }
     } catch (error) {
-        console.error('Error notifying student:', error);
+        console.error('Error notifying student:', error.message);
     }
 };
 
-const notifyMultipleStudents = async (studentIds, title, body, data = {}, type = 'system_alert') => {
+/**
+ * Notify many students. Pass libraryId (6th argument) to guarantee tenant isolation:
+ * ids that belong to another library are ignored.
+ */
+const notifyMultipleStudents = async (studentIds, title, body, data = {}, type = 'system_alert', libraryId = null) => {
     try {
         const Student = require('../models/student.model');
         const Notification = require('../models/notification.model');
-        
-        const students = await Student.find({ _id: { $in: studentIds }, isDeleted: false });
-        
-        let allTokens = [];
-        let dbNotifications = [];
 
-        for (const student of students) {
-            if (student.fcmTokens && student.fcmTokens.length > 0) {
-                allTokens.push(...student.fcmTokens);
-            }
-            dbNotifications.push({
-                recipientId: student._id,
-                recipientType: 'Student',
-                type: type,
-                title: title,
-                message: body,
-            });
-        }
+        const filter = { _id: { $in: studentIds }, isDeleted: false };
+        const libId = toId(libraryId);
+        if (libId) filter.libraryId = libId;
+        const students = await Student.find(filter);
 
-        if (dbNotifications.length > 0) {
-            await Notification.insertMany(dbNotifications);
+        const tokens = students.flatMap((s) => s.fcmTokens || []);
+        if (students.length > 0) {
+            await Notification.insertMany(students.map((s) => ({
+                recipientId: s._id, recipientType: 'Student', libraryId: toId(s.libraryId),
+                type, title, message: body, data: data || {}
+            })));
         }
-        if (allTokens.length > 0) {
-            await sendToTokens(allTokens, title, body, data);
-        }
+        if (tokens.length > 0) await sendToTokens(tokens, title, body, data);
     } catch (error) {
-        console.error('Error notifying multiple students:', error);
+        console.error('Error notifying multiple students:', error.message);
     }
 };
 
@@ -233,5 +197,7 @@ module.exports = {
     sendToTopic,
     notifyLibraryAdmins,
     notifyStudent,
-    notifyMultipleStudents
+    notifyMultipleStudents,
+    isConfigured,
+    stringifyData
 };

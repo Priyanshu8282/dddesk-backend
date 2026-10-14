@@ -1,28 +1,34 @@
 const express = require('express');
 const ctrl = require('../../controllers/superLibrary.controller');
+const validate = require('../../middlewares/validate.middleware');
+const { requireSuperAdmin } = require('../../middlewares/access.middleware');
+const v = require('../../validations/platform.validation');
 
 const router = express.Router();
 
-// Require superadmin access
-const requireSA = (req, res, next) => {
-    if (!req.user || req.user.userType !== 'superadmin') {
-        return res.status(403).json({ success: false, message: 'Super Admin access required' });
-    }
-    next();
-};
-
-router.use(requireSA);
+// Everything here is platform level
+router.use(requireSuperAdmin);
 
 router.get('/', ctrl.getAllLibraries);
-router.post('/', ctrl.createLibrary);
-router.get('/:id', ctrl.getLibraryById);
-router.put('/:id', ctrl.updateLibrary);
-router.delete('/:id', ctrl.deleteLibrary);
-router.patch('/:id/approve', ctrl.approveLibrary);
-router.patch('/:id/reject', ctrl.rejectLibrary);
-router.patch('/:id/suspend', ctrl.suspendLibrary);
-router.patch('/:id/reinstate', ctrl.reinstateLibrary);
-router.get('/:id/plan', ctrl.getLibraryPlan);
-router.patch('/:id/plan', ctrl.assignPlan);
+router.post('/', validate(v.superCreateLibrary), ctrl.createLibrary);
+router.get('/:id', validate(v.idParam), ctrl.getLibraryById);
+router.put('/:id', validate(v.superUpdateLibrary), ctrl.updateLibrary);
+router.delete('/:id', validate(v.idParam), ctrl.deleteLibrary);
+
+// Library lifecycle - the only way library status changes
+router.patch('/:id/approve', validate(v.idParam), ctrl.approveLibrary);
+router.patch('/:id/reject', validate(v.rejectOrSuspend), ctrl.rejectLibrary);
+router.patch('/:id/suspend', validate(v.rejectOrSuspend), ctrl.suspendLibrary);
+router.patch('/:id/reinstate', validate(v.idParam), ctrl.reinstateLibrary);
+
+// Subscription
+router.get('/:id/plan', validate(v.idParam), ctrl.getLibraryPlan);
+router.patch('/:id/plan', validate(v.assignPlan), ctrl.assignPlan);
+
+// Subdomain: controlled change, old slug keeps redirecting
+router.patch('/:id/slug', validate(v.changeSlug), ctrl.changeSlug);
+
+// Audited support access: short-lived token as the library owner
+router.post('/:id/impersonate', validate(v.idParam), ctrl.impersonate);
 
 module.exports = router;

@@ -26,6 +26,11 @@ const settingRoutes = require('./setting.routes');
 const websiteRoutes = require('./website.routes');
 const branchRoutes = require('./branch.routes');
 const sidebarRoutes = require('./sidebar.routes');
+const complaintRoutes = require('./complaint.routes');
+const couponRoutes = require('./coupon.routes');
+const reviewRoutes = require('./review.routes');
+const reportRoutes = require('./report.routes');
+const aiRoutes = require('./ai.routes');
 
 const router = express.Router();
 
@@ -37,16 +42,26 @@ router.use('/', authRoutes);
 
 // Dashboards
 router.use('/dashboard', dashboardRoutes);
-router.use('/superadmin/dashboard', dashboardRoutes);
+router.use('/superadmin/dashboard', dashboardRoutes.superRouter);
 
 // Core Modules
 router.use('/admins', adminRoutes);
 router.use('/staff', adminRoutes); // alias for frontend /staff/*
 router.use('/roles', roleRoutes);
+// SaaS subscription billing (mounted before /libraries so /libraries/:id cannot swallow it)
+router.use('/libraries/subscription', require('./subscription.routes').owner);
+router.use('/super/subscriptions', require('./subscription.routes').superAdmin);
 router.use('/libraries', libraryRoutes);
 router.use('/super/libraries', superLibraryRoutes);
 router.use('/super/platform-plans', platformPlanRoutes);
 router.use('/super/audit', auditRoutes);
+// Platform support & tooling (spec 5)
+router.use('/support', require('./support.routes').library);
+router.use('/super/support', require('./support.routes').superAdmin);
+router.use('/announcements', require('./platformAdmin.routes').active);
+router.use('/super/announcements', require('./platformAdmin.routes').announcements);
+router.use('/super/notification-providers', require('./platformAdmin.routes').providers);
+router.use('/super/system-events', require('./platformAdmin.routes').systemEvents);
 router.use('/students', studentRoutes);
 router.use('/plans', planRoutes);
 router.use('/payments', paymentRoutes);
@@ -54,6 +69,14 @@ router.use('/attendance', attendanceRoutes);
 router.use('/seats', seatRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/enquiries', enquiryRoutes);
+router.use('/complaints', complaintRoutes);
+router.use('/coupons', couponRoutes);
+router.use('/offers', couponRoutes); // alias for offers
+router.use('/reviews', reviewRoutes);
+router.use('/feedback', reviewRoutes); // alias for feedback
+router.use('/reports', reportRoutes);
+router.use('/ai', aiRoutes);
+router.use('/assistant', aiRoutes); // alias for assistant
 
 // Content Modules
 router.use('/stories', storyRoutes);

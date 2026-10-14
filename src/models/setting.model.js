@@ -13,6 +13,11 @@ const globalSettingSchema = new mongoose.Schema({
     },
     description: {
         type: String
+    },
+    // false = internal (counters etc.); only superadmin can read it through the API
+    isPublic: {
+        type: Boolean,
+        default: true
     }
 }, { timestamps: true });
 

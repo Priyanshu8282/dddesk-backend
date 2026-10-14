@@ -1,47 +1,17 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
 const Admin = require('../models/admin.model');
 const Role = require('../models/role.model');
-const Permission = require('../models/permission.model');
 const SidebarMenu = require('../models/sidebar.model');
 const config = require('../config/config');
+const { syncRBAC } = require('./rbacSync');
+const { seedSidebar } = require('./sidebarSeed');
 
-const permissionsData = [
-    { name: 'View Dashboard', key: 'VIEW_DASHBOARD', module: 'CORE', route: 'dashboard' },
-    { name: 'View Employees', key: 'VIEW_ADMINS', module: 'EMPLOYEECONTROL', route: 'get-admins' },
-    { name: 'Create Employee', key: 'CREATE_ADMIN', module: 'EMPLOYEECONTROL', route: 'create-admin' },
-    { name: 'Update Employee', key: 'UPDATE_ADMIN', module: 'EMPLOYEECONTROL', route: 'update-admin' },
-    { name: 'Delete Employee', key: 'DELETE_ADMIN', module: 'EMPLOYEECONTROL', route: 'delete-admin' },
-    { name: 'View Roles', key: 'VIEW_ROLES', module: 'PERMISSIONCONTROL', route: 'get-roles' },
-    { name: 'Create Role', key: 'CREATE_ROLE', module: 'PERMISSIONCONTROL', route: 'create-role' },
-    { name: 'Update Role', key: 'UPDATE_ROLE', module: 'PERMISSIONCONTROL', route: 'update-role' },
-    { name: 'Delete Role', key: 'DELETE_ROLE', module: 'PERMISSIONCONTROL', route: 'delete-role' },
-    { name: 'View Permissions', key: 'VIEW_PERMISSIONS', module: 'PERMISSIONCONTROL', route: 'get-permissions' },
-    { name: 'Create Permission', key: 'CREATE_PERMISSION', module: 'PERMISSIONCONTROL', route: 'create-permission' },
-    { name: 'Update Permission', key: 'UPDATE_PERMISSION', module: 'PERMISSIONCONTROL', route: 'update-permission' },
-    { name: 'Delete Permission', key: 'DELETE_PERMISSION', module: 'PERMISSIONCONTROL', route: 'delete-permission' },
-    { name: 'Manage Sidebar', key: 'MANAGE_SIDEBAR', module: 'SIDEBARCONTROL', route: 'create-menu' },
-    { name: 'View Sidebar Menus', key: 'VIEW_SIDEBAR', module: 'SIDEBARCONTROL', route: 'get-menus' },
-    
-    // Library Management Permissions
-    { name: 'View Libraries', key: 'VIEW_LIBRARIES', module: 'LIBRARYCONTROL', route: 'get-libraries' },
-    { name: 'Create Library', key: 'CREATE_LIBRARY', module: 'LIBRARYCONTROL', route: 'create-library' },
-    { name: 'Update Library', key: 'UPDATE_LIBRARY', module: 'LIBRARYCONTROL', route: 'update-library' },
-    { name: 'Delete Library', key: 'DELETE_LIBRARY', module: 'LIBRARYCONTROL', route: 'delete-library' },
-    
-    // Student Management Permissions
-    { name: 'View Students', key: 'VIEW_STUDENTS', module: 'STUDENTCONTROL', route: 'get-students' },
-    { name: 'Create Student', key: 'CREATE_STUDENT', module: 'STUDENTCONTROL', route: 'create-student' },
-    { name: 'Update Student', key: 'UPDATE_STUDENT', module: 'STUDENTCONTROL', route: 'update-student' },
-    { name: 'Delete Student', key: 'DELETE_STUDENT', module: 'STUDENTCONTROL', route: 'delete-student' },
-    
-    // Plan Management Permissions
-    { name: 'View Plans', key: 'VIEW_PLANS', module: 'PLANCONTROL', route: 'get-plans' },
-    { name: 'Create Plan', key: 'CREATE_PLAN', module: 'PLANCONTROL', route: 'create-plan' },
-    { name: 'Update Plan', key: 'UPDATE_PLAN', module: 'PLANCONTROL', route: 'update-plan' },
-    { name: 'Delete Plan', key: 'DELETE_PLAN', module: 'PLANCONTROL', route: 'delete-plan' }
-];
+// Idempotent master seed. It never deletes permissions, menus, roles or accounts:
+//  1. base sidebar menus are upserted (matched by title + parent + userType)
+//  2. operational menus (sidebarSeed) are upserted
+//  3. the permission catalog and system roles (Super Admin, Admin, Staff, Receptionist, Accountant, Manager) are synced
+//  4. the platform Super Admin account is created if no superadmin exists (SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD)
 
 const sidebarData = [
     { "title": "Dashboard", "iconStyle": "<i className='la la-home' />", "parent_module_id": "1", "module_menu_priority": "1", "to": "dashboard" },
@@ -110,88 +80,36 @@ const masterSeed = async () => {
         await mongoose.connect(config.mongoose.url);
         console.log('Connected to MongoDB for master seeding');
 
-        // 1. Seed Permissions
-        await Permission.deleteMany({});
-        const permissions = await Permission.insertMany(permissionsData);
-        console.log('Permissions seeded.');
+        let created = 0;
+        for (const m of sidebarData) {
+            const r = await SidebarMenu.updateOne(
+                { title: m.title, parent_module_id: m.parent_module_id || '-1', userType: m.userType || 'admin' },
+                { $setOnInsert: m },
+                { upsert: true }
+            );
+            if (r.upsertedCount) created += 1;
+        }
+        console.log(`Base sidebar menus upserted (${created} new).`);
+        const op = await seedSidebar();
+        console.log(`Operational sidebar menus upserted (${op.created} new).`);
 
-        // 2. Seed Sidebar Menus
-        await SidebarMenu.deleteMany({});
-        const sidebarMenus = await SidebarMenu.insertMany(sidebarData);
-        console.log('Sidebar menus seeded.');
+        const rbac = await syncRBAC();
+        console.log(`RBAC synced: ${rbac.permissions} permissions, ${rbac.menus} menus.`);
 
-        // 3. Create Super Admin Role
-        const superAdminRole = await Role.findOneAndUpdate(
-            { name: 'Super Admin' },
-            {
-                permissionIds: permissions.map(p => p._id),
-                sidebarMenuIds: sidebarMenus.map(m => m._id),
-                status: true
-            },
-            { new: true, upsert: true }
-        );
-        console.log('Super Admin role created/updated.');
-
-        // 4. Create Admin Role
-        const adminPermissions = permissions.filter(p => 
-            [
-                'VIEW_DASHBOARD', 'VIEW_STUDENTS', 'CREATE_STUDENT', 'UPDATE_STUDENT', 'DELETE_STUDENT',
-                'VIEW_ADMINS', 'CREATE_ADMIN', 'UPDATE_ADMIN', 'DELETE_ADMIN',
-                'VIEW_PLANS', 'CREATE_PLAN', 'UPDATE_PLAN', 'DELETE_PLAN'
-            ].includes(p.key)
-        );
-        const adminMenus = sidebarMenus.filter(m => 
-            ['Dashboard', 'Database', 'Students', 'Student Management', 'Employees', 'Employee Management', 'Plans', 'Plan Management'].includes(m.title)
-        );
-
-        const adminRole = await Role.findOneAndUpdate(
-            { name: 'Admin' },
-            {
-                permissionIds: adminPermissions.map(p => p._id),
-                sidebarMenuIds: adminMenus.map(m => m._id),
-                status: true
-            },
-            { new: true, upsert: true }
-        );
-        console.log('Admin role created/updated.');
-        
-        // 5. Create Staff Role
-        const staffPermissions = permissions.filter(p => 
-            [
-                'VIEW_DASHBOARD', 'VIEW_STUDENTS', 'CREATE_STUDENT', 'UPDATE_STUDENT'
-            ].includes(p.key)
-        );
-        const staffMenus = sidebarMenus.filter(m => 
-            ['Dashboard', 'Students', 'Student Management'].includes(m.title)
-        );
-
-        const staffRole = await Role.findOneAndUpdate(
-            { name: 'Staff' },
-            {
-                permissionIds: staffPermissions.map(p => p._id),
-                sidebarMenuIds: staffMenus.map(m => m._id),
-                status: true
-            },
-            { new: true, upsert: true }
-        );
-        console.log('Staff role created/updated.');
-        
-        // 6. Create Super Admin User
-        const passwordHash = await bcrypt.hash('admin123', 10);
-        await Admin.findOneAndUpdate(
-            { email: 'admin@mgibasket.com' },
-            {
-                name: 'Super Admin',
-                password: passwordHash,
-                roleId: superAdminRole._id,
-                mobile: '1234567890',
-                status: true,
-                isDeleted: false
-            },
-            { new: true, upsert: true }
-        );
-        console.log('Super Admin user created/updated.');
-
+        const superRole = await Role.findOne({ name: 'Super Admin', libraryId: null });
+        const existing = await Admin.findOne({ userType: 'superadmin' });
+        if (!existing) {
+            const email = (process.env.SEED_ADMIN_EMAIL || 'admin@mgibasket.com').toLowerCase();
+            const password = process.env.SEED_ADMIN_PASSWORD;
+            if (!password && process.env.NODE_ENV === 'production') throw new Error('Set SEED_ADMIN_PASSWORD to create the first super admin in production');
+            await Admin.create({
+                name: 'Super Admin', email, password: password || 'admin123', // hashed once by the Admin pre-save hook
+                userType: 'superadmin', roleId: superRole._id, mobile: '1234567890', status: true,
+            });
+            console.log(`Super Admin created: ${email}${password ? '' : ' (default dev password - change it)'}`);
+        } else {
+            console.log('A super admin already exists; account left untouched.');
+        }
         process.exit(0);
     } catch (error) {
         console.error('Master seeding failed:', error);

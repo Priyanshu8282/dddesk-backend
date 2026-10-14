@@ -19,7 +19,7 @@ const sidebarMenuSchema = new mongoose.Schema({
     extraClass: { type: String },
     extraclass: { type: String },
     hasMenu: { type: Boolean, default: false },
-    userType: { type: String, enum: ['admin', 'library'], default: 'admin' },
+    userType: { type: String, enum: ['admin', 'library', 'staff', 'superadmin', 'student'], default: 'admin' },
     content: [SubmenuSchema]
 }, {
     timestamps: true

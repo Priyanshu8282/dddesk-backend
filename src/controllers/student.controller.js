@@ -1,360 +1,292 @@
+const mongoose = require('mongoose');
+const catchAsync = require('../utils/catchAsync');
+const ApiError = require('../utils/ApiError');
+const audit = require('../utils/audit');
 const studentService = require('../services/student.service');
 const Student = require('../models/student.model');
+const { tenantId } = require('../middlewares/access.middleware');
+const { branchFilter, branchForCreate, assertBranchAccess, branchVisibility } = require('../utils/branchScope');
 
-// Create a new student
-exports.createStudent = async (req, res, next) => {
-    try {
-        const creatorInfo = req.user ? { id: req.user.id } : null;
-        const studentData = { ...req.body };
-
-        // If logged in as Admin, automatically set the libraryId from their profile link
-        if (req.userType === 'admin' || (req.user && req.user.libraryId)) {
-            studentData.libraryId = req.user.libraryId;
-        }
-
-        // Enforce subscription maxStudents limit
-        if (studentData.libraryId) {
-            const Library = require('../models/library.model');
-            const library = await Library.findById(studentData.libraryId).select('planLimits name');
-            if (library) {
-                const maxStudents = library.planLimits?.maxStudents ?? 100;
-                const currentCount = await Student.countDocuments({ libraryId: studentData.libraryId, isDeleted: false });
-                if (currentCount >= maxStudents) {
-                    return res.status(403).json({
-                        success: false,
-                        message: `Student limit reached (${maxStudents}). Upgrade your subscription plan to add more students.`
-                    });
-                }
-            }
-        }
-
-        // Handle file uploads (profile image)
-        if (req.files && req.files.profileImage) {
-            studentData.profileImage = req.files.profileImage[0].path;
-        }
-
-        // Handle multiple Aadhaar card images (front & back)
-        if (req.files && req.files.aadhaarCardImage) {
-            studentData.aadhaarCardImage = req.files.aadhaarCardImage.map(file => file.path);
-        }
-
-        const student = await studentService.registerStudent(studentData, creatorInfo);
-
-        res.status(201).json({
-            success: true,
-            message: "Student registered successfully",
-            data: student
-        });
-    } catch (error) {
-        next(error);
-    }
+const lib = (req) => {
+    const id = tenantId(req);
+    if (!id) throw new ApiError(400, 'Library context is required');
+    return id;
 };
 
-// Student Login
-exports.loginStudent = async (req, res, next) => {
-    try {
-        const { mobile, email, password } = req.body;
-        const identifier = mobile || email;
-        const result = await studentService.loginStudent(identifier, password);
+const ok = (res, message, data, extra = {}, code = 200) =>
+    res.status(code).json({ success: true, message, data, ...extra });
 
-        res.status(200).json({
-            success: true,
-            message: "Student login successful",
-            data: result.student || result,
-            ...result
-        });
-    } catch (error) {
-        next(error);
-    }
+/** Pull uploaded file paths into the body (profile image, aadhaar images, extra documents). */
+const applyUploads = (req, data) => {
+    if (req.files && req.files.profileImage) data.profileImage = req.files.profileImage[0].path;
+    if (req.files && req.files.aadhaarCardImage) data.aadhaarCardImage = req.files.aadhaarCardImage.map((f) => f.path);
+    if (data.profileImage === 'null' || data.profileImage === '') data.profileImage = null;
+    return data;
 };
 
-// Verify Student OTP
-exports.verifyStudentOTP = async (req, res, next) => {
-    try {
-        const { mobile, otp } = req.body;
-        const result = await studentService.verifyStudentOTP(mobile, otp);
-
-        res.status(200).json({
-            success: true,
-            message: "Student OTP verified successfully",
-            data: result.student || result,
-            ...result
-        });
-    } catch (error) {
-        next(error);
+// ---------------------------------------------------------------------------
+// Admin / staff
+// ---------------------------------------------------------------------------
+exports.createStudent = catchAsync(async (req, res) => {
+    const data = applyUploads(req, { ...req.body });
+    // Extra uploaded documents (type from body.documentType)
+    if (req.files && req.files.documents) {
+        data.documents = req.files.documents.map((f) => ({
+            type: req.body.documentType || 'other', name: f.originalname, url: f.path, uploadedAt: new Date()
+        }));
     }
-};
+    data.branchId = await branchForCreate(req, lib(req), data.branchId);
+    const result = await studentService.registerStudent(lib(req), data, req);
+    ok(res, 'Student registered successfully', result.student, {
+        credentials: result.credentials,
+        seat: result.seat,
+        pendingCharge: result.pendingCharge,
+        warnings: result.warnings
+    }, 201);
+});
 
-// Resend Student OTP
-exports.resendStudentOTP = async (req, res, next) => {
-    try {
-        const { mobile } = req.body;
-        const result = await studentService.resendStudentOTP(mobile);
+exports.getAllStudents = catchAsync(async (req, res) => {
+    const result = await studentService.queryStudents(lib(req), req.query, branchFilter(req));
+    res.status(200).json({
+        success: true,
+        message: 'Students retrieved successfully',
+        ...result,
+        students: result.results,
+        data: result.results,
+        total: result.totalResults
+    });
+});
 
-        res.status(200).json({
-            success: true,
-            message: "OTP resent successfully",
-            data: result,
-            ...result
-        });
-    } catch (error) {
-        next(error);
+exports.getStudentById = catchAsync(async (req, res) => {
+    const student = await require('../utils/securityEvent').flagOnMiss(req, require('../models/student.model'), req.params.id, 'Student',
+        () => studentService.getStudentById(req.params.id, lib(req)));
+    ok(res, 'Student retrieved successfully', student);
+});
+
+exports.updateStudent = catchAsync(async (req, res) => {
+    const libraryId = lib(req);
+    const data = applyUploads(req, { ...req.body });
+    if (req.files && req.files.documents) {
+        const existing = await Student.findOne({ _id: req.params.id, libraryId }).select('documents');
+        if (!existing) throw new ApiError(404, 'Student not found');
+        data.documents = [
+            ...(existing.documents || []).map((d) => d.toObject()),
+            ...req.files.documents.map((f) => ({ type: req.body.documentType || 'other', name: f.originalname, url: f.path, uploadedAt: new Date() }))
+        ];
     }
-};
+    if (data.branchId) assertBranchAccess(req, data.branchId);
+    const student = await studentService.updateStudentById(req.params.id, libraryId, data);
+    audit(req, 'student.update', 'Student', req.params.id, { fields: Object.keys(req.body || {}) });
+    ok(res, 'Student updated successfully', student);
+});
 
-// Get all students
-exports.getAllStudents = async (req, res, next) => {
-    try {
-        const { page = 1, limit = 10, search = "", status = "", libraryId = "" } = req.query;
+exports.deleteStudent = catchAsync(async (req, res) => {
+    await studentService.deleteStudentById(req.params.id, lib(req), req);
+    res.status(200).json({ success: true, message: 'Student archived successfully' });
+});
 
-        const filter = { isDeleted: false };
-        
-        if (status) {
-            const statusLower = status.toLowerCase();
-            if (['active', 'inactive'].includes(statusLower)) {
-                filter.status = statusLower;
-            }
-        }
-        
-        // Filter by library if user is a Admin or if libraryId is provided
-        if (req.userType === 'admin' || (req.user && req.user.libraryId)) {
-            filter.libraryId = req.user.libraryId;
-        } else if (libraryId) {
-            filter.libraryId = libraryId;
-        }
+exports.assignPlan = catchAsync(async (req, res) => {
+    const result = await studentService.assignPlan(req.params.id, lib(req), req.body, req);
+    ok(res, 'Plan assigned successfully', result.student, { pendingCharge: result.pendingCharge, charge: result.charge, amount: result.amount });
+});
 
-        if (search) {
-            filter.$or = [
-                { name: { $regex: search, $options: "i" } },
-                { mobile: { $regex: search, $options: "i" } },
-                { email: { $regex: search, $options: "i" } }
-            ];
-        }
+exports.markAsPaid = catchAsync(async (req, res) => {
+    const result = await studentService.markAsPaid(req.params.id, lib(req), req.body, req);
+    ok(res, 'Payment recorded and plan activated', result.student, {
+        membership: result.membership, payment: result.payment, paymentRecorded: result.paymentRecorded
+    });
+});
 
-        const result = await studentService.queryStudents(filter, { page, limit });
+exports.changePlan = catchAsync(async (req, res) => {
+    const result = await studentService.changePlan(req.params.id, lib(req), req.body, req);
+    ok(res, 'Plan changed successfully', result.student, { membership: result.membership, pendingCharge: result.pendingCharge, charge: result.charge });
+});
 
-        // Calculate dynamic summary metrics for students linked to the same library
-        const summaryFilter = { isDeleted: false };
-        if (req.userType === 'admin' || (req.user && req.user.libraryId)) {
-            summaryFilter.libraryId = req.user.libraryId;
-        } else if (libraryId) {
-            summaryFilter.libraryId = libraryId;
-        }
+exports.renew = catchAsync(async (req, res) => {
+    const result = await studentService.renewMembership(req.params.id, lib(req), req.body, req);
+    ok(res, 'Membership renewed successfully', result.student, {
+        membership: result.membership, pendingCharge: result.pendingCharge, charge: result.charge, seatNote: result.seatNote
+    });
+});
 
-        const totalCount = await Student.countDocuments(summaryFilter);
-        const activeCount = await Student.countDocuments({ ...summaryFilter, status: 'active' });
-        const inactiveCount = await Student.countDocuments({ ...summaryFilter, status: 'inactive' });
+exports.pauseMembership = catchAsync(async (req, res) => {
+    const student = await studentService.pauseMembership(req.params.id, lib(req), req.body, req);
+    ok(res, 'Membership paused', student);
+});
 
-        const summary = {
-            total: totalCount,
-            active: activeCount,
-            inactive: inactiveCount
-        };
+exports.resumeMembership = catchAsync(async (req, res) => {
+    const result = await studentService.resumeMembership(req.params.id, lib(req), req.body, req);
+    ok(res, 'Membership resumed', result.student, { pausedDays: result.pausedDays, creditedDays: result.creditedDays, seatNote: result.seatNote });
+});
 
-        res.status(200).json({
-            success: true,
-            message: "Students retrieved successfully",
-            ...result,
-            students: result.results,
-            data: result.results,
-            total: result.totalResults,
-            summary
-        });
-    } catch (error) {
-        next(error);
+exports.extendMembership = catchAsync(async (req, res) => {
+    const student = await studentService.extendMembership(req.params.id, lib(req), req.body, req);
+    ok(res, 'Membership extended', student);
+});
+
+exports.getMemberships = catchAsync(async (req, res) => {
+    const list = await studentService.getMemberships(req.params.id, lib(req));
+    ok(res, 'Membership history retrieved successfully', list);
+});
+
+exports.setStatus = catchAsync(async (req, res) => {
+    const student = await studentService.setStatus(req.params.id, lib(req), req.body, req);
+    ok(res, `Student marked ${req.body.status}`, student);
+});
+
+exports.addNote = catchAsync(async (req, res) => {
+    const note = await studentService.addNote(req.params.id, lib(req), req.body.text, req);
+    ok(res, 'Note added', note, {}, 201);
+});
+
+exports.getNotes = catchAsync(async (req, res) => {
+    const notes = await studentService.getNotes(req.params.id, lib(req));
+    ok(res, 'Notes retrieved successfully', notes);
+});
+
+exports.resetPassword = catchAsync(async (req, res) => {
+    const credentials = await studentService.resetPassword(req.params.id, lib(req), req);
+    ok(res, 'Password reset. Share the temporary password with the student securely; it is shown only once.', credentials);
+});
+
+exports.getPaymentHistory = catchAsync(async (req, res) => {
+    const payments = await studentService.getStudentPayments(req.params.id, lib(req));
+    ok(res, 'Payment history fetched successfully', payments);
+});
+
+exports.getLedger = catchAsync(async (req, res) => {
+    const data = await studentService.getStudentLedger(req.params.id, lib(req));
+    ok(res, 'Student ledger retrieved successfully', data);
+});
+
+// ---------------------------------------------------------------------------
+// Student portal (own record only)
+// ---------------------------------------------------------------------------
+exports.getMyProfile = catchAsync(async (req, res) => {
+    const student = await Student.findOne({ _id: req.user._id, libraryId: req.libraryId })
+        .select('-notes -password -otp -fcmTokens')
+        .populate('planId', 'name durationType durationDays price finalPrice');
+    if (!student) throw new ApiError(404, 'Student not found');
+
+    // "My library" + "My seat" (spec 17): contact/location and the assigned seat
+    const Library = require('../models/library.model');
+    const Seat = require('../models/seat.model');
+    const Branch = require('../models/branch.model');
+    const [library, seat, branch] = await Promise.all([
+        Library.findOne({ _id: req.libraryId, isDeleted: { $ne: true } })
+            .select('name logo address city state pincode mobile email workingHours weeklyHolidays mapLocation socialLinks rules terms')
+            .lean(),
+        Seat.findOne({ libraryId: req.libraryId, studentId: student._id, isDeleted: { $ne: true } })
+            .select('seatNumber floor room type status').lean(),
+        student.branchId ? Branch.findOne({ _id: student.branchId, libraryId: req.libraryId }).select('name address phone').lean() : null
+    ]);
+    ok(res, 'Profile retrieved successfully', { ...student.toObject(), library, seat, branch });
+});
+
+// Student edits only their own contact details (never plan, status, seat or library)
+exports.updateMyProfile = catchAsync(async (req, res) => {
+    const allowed = ['name', 'email', 'address', 'emergencyContact'];
+    const update = {};
+    allowed.forEach((k) => { if (req.body[k] !== undefined) update[k] = req.body[k]; });
+    if (!Object.keys(update).length) throw new ApiError(400, 'Nothing to update');
+    const student = await Student.findOneAndUpdate(
+        { _id: req.user._id, libraryId: req.libraryId },
+        { $set: update },
+        { new: true, runValidators: true }
+    ).select('-notes -password -otp -fcmTokens');
+    if (!student) throw new ApiError(404, 'Student not found');
+    audit(req, 'student.update_own_profile', 'Student', student._id, { fields: Object.keys(update) });
+    ok(res, 'Profile updated successfully', student);
+});
+
+// Student asks for a renewal; staff completes it (the fee must be collected/credited by the library,
+// so a student can never extend their own membership without payment).
+exports.requestRenewal = catchAsync(async (req, res) => {
+    const student = await Student.findOne({ _id: req.user._id, libraryId: req.libraryId });
+    if (!student) throw new ApiError(404, 'Student not found');
+    if (['pending', 'paused'].includes(student.planStatus)) {
+        throw new ApiError(400, `Cannot request renewal while the membership is ${student.planStatus}`);
     }
-};
+    let planName = null;
+    const planId = req.body.planId || student.planId;
+    if (!planId) throw new ApiError(400, 'No plan to renew. Choose a plan.');
+    const Plan = require('../models/plan.model');
+    const plan = await Plan.findOne({ _id: planId, libraryId: req.libraryId, isDeleted: { $ne: true } }).select('name allowRenewal isArchived');
+    if (!plan || plan.isArchived) throw new ApiError(404, 'Plan not found');
+    if (plan.allowRenewal === false) throw new ApiError(400, `Plan "${plan.name}" does not allow renewal`);
+    planName = plan.name;
 
-// Get single student
-exports.getStudentById = async (req, res, next) => {
-    try {
-        const student = await studentService.getStudentById(req.params.id);
-        res.status(200).json({
-            success: true,
-            message: "Student retrieved successfully",
-            data: student
-        });
-    } catch (error) {
-        next(error);
-    }
-};
+    const { notifyLibraryAdmins } = require('../services/firebase.service');
+    notifyLibraryAdmins(
+        req.libraryId,
+        'Renewal request',
+        `${student.name} wants to renew on "${planName}"${req.body.note ? `: ${req.body.note}` : ''}`,
+        { type: 'renewal_request', studentId: String(student._id), planId: String(plan._id) },
+        'renewal_request'
+    ).catch(() => {});
+    audit(req, 'student.renewal_request', 'Student', student._id, { planId: plan._id });
+    res.status(202).json({ success: true, message: 'Renewal request sent to the library. They will contact you to complete it.' });
+});
 
-// Update student
-exports.updateStudent = async (req, res, next) => {
-    try {
-        const updateData = { ...req.body };
-        console.log("Update Student Body:", updateData);
+// Sign out of every device: tokens issued before now stop working
+exports.logoutAll = catchAsync(async (req, res) => {
+    await Student.updateOne({ _id: req.user._id, libraryId: req.libraryId }, { $set: { tokensValidAfter: new Date(), fcmTokens: [] } });
+    audit(req, 'student.logout_all', 'Student', req.user._id);
+    res.status(200).json({ success: true, message: 'Signed out from all devices' });
+});
 
-        if (req.files && req.files.profileImage) {
-            updateData.profileImage = req.files.profileImage[0].path;
-        }
+exports.changePassword = catchAsync(async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+    await studentService.changeStudentPassword(req.user._id, currentPassword, newPassword);
+    res.status(200).json({ success: true, message: 'Password changed successfully' });
+});
 
-        if (req.files && req.files.aadhaarCardImage) {
-            updateData.aadhaarCardImage = req.files.aadhaarCardImage.map(file => file.path);
-        }
+exports.getDashboard = catchAsync(async (req, res) => {
+    const studentId = req.user._id;
+    const libraryId = req.libraryId;
+    const student = await Student.findOne({ _id: studentId, libraryId }).populate('planId');
+    if (!student) throw new ApiError(404, 'Student not found');
 
-        if (updateData.profileImage === 'null' || updateData.profileImage === '') {
-            updateData.profileImage = null;
-        }
+    const Attendance = require('../models/attendance.model');
+    const Notice = require('../models/notice.model');
+    const Banner = require('../models/banner.model');
+    const storyService = require('../services/story.service');
 
-        const student = await studentService.updateStudentById(req.params.id, updateData);
-        res.status(200).json({
-            success: true,
-            message: "Student updated successfully",
-            data: student
-        });
-    } catch (error) {
-        next(error);
-    }
-};
+    // Distinct attended days since membership start
+    const startDate = student.planStartDate || student.joiningDate || new Date();
+    const [attended] = await Attendance.aggregate([
+        { $match: { studentId: new mongoose.Types.ObjectId(String(studentId)), libraryId: new mongoose.Types.ObjectId(String(libraryId)), status: 'present', date: { $gte: startDate } } },
+        { $group: { _id: '$date' } },
+        { $count: 'days' }
+    ]);
+    const presentDays = attended ? attended.days : 0;
+    const diffDays = Math.max(1, Math.ceil((Date.now() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24)));
+    const presentPercentage = Math.min(100, Math.round((presentDays / diffDays) * 100));
 
-// Soft delete student
-exports.deleteStudent = async (req, res, next) => {
-    try {
-        await studentService.deleteStudentById(req.params.id);
-        res.status(200).json({
-            success: true,
-            message: "Student deleted successfully"
-        });
-    } catch (error) {
-        next(error);
-    }
-};
+    const plan = student.planId;
+    // Pending fee comes from the fee ledger (sum of every open charge, spec 15.4)
+    const outstanding = await require('../services/feeLedger.service').getOutstanding(libraryId, studentId)
+        .catch(() => ({ totalOutstanding: 0, overdueCount: 0 }));
+    const metrics = {
+        presentPercentage,
+        presentDays,
+        absentDays: Math.max(0, diffDays - presentDays),
+        totalDays: diffDays,
+        feesDue: outstanding.totalOutstanding,
+        overdueCount: outstanding.overdueCount,
+        planStatus: student.planStatus,
+        expiryDate: student.expiryDate,
+        daysRemaining: student.expiryDate ? Math.max(0, Math.ceil((new Date(student.expiryDate) - Date.now()) / (1000 * 60 * 60 * 24))) : 0,
+        mustChangePassword: !!student.mustChangePassword
+    };
 
-// Assign plan to student
-exports.assignPlan = async (req, res, next) => {
-    try {
-        console.log("studentService functions:", Object.keys(studentService));
-        const creatorInfo = { id: req.user.id };
-        const student = await studentService.assignPlan(req.params.id, req.body, creatorInfo);
-        res.status(200).json({
-            success: true,
-            message: "Plan assigned successfully",
-            data: student
-        });
-    } catch (error) {
-        next(error);
-    }
-};
+    const now = new Date();
+    const [notices, banners, stories, recentPayments] = await Promise.all([
+        Notice.find({ libraryId, isActive: true, ...branchVisibility(student.branchId) }).sort({ createdAt: -1 }).limit(3),
+        Banner.find({ libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now }, ...branchVisibility(student.branchId) }).sort({ startDate: -1 }),
+        storyService.getActiveStudentStories(libraryId, studentId, student.branchId).catch(() => []),
+        studentService.getStudentPayments(studentId, libraryId).then((p) => p.slice(0, 3)).catch(() => [])
+    ]);
 
-// Mark plan as paid
-exports.markAsPaid = async (req, res, next) => {
-    try {
-        const creatorInfo = { id: req.user.id };
-        const student = await studentService.markAsPaid(req.params.id, req.body, creatorInfo);
-        res.status(200).json({
-            success: true,
-            message: "Plan activated successfully",
-            data: student
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-// Get payment history for student
-exports.getPaymentHistory = async (req, res, next) => {
-    try {
-        const payments = await studentService.getStudentPayments(req.params.id);
-        res.status(200).json({
-            success: true,
-            message: "Payment history fetched successfully",
-            data: payments
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// Change Password
-exports.changePassword = async (req, res, next) => {
-    try {
-        const { currentPassword, newPassword } = req.body;
-        const studentId = req.user.id;
-
-        const result = await studentService.changeStudentPassword(studentId, currentPassword, newPassword);
-        
-        res.status(200).json({
-            success: true,
-            message: "Password changed successfully"
-        });
-    } catch (error) {
-        next(error);
-    }
-};
-
-// Get Dashboard Data
-exports.getDashboard = async (req, res, next) => {
-    try {
-        const studentId = req.user.id;
-        const student = await Student.findById(studentId).populate('planId');
-        
-        if (!student) {
-            return res.status(404).json({ success: false, message: "Student not found" });
-        }
-
-        const Attendance = require('../models/attendance.model');
-
-        // Calculate Present Percentage
-        const totalPunches = await Attendance.countDocuments({ studentId: studentId, status: 'present' });
-        
-        let presentPercentage = 0;
-        const startDate = student.planStartDate || student.joiningDate || new Date();
-        const now = new Date();
-        const diffTime = Math.abs(now - startDate);
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1; // at least 1 day to prevent division by zero
-        
-        if (totalPunches > 0) {
-            presentPercentage = Math.round((totalPunches / diffDays) * 100);
-            if (presentPercentage > 100) presentPercentage = 100;
-        }
-
-        const metrics = {
-            presentPercentage: presentPercentage,
-            presentDays: totalPunches,
-            absentDays: Math.max(0, diffDays - totalPunches),
-            totalDays: diffDays,
-            feesDue: student.planStatus === 'pending' && student.planId ? student.planId.price : 0,
-        };
-
-        const Notice = require('../models/notice.model');
-        const notices = await Notice.find({ 
-            libraryId: student.libraryId,
-            isActive: true 
-        }).sort({ createdAt: -1 }).limit(3);
-
-        const Banner = require('../models/banner.model');
-        const nowTime = new Date();
-        const banners = await Banner.find({
-            libraryId: student.libraryId,
-            isActive: true,
-            startDate: { $lte: nowTime },
-            endDate: { $gte: nowTime }
-        }).sort({ startDate: -1 });
-
-        const storyService = require('../services/story.service');
-        const stories = await storyService.getActiveStudentStories(student.libraryId);
-
-        const studentService = require('../services/student.service');
-        let recentPayments = [];
-        try {
-            recentPayments = await studentService.getStudentPayments(studentId);
-            recentPayments = recentPayments.slice(0, 3); // Get top 3
-        } catch (e) {
-            console.error("Error fetching payments:", e);
-        }
-
-        res.status(200).json({
-            success: true,
-            message: "Student dashboard data retrieved successfully",
-            data: {
-                metrics,
-                notices,
-                stories,
-                banners,
-                recentPayments
-            }
-        });
-    } catch (error) {
-        next(error);
-    }
-};
+    ok(res, 'Student dashboard data retrieved successfully', { metrics, notices, stories, banners, recentPayments });
+});

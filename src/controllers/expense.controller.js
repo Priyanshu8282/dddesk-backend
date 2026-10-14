@@ -1,51 +1,50 @@
 const catchAsync = require('../utils/catchAsync');
 const ApiError   = require('../utils/ApiError');
+const audit      = require('../utils/audit');
+const { tenantId } = require('../middlewares/access.middleware');
 const svc        = require('../services/expense.service');
+const { branchFilter, branchForCreate } = require('../utils/branchScope');
+
+const lib = (req) => {
+  const id = tenantId(req);
+  if (!id) throw new ApiError(400, 'Library context is required');
+  return id;
+};
 
 exports.createExpense = catchAsync(async (req, res) => {
-  const expense = await svc.createExpense({ ...req.body, libraryId: req.user.libraryId, createdBy: req.user._id });
-  res.status(201).json({
-    success: true,
-    message: 'Expense recorded successfully',
-    data: expense
-  });
+  const branchId = await branchForCreate(req, lib(req), req.body.branchId);
+  const expense = await svc.createExpense(req.body, lib(req), req.user._id, branchId);
+  audit(req, 'expense.create', 'Expense', expense._id, { amount: expense.amount, category: expense.category });
+  res.status(201).json({ success: true, message: 'Expense recorded successfully', data: expense });
 });
 
 exports.getExpenses = catchAsync(async (req, res) => {
-  const result = await svc.listExpenses(req.user.libraryId, req.query);
-  res.status(200).json({
-    success: true,
-    message: 'Expenses retrieved successfully',
-    data: result.expenses || result.data || result,
-    ...result
-  });
+  const result = await svc.listExpenses(lib(req), req.query, branchFilter(req));
+  if (req.query.format === 'csv') {
+    res.set('Content-Type', 'text/csv; charset=utf-8');
+    res.set('Content-Disposition', 'attachment; filename="expenses.csv"');
+    return res.status(200).send(svc.toCsv(result.data));
+  }
+  res.status(200).json({ success: true, message: 'Expenses retrieved successfully', ...result });
 });
 
 exports.getExpenseById = catchAsync(async (req, res) => {
-  const expense = await svc.getExpense(req.params.id, req.user.libraryId);
+  const expense = await svc.getExpense(req.params.id, lib(req));
   if (!expense) throw new ApiError(404, 'Expense not found');
-  res.status(200).json({
-    success: true,
-    message: 'Expense retrieved successfully',
-    data: expense
-  });
+  res.status(200).json({ success: true, message: 'Expense retrieved successfully', data: expense });
 });
 
 exports.updateExpense = catchAsync(async (req, res) => {
-  const expense = await svc.updateExpense(req.params.id, req.user.libraryId, req.body);
+  if (req.body.branchId !== undefined) req.body.branchId = await branchForCreate(req, lib(req), req.body.branchId);
+  const expense = await svc.updateExpense(req.params.id, lib(req), req.body);
   if (!expense) throw new ApiError(404, 'Expense not found');
-  res.status(200).json({
-    success: true,
-    message: 'Expense updated successfully',
-    data: expense
-  });
+  audit(req, 'expense.update', 'Expense', expense._id, { fields: Object.keys(req.body || {}) });
+  res.status(200).json({ success: true, message: 'Expense updated successfully', data: expense });
 });
 
 exports.deleteExpense = catchAsync(async (req, res) => {
-  const expense = await svc.deleteExpense(req.params.id, req.user.libraryId);
+  const expense = await svc.deleteExpense(req.params.id, lib(req));
   if (!expense) throw new ApiError(404, 'Expense not found');
-  res.status(200).json({
-    success: true,
-    message: 'Expense deleted successfully'
-  });
+  audit(req, 'expense.delete', 'Expense', expense._id, { amount: expense.amount });
+  res.status(200).json({ success: true, message: 'Expense deleted successfully' });
 });

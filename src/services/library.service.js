@@ -1,207 +1,106 @@
 const Library = require('../models/library.model');
-const Role = require('../models/role.model');
-const jwt = require("jsonwebtoken");
+const Student = require('../models/student.model');
+const Seat = require('../models/seat.model');
+const Admin = require('../models/admin.model');
 const ApiError = require('../utils/ApiError');
-const config = require('../config/config');
+const pick = require('../utils/pick');
+const audit = require('../utils/audit');
+const { getSubscriptionState } = require('./subscriptionState.service');
 
-/**
- * Register a new library
- * @param {Object} libraryBody
- * @param {Object} creatorInfo
- * @returns {Promise<Library>}
- */
-const registerLibrary = async (libraryBody, creatorInfo) => {
-    const { mobile, roleId } = libraryBody;
+// Library profile & settings (spec section 7). Only these keys can ever be written by an owner.
+const FLAT_FIELDS = [
+  'name', 'description', 'alternativeMobileNumber', 'email', 'address', 'city', 'state', 'country', 'pincode',
+  'website', 'gstNumber', 'facilities', 'seatCapacity', 'weeklyHolidays', 'rules', 'terms', 'timezone', 'currency',
+];
+const NESTED_FIELDS = [
+  'mapLocation', 'socialLinks', 'workingHours', 'feePolicy', 'attendanceRules', 'notificationPrefs', 'receipt', 'brand', 'settings',
+];
+const REMOVE_FLAGS = ['', 'null', 'REMOVE_IMAGE'];
+const MAX_PHOTOS = 20;
 
-    // Check if library with mobile already exists
-    const existingLibrary = await Library.findOne({ mobile });
-    if (existingLibrary) {
-        throw new ApiError(400, "Library with this mobile number already exists");
-    }
+const normPath = (p) => (p ? String(p).replace(/\\/g, '/') : p);
+const fileList = (files) => (Array.isArray(files) ? files : []);
 
-    // Role Handling
-    let finalRoleId = roleId;
-    if (!finalRoleId) {
-        const defaultRole = await Role.findOne({ name: 'Admin' });
-        if (!defaultRole) {
-            throw new ApiError(400, "Default 'Admin' role not found. Please provide a roleId.");
-        }
-        finalRoleId = defaultRole._id;
-    }
-
-    const library = new Library({
-        ...libraryBody,
-        roleId: finalRoleId,
-        createdBy: creatorInfo ? "SUPER_ADMIN" : "SELF",
-        createdById: creatorInfo ? creatorInfo.id : null
-    });
-
-    return await library.save();
+exports.getProfile = async (libraryId) => {
+  const library = await Library.findOne({ _id: libraryId, isDeleted: false });
+  if (!library) throw new ApiError(404, 'Library not found');
+  return library;
 };
 
-/**
- * Login Admin
- * @param {string} mobile
- * @param {string} password
- * @returns {Promise<Object>}
- */
-const loginLibrary = async (identifier, password) => {
-    if (!identifier || !password) {
-        throw new ApiError(400, "Mobile/Email and password are required");
+exports.updateProfile = async (req, libraryId) => {
+  const library = await exports.getProfile(libraryId);
+  const body = req.body || {};
+  const files = fileList(req.files);
+
+  const $set = pick(body, FLAT_FIELDS);
+  for (const key of NESTED_FIELDS) {
+    const value = body[key];
+    if (value && typeof value === 'object') {
+      for (const [sub, v] of Object.entries(value)) {
+        if (v !== undefined) $set[`${key}.${sub}`] = v;
+      }
     }
+  }
 
-    const library = await Library.findOne({
-        $or: [{ mobile: identifier }, { email: identifier }],
-        isDeleted: false
-    }).populate({
-        path: 'roleId',
-        populate: { path: 'permissionIds' }
-    });
+  // Receipt numbering must never go backwards (duplicate receipt numbers)
+  if ($set['receipt.nextNumber'] !== undefined && $set['receipt.nextNumber'] < (library.receipt?.nextNumber || 1)) {
+    throw new ApiError(400, `Receipt number cannot be lower than the current counter (${library.receipt.nextNumber})`);
+  }
 
-    if (!library) {
-        throw new ApiError(401, "Invalid credentials");
+  // Images
+  const logo = files.find((f) => f.fieldname === 'logo');
+  const cover = files.find((f) => f.fieldname === 'coverImage');
+  if (logo) $set.logo = normPath(logo.path);
+  else if (REMOVE_FLAGS.includes(body.logo)) $set.logo = null;
+  if (cover) $set.coverImage = normPath(cover.path);
+  else if (REMOVE_FLAGS.includes(body.coverImage)) $set.coverImage = null;
+
+  const newPhotos = files.filter((f) => f.fieldname === 'photos').map((f) => normPath(f.path));
+  if (newPhotos.length || body.existingPhotos !== undefined) {
+    let keep = library.photos || [];
+    if (body.existingPhotos !== undefined) {
+      let parsed = [];
+      try { parsed = JSON.parse(body.existingPhotos); } catch (_) { parsed = []; }
+      // Only photos this library already owns can be kept - never arbitrary client-supplied paths
+      keep = Array.isArray(parsed) ? parsed.filter((p) => (library.photos || []).includes(p)) : [];
     }
+    $set.photos = [...keep, ...newPhotos].slice(0, MAX_PHOTOS);
+  }
 
-    const isMatch = await library.comparePassword(password);
-    if (!isMatch) {
-        throw new ApiError(401, "Invalid credentials");
-    }
+  if (!Object.keys($set).length) throw new ApiError(400, 'No valid fields to update');
 
-    const permissions = library.roleId?.permissionIds?.map(p => p.key) || [];
+  const updated = await Library.findOneAndUpdate(
+    { _id: library._id },
+    { $set },
+    { new: true, runValidators: true }
+  );
 
-    const token = jwt.sign(
-        { id: library._id, mobile: library.mobile, type: 'admin' },
-        config.jwt.secret || 'secret_key',
-        { expiresIn: config.jwt.expiration }
-    );
-
-    return {
-        token,
-        user: {
-            id: library._id,
-            name: library.name,
-            ownerName: library.ownerName,
-            mobile: library.mobile,
-            email: library.email,
-            profileImage: library.profileImage,
-            libraryCode: library.libraryCode,
-            slug: library.slug,
-            role: library.roleId?.name || 'Admin',
-            userType: 'admin',
-            status: library.status,
-            permissions
-        }
-    };
+  await audit(req, 'library.profile_update', 'Library', library._id, { fields: Object.keys($set) });
+  return updated;
 };
 
-/**
- * Query for libraries
- * @param {Object} filter
- * @param {Object} options
- * @returns {Promise<Object>}
- */
-const queryLibraries = async (filter, options) => {
-    const { page = 1, limit = 10 } = options;
-    const skip = (page - 1) * limit;
+// Subscription + usage for the owner "my plan" screen
+exports.getMyPlan = async (libraryId) => {
+  const lib = await Library.findOne({ _id: libraryId, isDeleted: false })
+    .select('name subscriptionPlan subscriptionPlanId subscriptionExpiry planLimits trialEndsAt subscriptionIsTrial approvedAt')
+    .populate('subscriptionPlanId', 'name description monthlyPrice annualPrice features trialDays graceDays');
+  if (!lib) throw new ApiError(404, 'Library not found');
 
-    const total = await Library.countDocuments(filter);
-    const libraries = await Library.find(filter)
-        .populate("roleId", "name")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(parseInt(limit));
-
-    return {
-        libraries,
-        pagination: {
-            total,
-            page: parseInt(page),
-            limit: parseInt(limit),
-            pages: Math.ceil(total / limit)
-        }
-    };
-};
-
-/**
- * Get library by id
- * @param {string} id
- * @returns {Promise<Library>}
- */
-const getLibraryById = async (id) => {
-    const library = await Library.findById(id).populate("roleId", "name");
-    if (!library || library.isDeleted) {
-        throw new ApiError(404, "Library not found");
-    }
-    return library;
-};
-
-/**
- * Update library by id
- * @param {string} id
- * @param {Object} updateBody
- * @returns {Promise<Library>}
- */
-const updateLibraryById = async (id, updateBody) => {
-    const library = await getLibraryById(id);
-
-    if (updateBody.mobile) {
-        const existing = await Library.findOne({ mobile: updateBody.mobile, _id: { $ne: id } });
-        if (existing) {
-            throw new ApiError(400, "Mobile number already in use by another library");
-        }
-    }
-
-    Object.assign(library, updateBody);
-    return await library.save();
-};
-
-/**
- * Update status
- * @param {string} id
- * @param {string} status
- * @returns {Promise<Library>}
- */
-const updateStatus = async (id, status) => {
-    const library = await getLibraryById(id);
-    library.status = status;
-    return await library.save();
-};
-
-/**
- * Soft delete library
- * @param {string} id
- * @returns {Promise<Library>}
- */
-const deleteLibraryById = async (id) => {
-    const library = await getLibraryById(id);
-    library.isDeleted = true;
-    return await library.save();
-};
-
-/**
- * Change library password
- * @param {string} id
- * @param {string} currentPassword
- * @param {string} newPassword
- * @returns {Promise<Library>}
- */
-const changePassword = async (id, newPassword) => {
-    const library = await Library.findById(id);
-    if (!library) {
-        throw new ApiError(404, "Library not found");
-    }
-
-    library.password = newPassword;
-    return await library.save();
-};
-
-module.exports = {
-    registerLibrary,
-    loginLibrary,
-    queryLibraries,
-    getLibraryById,
-    updateLibraryById,
-    updateStatus,
-    deleteLibraryById,
-    changePassword
+  const subscription = getSubscriptionState(lib);
+  const [students, seats, staff] = await Promise.all([
+    Student.countDocuments({ libraryId: lib._id, isDeleted: false }),
+    Seat.countDocuments({ libraryId: lib._id, isDeleted: false }),
+    Admin.countDocuments({ libraryId: lib._id, userType: 'staff' }),
+  ]);
+  const limits = lib.planLimits || {};
+  return {
+    ...lib.toObject(),
+    isExpired: subscription.isExpired,
+    subscription,
+    usage: {
+      students: { used: students, limit: limits.maxStudents ?? null },
+      seats: { used: seats, limit: limits.maxSeats ?? null },
+      staff: { used: staff, limit: limits.maxStaff ?? null },
+    },
+  };
 };
