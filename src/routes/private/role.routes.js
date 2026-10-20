@@ -14,6 +14,7 @@ router.get('/get-role/:id', requireStaff, requirePermission('VIEW_ROLES', 'staff
 router.post('/create-role', requireOwner, validate(v.createRole), roleController.createRole);
 router.post('/duplicate-role/:id', requireOwner, validate(v.idParam), roleController.duplicateRole);
 router.put('/update-role/:id', requireOwner, validate(v.updateRole), roleController.updateRole);
+router.patch('/update-status/:id', requireOwner, validate(v.setRoleStatus), roleController.setRoleStatus);
 router.delete('/delete-role/:id', requireOwner, validate(v.idParam), roleController.deleteRole);
 
 module.exports = router;

@@ -219,7 +219,7 @@ exports.requestRenewal = catchAsync(async (req, res) => {
     if (!planId) throw new ApiError(400, 'No plan to renew. Choose a plan.');
     const Plan = require('../models/plan.model');
     const plan = await Plan.findOne({ _id: planId, libraryId: req.libraryId, isDeleted: { $ne: true } }).select('name allowRenewal isArchived');
-    if (!plan || plan.isArchived) throw new ApiError(404, 'Plan not found');
+    if (!plan) throw new ApiError(404, 'Plan not found');
     if (plan.allowRenewal === false) throw new ApiError(400, `Plan "${plan.name}" does not allow renewal`);
     planName = plan.name;
 

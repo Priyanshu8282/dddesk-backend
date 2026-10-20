@@ -68,7 +68,7 @@ const loadPlan = async (planId, libraryId, { requireAssignable = true } = {}) =>
     if (!isValidId(planId)) throw new ApiError(404, 'Plan not found');
     const plan = await Plan.findOne({ _id: planId, libraryId });
     if (!plan) throw new ApiError(404, 'Plan not found');
-    if (requireAssignable && (plan.status === false || plan.isArchived)) {
+    if (requireAssignable && plan.status === false) {
         throw new ApiError(400, 'This plan is inactive or archived and cannot be assigned');
     }
     return plan;

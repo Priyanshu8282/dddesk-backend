@@ -73,17 +73,12 @@ const updatePlanStatus = z.object({
     })
 });
 
-const archivePlan = z.object({
-    body: z.object({ archived: z.boolean('archived must be true or false') })
-});
-
 const listPlans = z.object({
     query: z.object({
         search: z.string().optional(),
         status: z.string().optional(),
         duration: z.string().optional(),
         sort: z.string().optional(),
-        archived: z.enum(['true', 'false']).optional(),
         page: z.coerce.number().int().min(1).optional(),
         limit: z.coerce.number().int().min(1).max(200).optional()
     }).passthrough()
@@ -93,6 +88,5 @@ module.exports = {
     createPlan,
     updatePlan,
     updatePlanStatus,
-    archivePlan,
     listPlans
 };

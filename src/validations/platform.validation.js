@@ -15,6 +15,14 @@ const createRole = z.object({
         libraryId: objectId.optional(), // honoured for superadmin only
     })
 });
+// switch a role on or off
+const setRoleStatus = z.object({
+    params: z.object({ id: objectId }),
+    body: z.object({
+        status: z.union([z.boolean(), z.enum(['active', 'inactive'])], 'status must be true or false').transform((v) => (typeof v === 'boolean' ? v : v === 'active'))
+    })
+});
+
 const updateRole = z.object({
     params: z.object({ id: objectId }),
     body: z.object({
@@ -187,7 +195,7 @@ const updateBranch = z.object({
 
 module.exports = {
     objectId, idParam,
-    createRole, updateRole, createPermission, updatePermission, createMenu, updateMenu, upsertSetting,
+    createRole, setRoleStatus, updateRole, createPermission, updatePermission, createMenu, updateMenu, upsertSetting,
     createPlatformPlan, updatePlatformPlan, rejectOrSuspend, assignPlan, changeSlug,
     superCreateLibrary, superUpdateLibrary, updateBranch,
 };

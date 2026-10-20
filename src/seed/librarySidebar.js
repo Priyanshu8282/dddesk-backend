@@ -24,7 +24,7 @@ const LIBRARY_MENUS = [
   { title: 'Staff', iconStyle: 'staff', to: 'staff' },
   { title: 'Roles & Access', iconStyle: 'roles', to: 'roles' },
   { title: 'Branches', iconStyle: 'branches', to: 'branches' },
-  { title: 'Billing', iconStyle: 'billing', to: 'billing' },
+  { title: 'Subscription', iconStyle: 'billing', to: 'billing' },
   { title: 'Settings', iconStyle: 'settings', to: 'settings' },
 ];
 

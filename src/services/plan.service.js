@@ -89,11 +89,9 @@ const queryPlans = async (filter, options = {}) => {
     };
 };
 
-const buildPlanFilter = (libraryId, { search, status, archived, duration } = {}) => {
+const buildPlanFilter = (libraryId, { search, status, duration } = {}) => {
     const filter = { libraryId, isDeleted: false };
     const s = status ? String(status).toLowerCase() : '';
-    if (s === 'archived' || archived === 'true') filter.isArchived = true;
-    else filter.isArchived = { $ne: true };
     if (s === 'active') filter.status = true;
     else if (s === 'inactive') filter.status = false;
     if (duration && Plan.schema.path('durationType').enumValues.includes(String(duration))) filter.durationType = String(duration);
@@ -102,20 +100,19 @@ const buildPlanFilter = (libraryId, { search, status, archived, duration } = {})
 };
 
 const getPlanSummary = async (libraryId) => {
-    const base = { libraryId, isDeleted: false, isArchived: { $ne: true } };
-    const [total, active, inactive, archived] = await Promise.all([
+    const base = { libraryId, isDeleted: false };
+    const [total, active, inactive] = await Promise.all([
         Plan.countDocuments(base),
         Plan.countDocuments({ ...base, status: true }),
-        Plan.countDocuments({ ...base, status: false }),
-        Plan.countDocuments({ libraryId, isDeleted: false, isArchived: true })
+        Plan.countDocuments({ ...base, status: false })
     ]);
-    return { total, active, inactive, archived };
+    return { total, active, inactive };
 };
 
 /** Cards on top of the page: counts, students on plans, revenue potential, students per plan */
 const getPlanStats = async (libraryId) => {
     const summary = await getPlanSummary(libraryId);
-    const plans = await Plan.find({ libraryId, isArchived: { $ne: true } }).select('name finalPrice status durationType');
+    const plans = await Plan.find({ libraryId, isDeleted: false }).select('name finalPrice status durationType');
     const counts = await studentCountsFor(libraryId, plans.map((p) => p._id));
     let studentsOnPlans = 0;
     let revenuePotential = 0;
@@ -150,14 +147,6 @@ const getPlanDetail = async (id, libraryId) => {
     return { ...withCounts(plan, counts), recentStudents: recent, studentStatusCounts: statusCounts };
 };
 
-const setPlanArchived = async (id, libraryId, archived) => {
-    const plan = await getPlanById(id, libraryId);
-    plan.isArchived = !!archived;
-    if (archived) plan.status = false; // archived plans cannot be assigned
-    await plan.save();
-    return plan;
-};
-
 const updatePlanById = async (id, libraryId, body) => {
     const plan = await getPlanById(id, libraryId);
     const data = pick(body, PLAN_FIELDS);
@@ -178,16 +167,16 @@ const updatePlanStatus = async (id, libraryId, status) => {
     return plan;
 };
 
-/** Delete a plan only when no student is linked to it; otherwise ask the owner to archive it instead. */
+/** Delete a plan only when no student is linked to it; otherwise ask the owner to switch it off instead. */
 const deletePlanById = async (id, libraryId) => {
     const plan = await getPlanById(id, libraryId);
     const inUse = await Student.countDocuments({ libraryId, planId: plan._id });
     if (inUse > 0) {
-        throw new ApiError(409, `${inUse} student(s) are linked to this plan. Archive it instead of deleting.`);
+        throw new ApiError(409, `${inUse} student(s) are on this plan. Switch the plan off instead of deleting it.`);
     }
     plan.isDeleted = true;
     await plan.save();
-    return { plan, archived: false, activeMembers: 0 };
+    return { plan };
 };
 
 module.exports = {
@@ -197,7 +186,6 @@ module.exports = {
     getPlanSummary,
     getPlanStats,
     getPlanDetail,
-    setPlanArchived,
     getPlanById,
     updatePlanById,
     updatePlanStatus,

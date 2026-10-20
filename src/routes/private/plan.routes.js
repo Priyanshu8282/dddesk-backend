@@ -27,7 +27,6 @@ router.get('/get-plan/:id', requirePermission(...VIEW), planController.getPlan);
 router.put('/update-plan/:id', requirePermission(...EDIT), validate(planValidation.updatePlan), planController.updatePlan);
 router.patch('/:id/status', requirePermission(...EDIT), validate(planValidation.updatePlanStatus), planController.updatePlanStatus);
 
-router.patch('/:id/archive', requirePermission(...EDIT), validate(planValidation.archivePlan), planController.archivePlan);
 
 router.delete('/delete-plan/:id', requirePermission(...DELETE), planController.deletePlan);
 

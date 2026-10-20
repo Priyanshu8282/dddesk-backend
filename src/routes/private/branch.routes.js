@@ -11,6 +11,7 @@ router.get('/',         requireStaff, ctrl.getBranches);
 router.post('/',        requireOwner, validate(branchValidation.createBranch), ctrl.createBranch);
 router.get('/:id',      requireStaff, validate(v.idParam), ctrl.getBranchById);
 router.put('/:id',      requireStaff, requirePermission('branches.manage', 'settings.manage'), validate(v.updateBranch), ctrl.updateBranch);
+router.patch('/:id/status', requireStaff, requirePermission('branches.manage', 'settings.manage'), validate(branchValidation.setBranchStatus), ctrl.setBranchStatus);
 router.delete('/:id',   requireOwner, validate(v.idParam), ctrl.deleteBranch);
 router.patch('/:id/set-main', requireOwner, validate(v.idParam), ctrl.setMainBranch);
 

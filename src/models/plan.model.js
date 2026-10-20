@@ -54,7 +54,6 @@ const libraryPlanSchema = new mongoose.Schema({
     autoRenewReminderDays: { type: Number, default: 3, min: 0 },
 
     status: { type: Boolean, default: true },
-    isArchived: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
 
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }

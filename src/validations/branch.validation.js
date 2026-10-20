@@ -18,6 +18,15 @@ const createBranch = z.object({
     })
 });
 
+// switch a branch on or off
+const setBranchStatus = z.object({
+    params: z.object({ id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id') }),
+    body: z.object({
+        isActive: z.union([z.boolean(), z.enum(['active', 'inactive'])], 'isActive must be true or false').transform((v) => (typeof v === 'boolean' ? v : v === 'active'))
+    })
+});
+
 module.exports = {
+    setBranchStatus,
     createBranch
 };

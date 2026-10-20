@@ -62,6 +62,7 @@ const resolveAssignableRole = async (req, roleId, tenant) => {
   const role = await Role.findOne({ _id: roleId, status: true }).populate('permissionIds', 'key');
   if (!role) throw err('Role not found', 404);
   if (role.libraryId && idOf(role.libraryId) !== idOf(tenant)) throw err('Role not found', 404);
+  if (!role.libraryId && req.userType !== 'superadmin') throw err('Role not found', 404); // platform templates are not for libraries
   if (req.userType !== 'superadmin' && PRIVILEGED_ROLE_NAMES.includes(String(role.name).toLowerCase())) {
     throw err('This role cannot be assigned to staff', 403);
   }
@@ -75,7 +76,9 @@ const resolveAssignableRole = async (req, roleId, tenant) => {
 };
 
 const defaultStaffRole = async (tenant) => {
-  const role = await Role.findOne({ name: 'Staff', libraryId: { $in: [null, tenant] }, status: true }).sort({ libraryId: -1 });
+  let role = await Role.findOne({ name: 'Staff', libraryId: tenant, status: true });
+  if (!role) { await require('./libraryRoles.service').provisionDefaultRoles(tenant); role = await Role.findOne({ name: 'Staff', libraryId: tenant, status: true }); }
+  if (!role) role = await Role.findOne({ name: 'Staff', libraryId: null, status: true });
   if (!role) throw err("System Error: 'Staff' role is missing.", 500);
   return role;
 };
@@ -198,6 +201,9 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
     await Library.deleteOne({ _id: library._id }); // compensate: no orphan library
     throw e;
   }
+
+  // the library's own copy of the basic roles (Staff, Receptionist, Accountant, Manager); never blocks sign-up
+  try { await require('./libraryRoles.service').provisionDefaultRoles(library._id, admin._id); } catch (e) { console.error('default roles were not created:', e.message); }
 
   if (bySuper) {
     const { provisionLibrary } = require('./libraryProvision.service');

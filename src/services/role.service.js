@@ -18,13 +18,11 @@ const HIDDEN_FOR_TENANTS = ['Super Admin', 'Admin'];
 
 const populateRole = (q) => q.populate('permissionIds').populate('sidebarMenuIds');
 
-// Visible roles: system roles + the tenant's own roles
+// Visible roles: a library sees only its own roles (the basic ones are created for it when the library is created).
+// Platform templates (libraryId = null) are for the super admin only.
 const visibleFilter = (req) => {
   if (isSA(req)) return {};
-  return {
-    $or: [{ libraryId: null }, { libraryId: req.libraryId }],
-    name: { $nin: HIDDEN_FOR_TENANTS },
-  };
+  return { libraryId: req.libraryId, name: { $nin: HIDDEN_FOR_TENANTS } };
 };
 
 // Validates permission ids exist; tenants may not grant platform-only permissions

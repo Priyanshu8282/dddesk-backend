@@ -26,6 +26,13 @@ exports.updateRole = catchAsync(async (req, res) => {
   res.status(200).json({ success: true, message: 'Role updated successfully', data: role });
 });
 
+// Switch a role on or off (the service refuses to turn it off while staff still use it)
+exports.setRoleStatus = catchAsync(async (req, res) => {
+  req.body = { status: req.body.status };
+  const role = await svc.updateRole(req, req.params.id);
+  res.status(200).json({ success: true, message: role.status ? 'Role switched on' : 'Role switched off', data: role });
+});
+
 exports.deleteRole = catchAsync(async (req, res) => {
   await svc.deleteRole(req, req.params.id);
   res.status(200).json({ success: true, message: 'Role deleted successfully' });

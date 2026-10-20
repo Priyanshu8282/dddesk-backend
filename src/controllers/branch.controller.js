@@ -38,6 +38,13 @@ exports.updateBranch = catchAsync(async (req, res) => {
   res.status(200).json({ success: true, message: 'Branch updated successfully', data: branch });
 });
 
+// Switch a branch on or off (the main branch cannot be switched off; the service enforces it)
+exports.setBranchStatus = catchAsync(async (req, res) => {
+  const { branch } = await svc.updateBranch(req.params.id, lib(req), { isActive: req.body.isActive });
+  await audit(req, req.body.isActive ? 'branch.activate' : 'branch.deactivate', 'Branch', branch._id, { name: branch.name });
+  res.status(200).json({ success: true, message: req.body.isActive ? 'Branch switched on' : 'Branch switched off', data: branch });
+});
+
 exports.deleteBranch = catchAsync(async (req, res) => {
   const branch = await svc.deleteBranch(req.params.id, lib(req));
   await audit(req, 'branch.delete', 'Branch', branch._id, { name: branch.name });

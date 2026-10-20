@@ -49,13 +49,10 @@ const updatePlan = catchAsync(async (req, res) => {
 
 const deletePlan = catchAsync(async (req, res) => {
     const result = await planService.deletePlanById(req.params.id, lib(req));
-    audit(req, result.archived ? 'plan.archive' : 'plan.delete', 'Plan', result.plan._id, { activeMembers: result.activeMembers });
+    audit(req, 'plan.delete', 'Plan', result.plan._id, {});
     res.status(200).json({
         success: true,
-        message: result.archived
-            ? `Plan archived because ${result.activeMembers} member(s) still use it`
-            : 'Plan deleted successfully',
-        archived: result.archived,
+        message: 'Plan deleted successfully',
         data: result.plan
     });
 });
@@ -71,16 +68,8 @@ const getPlanStats = catchAsync(async (req, res) => {
     res.status(200).json({ success: true, message: 'Plan stats retrieved successfully', data });
 });
 
-const archivePlan = catchAsync(async (req, res) => {
-    const archived = req.body.archived;
-    const plan = await planService.setPlanArchived(req.params.id, lib(req), archived);
-    audit(req, archived ? 'plan.archive' : 'plan.restore', 'Plan', plan._id, { name: plan.name });
-    res.status(200).json({ success: true, message: archived ? 'Plan archived' : 'Plan restored', data: plan });
-});
-
 module.exports = {
     getPlanStats,
-    archivePlan,
     createPlan,
     getPlans,
     getPlan,
