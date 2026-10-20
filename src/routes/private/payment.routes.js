@@ -24,8 +24,10 @@ router.post('/razorpay/verify', ...anyPayer, validate(paymentValidation.verifyRa
 router.post('/razorpay/verify-payment', ...anyPayer, validate(paymentValidation.verifyRazorpayPayment), razorpayController.verifyPayment);
 
 // ── Staff ─────────────────────────────────────────────────────────────────────
-router.get('/outstanding', requireStaff, requirePermission(...VIEW), paymentController.getOutstanding);
-router.get('/overdue', requireStaff, requirePermission(...VIEW), paymentController.getOverdue);
+router.get('/summary', requireStaff, requirePermission(...VIEW), paymentController.getSummary);
+router.get('/export', requireStaff, requirePermission(...VIEW), validate(paymentValidation.queryPayments), paymentController.exportPayments);
+router.get('/outstanding', requireStaff, requirePermission(...VIEW), validate(paymentValidation.queryDues), paymentController.getOutstanding);
+router.get('/overdue', requireStaff, requirePermission(...VIEW), validate(paymentValidation.queryDues), paymentController.getOverdue);
 router.get('/student/:studentId/ledger', requireStaff, requirePermission(...VIEW), paymentController.getStudentLedger);
 
 router.get('/', requireStaff, requirePermission(...VIEW), validate(paymentValidation.queryPayments), paymentController.getPayments);

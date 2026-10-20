@@ -59,6 +59,7 @@ router.post(
     studentController.createStudent
 );
 
+router.get('/export', requirePermission(...VIEW), validate(studentValidation.listStudents), studentController.exportStudents);
 router.get('/get-students', requirePermission(...VIEW), validate(studentValidation.listStudents), studentController.getAllStudents);
 router.get('/', requirePermission(...VIEW), validate(studentValidation.listStudents), studentController.getAllStudents);
 router.get('/get-student/:id', requirePermission(...VIEW), studentController.getStudentById);

@@ -77,6 +77,9 @@ const planFields = {
     description: z.string().trim().max(500),
     monthlyPrice: z.coerce.number().min(0),
     annualPrice: z.coerce.number().min(0),
+    gstPercent: z.coerce.number().min(0).max(28),
+    isPopular: z.boolean(),
+    sortOrder: z.coerce.number().int().min(0).max(9999),
     trialDays: z.coerce.number().int().min(0).max(365),
     graceDays: z.coerce.number().int().min(0).max(90),
     maxStudents: z.coerce.number().int().min(0),
@@ -115,13 +118,31 @@ const superCreateLibrary = z.object({
         email: z.string().trim().toLowerCase().email(),
         mobile: z.string().trim().min(10).max(15),
         password: z.string().min(8).max(128),
+        confirmPassword: z.string().max(128).optional(),
         address: z.string().trim().max(300).optional(),
         city: z.string().trim().max(80).optional(),
         state: z.string().trim().max(80).optional(),
         country: z.string().trim().max(60).optional(),
-        pincode: z.string().trim().max(10).optional(),
+        pincode: z.string().trim().max(12).optional(),
         alternativeMobileNumber: z.string().trim().max(15).optional(),
         seatCapacity: z.coerce.number().int().min(0).optional(),
+    }).superRefine((b, ctx) => {
+        if (b.confirmPassword !== undefined && b.confirmPassword !== b.password) {
+            ctx.addIssue({ code: 'custom', path: ['confirmPassword'], message: 'Passwords do not match' });
+        }
+        const { findState, findCountry, isIndia } = require('../data/indiaLocations');
+        if (b.country && !findCountry(b.country)) {
+            ctx.addIssue({ code: 'custom', path: ['country'], message: 'Country not supported yet' });
+        }
+        if (b.pincode && isIndia(b.country) && !/^\d{6}$/.test(b.pincode)) {
+            ctx.addIssue({ code: 'custom', path: ['pincode'], message: 'Pincode must be 6 digits' });
+        }
+        if (b.state && isIndia(b.country) && !findState(b.state)) {
+            ctx.addIssue({ code: 'custom', path: ['state'], message: 'Choose a state from the list' });
+        }
+    }).transform(({ confirmPassword, ...rest }) => {
+        const { findState, isIndia } = require('../data/indiaLocations');
+        return { ...rest, ...(rest.state && isIndia(rest.country) ? { state: findState(rest.state) } : {}) };
     })
 });
 const superUpdateLibrary = z.object({
@@ -139,6 +160,7 @@ const superUpdateLibrary = z.object({
         pincode: z.string().trim().max(10),
         website: z.string().trim().max(200),
         gstNumber: z.string().trim().max(20),
+        removeOwnerImage: z.enum(['true', 'false']),
     }).partial()
 });
 

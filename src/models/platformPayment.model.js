@@ -7,7 +7,10 @@ const platformPaymentSchema = new mongoose.Schema({
     period: { type: String, enum: ['monthly', 'annual'], default: 'monthly' },
     periodStart: { type: Date },
     periodEnd: { type: Date },
-    amount: { type: Number, required: true, min: 0 },
+    amount: { type: Number, required: true, min: 0 },   // TOTAL charged, including GST
+    taxableAmount: { type: Number, min: 0 },            // price after credit, before GST
+    gstPercent: { type: Number, min: 0 },
+    gstAmount: { type: Number, min: 0 },
     // renewal | upgrade (immediate plan change, new period starts at payment, prorated credit applied)
     kind: { type: String, enum: ['renewal', 'upgrade'], default: 'renewal' },
     listPrice: { type: Number, min: 0 },        // full price of the period (amount + creditApplied)

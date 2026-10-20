@@ -7,6 +7,18 @@ const ApiError = require('../utils/ApiError');
 const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
 const { branchVisibility } = require('../utils/branchScope');
+const { startOfDayIST, endOfDayIST } = require('../utils/time');
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const NOTICE_SORTS = {
+    pinned: { isPinned: -1, createdAt: -1, _id: -1 },
+    newest: { createdAt: -1, _id: -1 },
+    oldest: { createdAt: 1, _id: 1 },
+    title: { title: 1, _id: 1 },
+    views: { views: -1, createdAt: -1 },
+    start: { startDate: -1, _id: -1 },
+    ending: { endDate: 1, _id: 1 }
+};
 
 const assertId = (id) => {
     if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid notice ID');
@@ -145,7 +157,7 @@ const createNotice = async (libraryId, body, file, creatorId) => {
 };
 
 // `scope` = branch filter fragment from utils/branchScope.branchFilter(req): notices of those branches + all-branch notices
-const queryNotices = async (libraryId, { search, status = 'all', type, page = 1, limit = 10 } = {}, scope = {}) => {
+const queryNotices = async (libraryId, { search, status = 'all', type, sendTo, pinned, from, to, sort = 'pinned', page = 1, limit = 10 } = {}, scope = {}) => {
     const now = new Date();
     const filter = { libraryId };
     if (search) {
@@ -153,6 +165,13 @@ const queryNotices = async (libraryId, { search, status = 'all', type, page = 1,
         filter.$or = [{ title: rx }, { description: rx }];
     }
     if (type) filter.type = type;
+    if (sendTo) filter.sendTo = sendTo === 'selected' ? { $in: ['selected', 'specific'] } : sendTo;
+    if (pinned === 'true' || pinned === true) filter.isPinned = true;
+    if (from || to) {
+        filter.startDate = {};
+        if (from) filter.startDate.$gte = DATE_ONLY.test(String(from)) ? startOfDayIST(new Date(from)) : new Date(from);
+        if (to) filter.startDate.$lte = DATE_ONLY.test(String(to)) ? endOfDayIST(new Date(to)) : new Date(to);
+    }
     if (status === 'inactive') filter.isActive = false;
     else if (status === 'active') Object.assign(filter, timeFilter(now));
     else if (status === 'scheduled') Object.assign(filter, { isActive: true, startDate: { $gt: now } });
@@ -164,19 +183,20 @@ const queryNotices = async (libraryId, { search, status = 'all', type, page = 1,
     const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
     const lib = new mongoose.Types.ObjectId(String(libraryId));
     const [rows, totalResults, [agg]] = await Promise.all([
-        Notice.find(filter).select('-seenBy').sort({ isPinned: -1, createdAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+        Notice.find(filter).select('-seenBy').sort(NOTICE_SORTS[sort] || NOTICE_SORTS.pinned).skip((p - 1) * l).limit(l).lean(),
         Notice.countDocuments(filter),
         Notice.aggregate([{ $match: { libraryId: lib } }, { $group: {
             _id: null, total: { $sum: 1 }, totalViews: { $sum: '$views' },
+            pinned: { $sum: { $cond: ['$isPinned', 1, 0] } },
             inactive: { $sum: { $cond: ['$isActive', 0, 1] } },
             expired: { $sum: { $cond: [{ $and: ['$isActive', { $ne: ['$endDate', null] }, { $lte: ['$endDate', now] }] }, 1, 0] } },
             scheduled: { $sum: { $cond: [{ $and: ['$isActive', { $gt: ['$startDate', now] }] }, 1, 0] } }
         } }])
     ]);
     const summary = agg
-        ? { total: agg.total, totalViews: agg.totalViews, inactive: agg.inactive, expired: agg.expired, scheduled: agg.scheduled,
+        ? { total: agg.total, totalViews: agg.totalViews, pinned: agg.pinned, inactive: agg.inactive, expired: agg.expired, scheduled: agg.scheduled,
             active: agg.total - agg.inactive - agg.expired - agg.scheduled }
-        : { total: 0, totalViews: 0, inactive: 0, expired: 0, scheduled: 0, active: 0 };
+        : { total: 0, totalViews: 0, pinned: 0, inactive: 0, expired: 0, scheduled: 0, active: 0 };
     return {
         results: rows.map((n) => ({ ...n, status: statusOf(n, now) })),
         page: p, limit: l, totalResults, summary
@@ -210,6 +230,8 @@ const updateNotice = async (id, libraryId, body, file) => {
     if (file) {
         if (file.mediaKind !== 'image') throw new ApiError(400, 'Notice attachment must be an image');
         set.imageUrl = file.path;
+    } else if (body.removeImage === true) {
+        set.imageUrl = '';
     }
     if (set.isActive === true && !existing.isActive) set.publishedAt = new Date();
     return Notice.findOneAndUpdate({ _id: id, libraryId }, { $set: set }, { new: true, runValidators: true }).select('-seenBy');

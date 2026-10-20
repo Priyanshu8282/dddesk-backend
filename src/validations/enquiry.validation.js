@@ -76,8 +76,13 @@ const convertEnquiry = z.object({
         joiningDate: isoDate.optional(),
         name: z.string().trim().min(2).max(100).optional(),
         mobile: mobile.optional(),
-        email: z.string().trim().email().max(150).optional().or(z.literal(''))
-    }).strip().default({})
+        email: z.string().trim().email().max(150).optional().or(z.literal('')),
+        // first sign-in password for a NEW student (ignored when the mobile already belongs to a student)
+        password: z.string().min(8, 'Password must be at least 8 characters').max(64).regex(/[A-Za-z]/, 'Password must contain a letter').regex(/d/, 'Password must contain a number').optional(),
+        confirmPassword: z.string().optional()
+    }).strip().default({}).superRefine((b, ctx) => {
+        if (b.password !== undefined && b.confirmPassword !== b.password) ctx.addIssue({ code: 'custom', path: ['confirmPassword'], message: 'Passwords do not match' });
+    })
 });
 
 const conversionStats = z.object({

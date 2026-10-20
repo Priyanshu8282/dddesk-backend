@@ -35,7 +35,8 @@ exports.provisionLibrary = async (library, { approvedBy = null } = {}) => {
   let lib = await exports.ensureSlug(library);
 
   const plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId) : null;
-  const trialDays = plan?.trialDays ?? DEFAULT_TRIAL_DAYS;
+  await require('./platformSettings.service').ensureFresh();
+  const trialDays = plan?.trialDays ?? require('./platformSettings.service').defaultTrialDays() ?? DEFAULT_TRIAL_DAYS;
   const set = {};
   if (!lib.trialEndsAt && !lib.subscriptionExpiry && trialDays > 0) {
     set.trialEndsAt = new Date(Date.now() + trialDays * DAY);

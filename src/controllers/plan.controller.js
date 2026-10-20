@@ -19,7 +19,7 @@ const createPlan = catchAsync(async (req, res) => {
 const getPlans = catchAsync(async (req, res) => {
     const libraryId = lib(req);
     const filter = planService.buildPlanFilter(libraryId, req.query);
-    const result = await planService.queryPlans(filter, { page: req.query.page, limit: req.query.limit });
+    const result = await planService.queryPlans(filter, { page: req.query.page, limit: req.query.limit, sort: req.query.sort });
     const summary = await planService.getPlanSummary(libraryId);
 
     res.status(200).json({
@@ -31,12 +31,13 @@ const getPlans = catchAsync(async (req, res) => {
         page: result.page,
         limit: result.limit,
         totalResults: result.totalResults,
+        totalPages: result.totalPages,
         summary
     });
 });
 
 const getPlan = catchAsync(async (req, res) => {
-    const plan = await planService.getPlanById(req.params.id, lib(req));
+    const plan = await planService.getPlanDetail(req.params.id, lib(req));
     res.status(200).json({ success: true, message: 'Plan retrieved successfully', data: plan });
 });
 
@@ -65,7 +66,21 @@ const updatePlanStatus = catchAsync(async (req, res) => {
     res.status(200).json({ success: true, message: 'Plan status updated successfully', data: plan });
 });
 
+const getPlanStats = catchAsync(async (req, res) => {
+    const data = await planService.getPlanStats(lib(req));
+    res.status(200).json({ success: true, message: 'Plan stats retrieved successfully', data });
+});
+
+const archivePlan = catchAsync(async (req, res) => {
+    const archived = req.body.archived;
+    const plan = await planService.setPlanArchived(req.params.id, lib(req), archived);
+    audit(req, archived ? 'plan.archive' : 'plan.restore', 'Plan', plan._id, { name: plan.name });
+    res.status(200).json({ success: true, message: archived ? 'Plan archived' : 'Plan restored', data: plan });
+});
+
 module.exports = {
+    getPlanStats,
+    archivePlan,
     createPlan,
     getPlans,
     getPlan,

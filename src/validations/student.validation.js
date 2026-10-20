@@ -44,14 +44,23 @@ const studentFields = {
 const createStudent = z.object({
     body: z.object({
         ...studentFields,
-        // Optional: if omitted a random temporary password is generated
-        password: z.preprocess(emptyToUndef, z.string().min(6, 'Password must be at least 6 characters').optional()),
+        // Required: the owner sets the student's first password (the student is asked to change it at first sign-in)
+        password: z.string('Password is required')
+            .min(8, 'Password must be at least 8 characters')
+            .max(64, 'Password must be 64 characters or fewer')
+            .regex(/[A-Za-z]/, 'Password must contain a letter')
+            .regex(/\d/, 'Password must contain a number'),
+        confirmPassword: z.string().optional(),
         seatId: z.preprocess(emptyToUndef, objectId.optional()),
         planId: z.preprocess(emptyToUndef, objectId.optional()),
         documentType: z.string().optional(),
         dueDate: z.preprocess(emptyToUndef, z.coerce.date().optional()),
         couponCode: z.preprocess(emptyToUndef, z.string().trim().min(1).max(40).optional()),
         referrerId: z.preprocess(emptyToUndef, objectId.optional())
+    }).superRefine((b, ctx) => {
+        if (b.confirmPassword !== undefined && b.confirmPassword !== b.password) {
+            ctx.addIssue({ code: 'custom', path: ['confirmPassword'], message: 'Passwords do not match' });
+        }
     })
 });
 
@@ -170,6 +179,9 @@ const listStudents = z.object({
         membershipStatus: z.string().optional(),
         branchId: z.string().optional(),
         planId: z.string().optional(),
+        gender: z.string().optional(),
+        hasSeat: z.string().optional(),
+        sort: z.string().optional(),
         page: z.coerce.number().int().min(1).optional(),
         limit: z.coerce.number().int().min(1).max(100).optional()
     }).passthrough()

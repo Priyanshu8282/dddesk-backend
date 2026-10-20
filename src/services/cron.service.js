@@ -292,6 +292,14 @@ const initCronJobs = () => {
     }, TZ);
 
 
+    // SaaS subscription lifecycle (trial/grace/suspend, scheduled downgrades, renewal reminders), 02:00 IST
+    try {
+        require('./subscriptionCron.service').initSubscriptionCronJobs();
+    } catch (e) {
+        console.error('[cron] failed to start subscription cron:', e.message);
+    }
+
+    // Fee-overdue / reminder jobs
     try {
         const fee = require('./feeCron.service');
         const init = fee.initFeeCronJobs || fee.initCronJobs || fee.init;

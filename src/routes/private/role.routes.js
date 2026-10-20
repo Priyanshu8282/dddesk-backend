@@ -12,6 +12,7 @@ router.get('/get-role/:id', requireStaff, requirePermission('VIEW_ROLES', 'staff
 
 // Writing roles: library owner (own tenant) or superadmin only
 router.post('/create-role', requireOwner, validate(v.createRole), roleController.createRole);
+router.post('/duplicate-role/:id', requireOwner, validate(v.idParam), roleController.duplicateRole);
 router.put('/update-role/:id', requireOwner, validate(v.updateRole), roleController.updateRole);
 router.delete('/delete-role/:id', requireOwner, validate(v.idParam), roleController.deleteRole);
 

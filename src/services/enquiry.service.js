@@ -63,6 +63,8 @@ const notifyOwner = (libraryId, enquiry) => {
 };
 
 // `scope` = branch filter fragment from utils/branchScope.branchFilter(req) ({} = all branches)
+const ENQ_SORTS = { newest: { createdAt: -1 }, oldest: { createdAt: 1 }, name: { name: 1 }, followup: { followUpDate: 1 } };
+
 const listEnquiries = async (libraryId, query = {}, scope = {}) => {
     const filter = { libraryId, ...scope };
     if (query.status) filter.status = query.status;
@@ -84,7 +86,7 @@ const listEnquiries = async (libraryId, query = {}, scope = {}) => {
     const page = Math.max(parseInt(query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(query.limit, 10) || 20, 1), 100);
     const [data, total] = await Promise.all([
-        Enquiry.find(filter).populate('assignedTo', 'name').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+        Enquiry.find(filter).populate('assignedTo', 'name').populate('convertedStudentId', 'name').sort({ ...(ENQ_SORTS[query.sort] || ENQ_SORTS.newest), _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
         Enquiry.countDocuments(filter)
     ]);
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
@@ -195,6 +197,7 @@ const convertEnquiry = async (id, libraryId, body, req) => {
                 name: body.name || enquiry.name,
                 mobile,
                 email: body.email || enquiry.email || undefined,
+                password: body.password || undefined,
                 address: enquiry.address || undefined,
                 branchId: enquiry.branchId || undefined,
                 joiningDate: body.joiningDate ? new Date(body.joiningDate) : undefined,
@@ -230,10 +233,13 @@ const conversionStats = async (libraryId, { from, to } = {}, scope = {}) => {
         if (from) match.createdAt.$gte = new Date(from);
         if (to) { const t = new Date(to); t.setHours(23, 59, 59, 999); match.createdAt.$lte = t; }
     }
-    const [byStatus, bySource, bySourceConverted] = await Promise.all([
+    const open = { $nin: ['converted', 'rejected', 'closed'] };
+    const [byStatus, bySource, bySourceConverted, followUpsDue, followUpsToday] = await Promise.all([
         Enquiry.aggregate([{ $match: match }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
         Enquiry.aggregate([{ $match: match }, { $group: { _id: '$source', count: { $sum: 1 } } }]),
-        Enquiry.aggregate([{ $match: { ...match, status: 'converted' } }, { $group: { _id: '$source', count: { $sum: 1 } } }])
+        Enquiry.aggregate([{ $match: { ...match, status: 'converted' } }, { $group: { _id: '$source', count: { $sum: 1 } } }]),
+        Enquiry.countDocuments({ libraryId: match.libraryId, isDeleted: false, ...scope, status: open, followUpDate: { $lt: new Date(new Date().setHours(0, 0, 0, 0)) } }),
+        Enquiry.countDocuments({ libraryId: match.libraryId, isDeleted: false, ...scope, status: open, followUpDate: { $gte: new Date(new Date().setHours(0, 0, 0, 0)), $lte: new Date(new Date().setHours(23, 59, 59, 999)) } })
     ]);
     const statusCounts = Object.fromEntries(Enquiry.STATUSES.map((s) => [s, 0]));
     byStatus.forEach((r) => { statusCounts[r._id] = r.count; });
@@ -241,7 +247,7 @@ const conversionStats = async (libraryId, { from, to } = {}, scope = {}) => {
     const converted = statusCounts.converted || 0;
     const convMap = Object.fromEntries(bySourceConverted.map((r) => [r._id, r.count]));
     return {
-        total, converted,
+        total, converted, followUpsOverdue: followUpsDue, followUpsToday,
         conversionRate: total ? Math.round((converted / total) * 1000) / 10 : 0,
         byStatus: statusCounts,
         bySource: bySource.map((r) => ({

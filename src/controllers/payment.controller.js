@@ -133,8 +133,21 @@ const getReceipt = catchAsync(async (req, res) => {
     ok(res, 'Receipt retrieved successfully', receipt);
 });
 
+const getSummary = catchAsync(async (req, res) => {
+    const data = await ledger.getPaymentsSummary(lib(req), branchFilter(req));
+    ok(res, 'Payments summary retrieved successfully', data);
+});
+
+const exportPayments = catchAsync(async (req, res) => {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="payments-${new Date().toISOString().slice(0, 10)}.csv"`);
+    await ledger.exportPaymentsCsv(lib(req), req.query, branchFilter(req), (chunk) => new Promise((resolve) => (res.write(chunk) ? resolve() : res.once('drain', resolve))));
+    res.end();
+});
+
 const getOutstanding = catchAsync(async (req, res) => {
     const r = await ledger.getLibraryOutstanding(lib(req), {
+        sort: req.query.sort,
         page: Math.max(1, parseInt(req.query.page, 10) || 1),
         limit: Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20)),
         search: req.query.search,
@@ -145,6 +158,7 @@ const getOutstanding = catchAsync(async (req, res) => {
 
 const getOverdue = catchAsync(async (req, res) => {
     const r = await ledger.getLibraryOutstanding(lib(req), {
+        sort: req.query.sort,
         overdueOnly: true,
         page: Math.max(1, parseInt(req.query.page, 10) || 1),
         limit: Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20)),
@@ -173,5 +187,5 @@ const getMyReceipt = catchAsync(async (req, res) => {
 
 module.exports = {
     createPayment, collectPartialPayment, getPayments, getPayment, refundPayment, adjustPayment,
-    cancelPayment, getReceipt, getOutstanding, getOverdue, getStudentLedger, getMyLedger, getMyReceipt
+    cancelPayment, getReceipt, getSummary, exportPayments, getOutstanding, getOverdue, getStudentLedger, getMyLedger, getMyReceipt
 };

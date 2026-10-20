@@ -8,6 +8,29 @@ const mongoose = require('mongoose');
 const Library = require('../models/library.model');
 const svc = require('../services/auth.service');
 const audit = require('../utils/audit');
+const securityLog = require('../utils/securityLog');
+const platformSettings = require('../services/platformSettings.service');
+
+// During maintenance only super admins may sign in
+const maintenanceBlock = async (res, userType) => {
+  await platformSettings.ensureFresh();
+  if (platformSettings.isMaintenance() && userType !== 'superadmin') {
+    res.status(503).json({ success: false, code: 503, maintenance: true, message: platformSettings.maintenanceMessage() });
+    return true;
+  }
+  return false;
+};
+
+// Why a sign-in failed, in words an investigator can filter on
+const reasonOf = (err) => {
+  if (err.libraryStatus) return 'library_blocked';
+  if (err.status === 429) return 'otp_locked';
+  if (err.status === 403) return 'account_disabled';
+  if (err.status === 401) return 'invalid_credentials';
+  if (err.status === 400) return 'invalid_otp';
+  return 'error';
+};
+const { normalizeMobile } = require('../utils/mobile');
 
 // Library not usable (pending / rejected / suspended): 403 with libraryStatus so the frontend can show it
 const sendBlocked = (res, err) =>
@@ -29,33 +52,47 @@ const authSuccess = (res, message, { token, userData, role }) =>
 exports.login = async (req, res, next) => {
   try {
     const result = await svc.login(req.body);
+    if (await maintenanceBlock(res, result.userData.userType)) return;
+    securityLog.record(req, { type: 'login', outcome: 'success', userId: result.userData.id, userType: result.userData.userType, libraryId: result.userData.libraryId?._id || result.userData.libraryId || null, meta: { method: 'password' } });
     return authSuccess(res, `Welcome back, ${result.userData.name}!`, result);
   } catch (err) {
+    securityLog.record(req, { type: 'login', outcome: err.libraryStatus ? 'blocked' : 'failure', reason: reasonOf(err), meta: { method: 'password', status: err.status || null } });
     if (err.libraryStatus) return sendBlocked(res, err);
     return next(err);
   }
 };
 
-// OTP is returned ONLY when NODE_ENV === 'development' (there is no delivery provider wired yet)
-const otpResponse = (res, message, { otp, isDev }) =>
+// Same response shape for every OTP flow (login + password reset, super admin / owner / staff / student).
+// The OTP itself is included only while the service allows it (OTP_IN_RESPONSE / not production), so the UI can show it
+// until an SMS/e-mail provider is configured. Unknown accounts get the identical shape without an `otp`.
+const otpResponse = (res, message, { otp, isDev, channel, sentTo, expiresInSeconds }) => {
+  const exposed = !!(isDev && otp);
   res.status(200).json({
     success: true,
     message,
-    data: { isOTP: true, ...(isDev && otp ? { otp } : {}) },
-    ...(isDev && otp ? { otp } : {}),
-    isOTP: true
+    isOTP: true,
+    channel: channel || null,
+    sentTo: sentTo || null,
+    expiresInSeconds: expiresInSeconds || 600,
+    ...(exposed ? { otp, otpShownInResponse: true } : {}),
+    data: { isOTP: true, channel: channel || null, sentTo: sentTo || null, expiresInSeconds: expiresInSeconds || 600, ...(exposed ? { otp } : {}) }
   });
+};
 
 exports.sendOTP = catchAsync(async (req, res) => {
   const r = await svc.sendOTP(req.body);
+  securityLog.record(req, { type: 'otp_request', outcome: 'success', meta: { channel: r.channel || null } });
   otpResponse(res, 'If the number is registered, an OTP has been sent', r);
 });
 
 exports.verifyOTP = async (req, res, next) => {
   try {
     const result = await svc.verifyOTP(req.body);
+    if (await maintenanceBlock(res, result.userData.userType)) return;
+    securityLog.record(req, { type: 'login', outcome: 'success', userId: result.userData.id, userType: result.userData.userType, libraryId: result.userData.libraryId?._id || result.userData.libraryId || null, meta: { method: 'otp' } });
     return authSuccess(res, 'Login successful', result);
   } catch (err) {
+    securityLog.record(req, { type: 'otp_verify', outcome: err.libraryStatus ? 'blocked' : 'failure', reason: reasonOf(err), meta: { status: err.status || null } });
     if (err.libraryStatus) return sendBlocked(res, err);
     return next(err);
   }
@@ -63,6 +100,7 @@ exports.verifyOTP = async (req, res, next) => {
 
 exports.forgotPassword = catchAsync(async (req, res) => {
   const r = await svc.forgotPassword(req.body);
+  securityLog.record(req, { type: 'password_reset_request', outcome: 'success', meta: { channel: r.channel || null } });
   otpResponse(res, 'If the account exists, an OTP has been sent', r);
 });
 
@@ -72,7 +110,13 @@ exports.verifyResetOTP = catchAsync(async (req, res) => {
 });
 
 exports.resetPassword = catchAsync(async (req, res) => {
-  await svc.resetPassword(req.body);
+  try {
+    await svc.resetPassword(req.body);
+  } catch (err) {
+    securityLog.record(req, { type: 'password_reset', outcome: 'failure', reason: reasonOf(err) });
+    throw err;
+  }
+  securityLog.record(req, { type: 'password_reset', outcome: 'success' });
   res.status(200).json({ success: true, message: 'Password reset successfully' });
 });
 
@@ -98,6 +142,8 @@ exports.getMe = catchAsync(async (req, res) => {
     status: user.status,
     permissions: req.permissions,
     impersonatedBy: req.impersonatedBy || null,
+    lastLogin: user.lastLogin || null,
+    createdAt: user.createdAt || null,
   };
 
   res.status(200).json({
@@ -116,34 +162,65 @@ const removeFile = (rel) => {
   if (fs.existsSync(abs)) { try { fs.unlinkSync(abs); } catch (e) { /* ignore */ } }
 };
 
+const discardUpload = (file) => {
+  if (!file?.path) return;
+  try { fs.unlinkSync(path.resolve(file.path)); } catch (e) { /* ignore */ }
+};
+
 exports.updateProfile = catchAsync(async (req, res) => {
-  const { name, currentPassword, newPassword } = req.body || {};
+  const { name, mobile, currentPassword, newPassword } = req.body || {};
   const isStudent = req.userType === 'student';
+  // Support access acts on the owner's behalf: it must never edit the owner's own profile
+  if (req.impersonatedBy) { discardUpload(req.file); throw new ApiError(403, 'Not allowed while impersonating'); }
+
   const Model = isStudent ? Student : Admin;
   const user = await Model.findById(req.user._id).select('+password');
-  if (!user) throw new ApiError(404, 'User not found');
+  if (!user) { discardUpload(req.file); throw new ApiError(404, 'User not found'); }
 
-  if (newPassword) {
-    if (req.impersonatedBy) throw new ApiError(403, 'Not allowed while impersonating');
-    const bcrypt = require('bcryptjs');
-    if (!currentPassword || !(await bcrypt.compare(currentPassword, user.password))) {
-      throw new ApiError(400, 'Current password is incorrect');
+  const bcrypt = require('bcryptjs');
+  const passwordOk = async () => !!currentPassword && (await bcrypt.compare(currentPassword, user.password));
+
+  try {
+    if (newPassword) {
+      if (!(await passwordOk())) throw new ApiError(400, 'Current password is incorrect');
+      user.password = newPassword; // hashed once by the model pre-save hook
     }
-    user.password = newPassword; // hashed once by the model pre-save hook
+
+    // Mobile is a sign-in identifier (OTP login), so changing it needs the current password
+    if (mobile !== undefined && !isStudent) {
+      const next = normalizeMobile(mobile);
+      if (next !== user.mobile) {
+        if (!(await passwordOk())) throw new ApiError(400, 'Enter your current password to change your mobile number');
+        const taken = await Admin.findOne({ mobile: next, _id: { $ne: user._id }, isDeleted: { $ne: true } }).select('_id');
+        if (taken) throw new ApiError(409, 'This mobile number is already used by another account');
+        user.mobile = next;
+      }
+    }
+
+    if (name) user.name = name;
+
+    if (req.file) {
+      const isImage = req.file.mediaKind ? req.file.mediaKind === 'image' : /^image\//.test(req.file.mimetype || '');
+      if (!isImage) throw new ApiError(400, 'Profile photo must be an image (JPG, PNG, WEBP or GIF)');
+      const newRelativePath = req.file.path ? path.relative(process.cwd(), path.resolve(req.file.path)).replace(/\\/g, '/') : `uploads/profiles/${req.file.filename}`;
+      if (user.profileImage && user.profileImage !== newRelativePath) removeFile(user.profileImage);
+      user.profileImage = newRelativePath;
+    }
+
+    // validateModifiedOnly: older accounts may lack fields the schema now requires (e.g. mobile)
+    await user.save({ validateModifiedOnly: true });
+  } catch (e) {
+    if (req.file && !(user.profileImage || '').endsWith(req.file.filename || '\0')) discardUpload(req.file);
+    throw e;
   }
-  if (name) user.name = name;
-  if (req.file) {
-    const newRelativePath = req.file.path ? path.relative(process.cwd(), path.resolve(req.file.path)).replace(/\\/g, '/') : `uploads/profiles/${req.file.filename}`;
-    if (user.profileImage && user.profileImage !== newRelativePath) removeFile(user.profileImage);
-    user.profileImage = newRelativePath;
-  }
-  await user.save();
   if (newPassword) await audit(req, 'auth.password_change', isStudent ? 'Student' : 'Admin', user._id);
+  else await audit(req, 'auth.profile_update', isStudent ? 'Student' : 'Admin', user._id, { fields: [name && 'name', mobile !== undefined && 'mobile', req.file && 'profileImage'].filter(Boolean) });
 
   const userData = {
     id: user._id,
     name: user.name,
     email: user.email,
+    mobile: user.mobile,
     profileImage: user.profileImage,
     userType: req.userType,
     status: user.status
@@ -164,16 +241,19 @@ exports.changePassword = catchAsync(async (req, res) => {
 });
 
 exports.deleteProfileImage = catchAsync(async (req, res) => {
+  if (req.impersonatedBy) throw new ApiError(403, 'Not allowed while impersonating');
   const Model = req.userType === 'student' ? Student : Admin;
   const user = await Model.findById(req.user._id);
   if (user?.profileImage) {
     removeFile(user.profileImage);
     user.profileImage = null;
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
+    await audit(req, 'auth.profile_image_removed', req.userType === 'student' ? 'Student' : 'Admin', user._id);
   }
   res.status(200).json({
     success: true,
-    message: 'Profile image deleted successfully'
+    message: 'Profile image removed successfully',
+    data: { profileImage: null }
   });
 });
 

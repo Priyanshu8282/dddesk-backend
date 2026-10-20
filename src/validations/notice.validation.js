@@ -40,11 +40,12 @@ const fields = {
     targetBranchIds: idList,
     targetPlanIds: idList,
     startDate: isoDate,
-    endDate: isoDate.nullable(),
+    endDate: z.preprocess((v) => (v === '' || v === 'null' ? null : v), isoDate.nullable()),
     expiryDate: isoDate, // legacy alias of endDate
     isPinned: bool,
     showOnWebsite: bool,
     isActive: bool,
+    removeImage: bool,
     branchId: z.preprocess((v) => (v === '' || v === 'null' ? null : v), objectId.nullish()) // null = all branches
 };
 
@@ -62,6 +63,7 @@ const createNotice = z.object({
         isPinned: fields.isPinned.optional(),
         showOnWebsite: fields.showOnWebsite.optional(),
         isActive: fields.isActive.optional(),
+        removeImage: fields.removeImage.optional(),
         branchId: fields.branchId.optional()
     }).strip()
 });
@@ -77,6 +79,11 @@ const listNotices = z.object({
         limit: z.coerce.number().int().min(1).max(100).optional(),
         search: z.string().trim().max(100).optional(),
         status: z.enum(['all', 'active', 'inactive', 'scheduled', 'expired']).optional(),
+        sendTo: audience.optional(),
+        pinned: z.enum(['true', 'false']).optional(),
+        from: isoDate.optional(),
+        to: isoDate.optional(),
+        sort: z.enum(['pinned', 'newest', 'oldest', 'title', 'views', 'start', 'ending']).optional(),
         type: z.enum(TYPES).optional(),
         branchId: objectId.optional()
     }).passthrough()

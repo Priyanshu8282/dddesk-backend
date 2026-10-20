@@ -16,7 +16,9 @@ const WRITE = ['fees.collect', 'expenses.manage', 'expenses.create'];
 
 router.get('/', requirePermission(...VIEW), validate(expenseValidation.queryExpenses), c.getExpenses);
 router.post('/', requirePermission(...WRITE), validate(expenseValidation.createExpense), c.createExpense);
-router.get('/:id', requirePermission(...VIEW), validate(expenseValidation.idParam), c.getExpenseById);
+router.get('/summary', requirePermission(...VIEW), validate(expenseValidation.summaryQuery), c.getSummary);
+router.get('/export', requirePermission(...VIEW), validate(expenseValidation.exportExpenses), c.exportExpenses);
+router.get('/:id',requirePermission(...VIEW), validate(expenseValidation.idParam), c.getExpenseById);
 router.put('/:id', requirePermission(...WRITE), validate(expenseValidation.updateExpense), c.updateExpense);
 router.patch('/:id', requirePermission(...WRITE), validate(expenseValidation.updateExpense), c.updateExpense);
 router.delete('/:id', validate(expenseValidation.idParam), requirePermission('expenses.delete', 'DELETE_EXPENSE', 'expenses.manage'), c.deleteExpense);

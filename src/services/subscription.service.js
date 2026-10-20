@@ -35,16 +35,38 @@ const safeEqual = (a, b) => {
 
 const addPeriod = addCycle;
 
+// Indian financial year (April to March): 2026-27. GST invoices must be numbered in sequence within each FY.
+const financialYear = (d = new Date()) => {
+    const ist = new Date(d.getTime() + 5.5 * 3600 * 1000);
+    const y = ist.getUTCFullYear();
+    const startYear = ist.getUTCMonth() >= 3 ? y : y - 1; // April = month 3
+    return { label: `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`, startYear };
+};
+// One counter per FY: a stable ObjectId derived from the FY label
+const fyCounterId = (label) => new mongoose.Types.ObjectId(require('crypto').createHash('md5').update(`platform-invoice:${label}`).digest('hex').slice(0, 24));
+
 const nextInvoiceNo = async () => {
-    let c = await ReceiptCounter.findOneAndUpdate({ libraryId: PLATFORM_COUNTER_ID }, { $inc: { seq: 1 } }, { new: true });
+    const fy = financialYear();
+    const id = fyCounterId(fy.label);
+    let c = await ReceiptCounter.findOneAndUpdate({ libraryId: id }, { $inc: { seq: 1 } }, { new: true });
     if (!c) {
-        try { c = await ReceiptCounter.create({ libraryId: PLATFORM_COUNTER_ID, seq: 1 }); } catch (e) {
+        try { c = await ReceiptCounter.create({ libraryId: id, seq: 1 }); } catch (e) {
             if (e.code !== 11000) throw e;
-            c = await ReceiptCounter.findOneAndUpdate({ libraryId: PLATFORM_COUNTER_ID }, { $inc: { seq: 1 } }, { new: true });
+            c = await ReceiptCounter.findOneAndUpdate({ libraryId: id }, { $inc: { seq: 1 } }, { new: true });
         }
     }
-    return `INV-${new Date().getFullYear()}-${String(c.seq).padStart(6, '0')}`;
+    return `INV/${fy.label}/${String(c.seq).padStart(6, '0')}`;
 };
+exports.financialYear = financialYear;
+
+/** GST on top of a price that excludes it. All values rounded to paise. */
+const withGst = (taxable, gstPercent) => {
+    const t = Math.round((Number(taxable) + Number.EPSILON) * 100) / 100;
+    const pct = Number.isFinite(Number(gstPercent)) ? Number(gstPercent) : 18;
+    const gst = Math.round((t * pct / 100 + Number.EPSILON) * 100) / 100;
+    return { taxable: t, gstPercent: pct, gst, total: Math.round((t + gst + Number.EPSILON) * 100) / 100 };
+};
+exports.withGst = withGst;
 
 /** active | grace | expired | none, with the grace window if one applies */
 const subscriptionState = (library, plan, lastFailed) => {
@@ -69,6 +91,17 @@ exports.listPayments = async (libraryId, query = {}) => {
     const { page, limit } = clampPaging(query);
     const filter = { libraryId };
     if (query.status) filter.status = String(query.status);
+    // Additive optional filters (owner payment history)
+    if (query.period && ['monthly', 'annual'].includes(String(query.period))) filter.period = String(query.period);
+    if (query.kind && ['renewal', 'upgrade'].includes(String(query.kind))) filter.kind = String(query.kind);
+    if (query.q) filter.invoiceNo = new RegExp(require('../utils/escapeRegex')(String(query.q).slice(0, 40)), 'i');
+    const fromD = query.from ? new Date(`${String(query.from).slice(0, 10)}T00:00:00+05:30`) : null;
+    const toD = query.to ? new Date(`${String(query.to).slice(0, 10)}T23:59:59.999+05:30`) : null;
+    if ((fromD && !Number.isNaN(fromD.getTime())) || (toD && !Number.isNaN(toD.getTime()))) {
+        filter.createdAt = {};
+        if (fromD && !Number.isNaN(fromD.getTime())) filter.createdAt.$gte = fromD;
+        if (toD && !Number.isNaN(toD.getTime())) filter.createdAt.$lte = toD;
+    }
     const [data, total, library] = await Promise.all([
         PlatformPayment.find(filter).populate('platformPlanId', 'name slug').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
         PlatformPayment.countDocuments(filter),
@@ -123,6 +156,23 @@ const paidPeriodsInForce = async (libraryId, now = new Date()) => {
 
 exports.paidPeriodsInForce = paidPeriodsInForce;
 
+/** Plans an owner can choose from: active only, with GST worked out per billing cycle */
+exports.listAvailablePlans = async () => {
+    const plans = await PlatformPlan.find({ isDeleted: false, isActive: true }).sort({ sortOrder: 1, monthlyPrice: 1 }).lean();
+    return plans.map((p) => {
+        const monthly = withGst(planPrice(p, 'monthly'), p.gstPercent);
+        const annual = withGst(planPrice(p, 'annual'), p.gstPercent);
+        return {
+            _id: p._id, name: p.name, slug: p.slug, description: p.description, isPopular: !!p.isPopular,
+            gstPercent: monthly.gstPercent, trialDays: p.trialDays,
+            limits: { maxStudents: p.maxStudents, maxSeats: p.maxSeats, maxStaff: p.maxStaff, maxBranches: p.maxBranches || 0 },
+            features: p.features || [],
+            monthly: { price: monthly.taxable, gst: monthly.gst, total: monthly.total },
+            annual: { price: annual.taxable, gst: annual.gst, total: annual.total, savingsVsMonthly: Math.max(0, Math.round((planPrice(p, 'monthly') * 12 - planPrice(p, 'annual')) * 100) / 100) },
+        };
+    });
+};
+
 /**
  * Create a Razorpay order. kind 'renewal' (default) extends the current period; kind 'upgrade' is an immediate
  * plan change: chargeAmount = new price minus prorated credit, listPrice = full price, new period starts at payment.
@@ -144,12 +194,16 @@ exports.createOrder = async ({ libraryId, platformPlanId, period, userId, kind =
     }
 
     const price = planPrice(plan, cycle);
-    const amount = chargeAmount != null ? chargeAmount : price;
-    if (!(amount > 0)) throw new ApiError(400, 'This plan is free; no payment is required');
+    const taxableBase = chargeAmount != null ? chargeAmount : price;
+    if (!(taxableBase > 0)) throw new ApiError(400, 'This plan is free; no payment is required');
+    // The plan price excludes GST: Razorpay is charged price + GST, and the breakdown is stored for the invoice
+    const tax = withGst(taxableBase, plan.gstPercent);
+    const amount = tax.total;
 
     const rz = client();
     const record = await PlatformPayment.create({
         libraryId, platformPlanId: plan._id, period: cycle, amount, kind,
+        taxableAmount: tax.taxable, gstPercent: tax.gstPercent, gstAmount: tax.gst,
         listPrice: listPrice != null ? listPrice : price, creditApplied, status: 'pending', initiatedBy: userId
     });
     let order;
@@ -169,6 +223,7 @@ exports.createOrder = async ({ libraryId, platformPlanId, period, userId, kind =
     return {
         orderId: order.id, paymentRecordId: record._id, amount: order.amount, amountInr: amount, currency: 'INR',
         key: process.env.RAZORPAY_KEY_ID, plan: { id: plan._id, name: plan.name }, period: cycle, billingCycle: cycle, kind,
+        taxableAmount: tax.taxable, gstPercent: tax.gstPercent, gstAmount: tax.gst, totalAmount: tax.total,
         listPrice: record.listPrice, creditApplied
     };
 };
@@ -178,6 +233,10 @@ const markFailed = async (record, reason) => {
     const lib = await Library.findById(record.libraryId).select('subscriptionExpiry').lean();
     const base = lib && lib.subscriptionExpiry && new Date(lib.subscriptionExpiry) > new Date() ? new Date(lib.subscriptionExpiry) : new Date();
     const graceUntil = new Date(base.getTime() + ((plan && plan.graceDays) || 0) * DAY_MS);
+    require('./platformAlerts.service').notify('paymentFailed', {
+        message: `A subscription payment of INR ${record.amount} failed${plan ? ' for the ' + plan.name + ' plan' : ''}. Reason: ${reason}`,
+        libraryId: record.libraryId, dedupeKey: String(record._id), data: { libraryId: record.libraryId },
+    });
     return PlatformPayment.findOneAndUpdate(
         { _id: record._id, status: { $ne: 'paid' } },
         { $set: { status: 'failed', failureReason: reason, graceUntil, inGrace: graceUntil.getTime() > Date.now() } },

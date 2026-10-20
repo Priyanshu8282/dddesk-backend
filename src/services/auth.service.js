@@ -56,7 +56,7 @@ const appendFcmToken = async (user, fcmToken) => {
   if (!user.fcmTokens.includes(fcmToken)) {
     user.fcmTokens.push(fcmToken);
     user.markModified('fcmTokens');
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
   }
 };
 
@@ -135,31 +135,72 @@ exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken
     assertLibraryUsable(user);
   }
 
-  user.lastLogin = new Date();
-  user.fcmTokens = user.fcmTokens || [];
-  if (fcmToken && !user.fcmTokens.includes(fcmToken)) user.fcmTokens.push(fcmToken);
-  user.markModified('fcmTokens');
-  await user.save();
+  // Targeted update (not save()): older accounts may lack fields the schema now requires (e.g. mobile),
+  // and a successful login must never fail on unrelated validation.
+  const now = new Date();
+  const loginUpdate = { $set: { lastLogin: now } };
+  if (fcmToken && !(user.fcmTokens || []).includes(fcmToken)) loginUpdate.$addToSet = { fcmTokens: fcmToken };
+  await (role === 'STUDENT' ? Student : Admin).updateOne({ _id: user._id }, loginUpdate);
+  user.lastLogin = now;
 
   const token    = buildToken(user, role);
   const userData = buildUserData(user, role);
   return { token, userData, role: role.toLowerCase() };
 };
 
+// ---------------------------------------------------------------------------
+// OTP (login + password reset) - one implementation for super admin, library owner, staff and student
+// ---------------------------------------------------------------------------
+
+// OTP in the API response: there is no SMS/e-mail provider by default, so the UI shows the code.
+// ON unless NODE_ENV=production; in production set OTP_IN_RESPONSE=true to keep it (not recommended).
+const otpInResponse = () => {
+  const flag = String(process.env.OTP_IN_RESPONSE || '').toLowerCase();
+  if (flag === 'true') return true;
+  if (flag === 'false') return false;
+  return process.env.NODE_ENV !== 'production';
+};
+
+// "a@b.com" -> email, anything else -> mobile
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const resolveTarget = ({ identifier, email, mobile }) => {
+  const raw = String(email || identifier || '').trim();
+  if (raw && EMAIL_RE.test(raw)) return { email: raw.toLowerCase(), mobile: '' };
+  const m = mobile || (!EMAIL_RE.test(raw) ? raw : '');
+  return { email: '', mobile: m ? normalizeMobile(m) : '' };
+};
+
+const maskTarget = ({ email, mobile }) => {
+  if (email) { const [n, d] = email.split('@'); return `${n.slice(0, 2)}${'*'.repeat(Math.max(1, n.length - 2))}@${d}`; }
+  if (mobile) return `${'*'.repeat(Math.max(0, mobile.length - 4))}${mobile.slice(-4)}`;
+  return '';
+};
+
+const modelOf = (user) => user.constructor;
+
+// Targeted updates (not save()): older accounts may lack fields the schema now requires (e.g. mobile),
+// and OTP login/reset must never fail on unrelated validation.
+const setOtpFields = (user, fields) => modelOf(user).updateOne({ _id: user._id }, { $set: fields });
+
 // Stores a hashed OTP with a 10 min expiry and resets the attempt counter
-const issueOtp = async (user, { channel = 'sms', purpose = 'login' } = {}) => {
+const issueOtp = async (user, { channel = 'sms', purpose = 'login', target = {} } = {}) => {
   const otp = generateOtp();
-  user.otp = hashOtp(otp);
-  user.otpExpires = new Date(Date.now() + OTP_TTL_MS);
-  user.otpAttempts = 0;
-  await user.save();
-  // Delivery via the registered provider (never throws, never logs the OTP); the code is only returned in development.
+  await setOtpFields(user, { otp: hashOtp(otp), otpExpires: new Date(Date.now() + OTP_TTL_MS), otpAttempts: 0 });
+  // Delivery via the registered provider (never throws, never logs the OTP)
   try {
     const to = channel === 'email' ? user.email : user.mobile;
-    await require('./notification.service').deliverOtp({ channel, to, otp, purpose });
+    if (to) await require('./notification.service').deliverOtp({ channel, to, otp, purpose });
   } catch (_) { /* delivery failure must not reveal account state */ }
-  return { otp, isDev: process.env.NODE_ENV === 'development' };
+  return {
+    otp, isDev: otpInResponse(), channel,
+    sentTo: maskTarget(target), expiresInSeconds: OTP_TTL_MS / 1000
+  };
 };
+
+// What the API returns when no account matches (identical shape, so accounts cannot be enumerated)
+const noAccountOtp = (channel, target) => ({
+  otp: null, isDev: false, channel, sentTo: maskTarget(target), expiresInSeconds: OTP_TTL_MS / 1000
+});
 
 // Validates an OTP: expiry, attempt limit, hash. Burns the OTP on too many attempts.
 const checkOtp = async (user, otp) => {
@@ -167,21 +208,19 @@ const checkOtp = async (user, otp) => {
     throw fail(400, 'OTP expired or not requested. Please request a new one.');
   }
   if ((user.otpAttempts || 0) >= OTP_MAX_ATTEMPTS) {
-    user.otp = null; user.otpExpires = null; user.otpAttempts = 0;
-    await user.save();
+    await setOtpFields(user, { otp: null, otpExpires: null, otpAttempts: 0 });
     throw fail(429, 'Too many incorrect attempts. Please request a new OTP.');
   }
   const a = Buffer.from(hashOtp(String(otp)), 'hex');
   const b = Buffer.from(user.otp, 'hex');
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
   if (!ok) {
-    user.otpAttempts = (user.otpAttempts || 0) + 1;
-    await user.save();
+    await modelOf(user).updateOne({ _id: user._id }, { $inc: { otpAttempts: 1 } });
     throw fail(400, 'Invalid OTP');
   }
 };
 
-const clearOtp = (user) => { user.otp = null; user.otpExpires = null; user.otpAttempts = 0; };
+const clearOtp = (user) => setOtpFields(user, { otp: null, otpExpires: null, otpAttempts: 0 });
 
 // Single account for an OTP flow; ambiguity (same student mobile in many libraries) must be resolved by the caller
 const findOtpAccount = async ({ email, mobile, userRole, libraryId, slug }) => {
@@ -199,16 +238,21 @@ const findOtpAccount = async ({ email, mobile, userRole, libraryId, slug }) => {
   return { user: null, role: null };
 };
 
-exports.sendOTP = async ({ mobile, userRole, libraryId, slug }) => {
-  const { user } = await findOtpAccount({ mobile, userRole: userRole || 'ADMIN', libraryId, slug });
-  // Same response whether or not the number exists (no account enumeration)
-  if (!user || (user.status === false) || (user.status === 'inactive')) return { otp: null, isDev: false };
-  return issueOtp(user, { channel: 'sms', purpose: 'login' });
+// Login OTP: works for super admin, library owner and staff (and students with userRole=STUDENT),
+// using an email OR a mobile number. Super admin / owner / staff all live in the Admin collection.
+exports.sendOTP = async ({ identifier, email, mobile, userRole, libraryId, slug }) => {
+  const target = resolveTarget({ identifier, email, mobile });
+  if (!target.email && !target.mobile) throw fail(400, 'Enter a valid email or mobile number');
+  const channel = target.email ? 'email' : 'sms';
+  const { user } = await findOtpAccount({ ...target, userRole: userRole || 'ADMIN', libraryId, slug });
+  if (!user || (user.status === false) || (user.status === 'inactive')) return noAccountOtp(channel, target);
+  return issueOtp(user, { channel, purpose: 'login', target });
 };
 
-exports.verifyOTP = async ({ mobile, otp, userRole, fcmToken, libraryId, slug }) => {
+exports.verifyOTP = async ({ identifier, email, mobile, otp, userRole, fcmToken, libraryId, slug }) => {
   const role = isStudentRole(userRole) ? 'STUDENT' : 'ADMIN';
-  const { user } = await findOtpAccount({ mobile, userRole: role, libraryId, slug });
+  const target = resolveTarget({ identifier, email, mobile });
+  const { user } = await findOtpAccount({ ...target, userRole: role, libraryId, slug });
   if (!user) throw fail(400, 'Invalid OTP');
   await checkOtp(user, otp);
 
@@ -220,38 +264,38 @@ exports.verifyOTP = async ({ mobile, otp, userRole, fcmToken, libraryId, slug })
     assertLibraryUsable(user);
   }
 
-  clearOtp(user);
-  user.lastLogin = new Date();
-  if (fcmToken) {
-    user.fcmTokens = user.fcmTokens || [];
-    if (!user.fcmTokens.includes(fcmToken)) { user.fcmTokens.push(fcmToken); user.markModified('fcmTokens'); }
-  }
-  await user.save();
+  const update = { $set: { lastLogin: new Date(), otp: null, otpExpires: null, otpAttempts: 0 } };
+  if (fcmToken && !(user.fcmTokens || []).includes(fcmToken)) update.$addToSet = { fcmTokens: fcmToken };
+  await modelOf(user).updateOne({ _id: user._id }, update);
 
   const token = buildToken(user, role, { libraryId: user.libraryId?._id || user.libraryId });
   return { token, userData: buildUserData(user, role), role: role.toLowerCase() };
 };
 
 exports.forgotPassword = async ({ email, mobile, libraryId, slug }) => {
-  const { user } = await findOtpAccount({ email, mobile, libraryId, slug });
-  if (!user || user.status === false || user.status === 'inactive') return { otp: null, isDev: false };
-  return issueOtp(user, { channel: email ? 'email' : 'sms', purpose: 'password reset' });
+  const target = resolveTarget({ email, mobile });
+  const channel = target.email ? 'email' : 'sms';
+  const { user } = await findOtpAccount({ ...target, libraryId, slug });
+  if (!user || user.status === false || user.status === 'inactive') return noAccountOtp(channel, target);
+  return issueOtp(user, { channel, purpose: 'password reset', target });
 };
 
 exports.verifyResetOTP = async ({ email, mobile, otp, libraryId, slug }) => {
-  const { user } = await findOtpAccount({ email, mobile, libraryId, slug });
+  const target = resolveTarget({ email, mobile });
+  const { user } = await findOtpAccount({ ...target, libraryId, slug });
   if (!user) throw fail(400, 'Invalid OTP');
   await checkOtp(user, otp);
 };
 
 exports.resetPassword = async ({ email, mobile, otp, newPassword, libraryId, slug }) => {
-  const { user } = await findOtpAccount({ email, mobile, libraryId, slug });
+  const target = resolveTarget({ email, mobile });
+  const { user } = await findOtpAccount({ ...target, libraryId, slug });
   if (!user) throw fail(400, 'Invalid or expired OTP');
   await checkOtp(user, otp);
   user.password = newPassword; // hashed by the model pre-save hook
   user.tokensValidAfter = new Date(); // a forgotten/stolen password must also end existing sessions
-  clearOtp(user);
-  await user.save();
+  user.otp = null; user.otpExpires = null; user.otpAttempts = 0;
+  await user.save({ validateBeforeSave: false }); // pre-save hook still hashes; skips unrelated legacy-field validation
 };
 
 /**
@@ -269,7 +313,7 @@ exports.changePassword = async (userId, userType, currentPassword, newPassword) 
     throw fail(400, 'New password must be different from the current password');
   }
   user.password = newPassword;
-  await user.save();
+  await user.save({ validateModifiedOnly: true }); // older accounts may lack newer required fields (e.g. mobile)
 };
 
 exports.updateFcmToken = async (userId, userType, fcmToken) => {
@@ -280,7 +324,7 @@ exports.updateFcmToken = async (userId, userType, fcmToken) => {
   if (!user.fcmTokens.includes(fcmToken)) {
     user.fcmTokens.push(fcmToken);
     user.markModified('fcmTokens');
-    await user.save();
+    await user.save({ validateModifiedOnly: true });
   }
 };
 

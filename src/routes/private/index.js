@@ -51,6 +51,9 @@ router.use('/roles', roleRoutes);
 // SaaS subscription billing (mounted before /libraries so /libraries/:id cannot swallow it)
 router.use('/libraries/subscription', require('./subscription.routes').owner);
 router.use('/super/subscriptions', require('./subscription.routes').superAdmin);
+router.use('/super/revenue', require('./revenue.routes'));
+router.use('/super/users', require('./platformUser.routes'));
+router.use('/super/platform-settings', require('./platformSettings.routes'));
 router.use('/libraries', libraryRoutes);
 router.use('/super/libraries', superLibraryRoutes);
 router.use('/super/platform-plans', platformPlanRoutes);

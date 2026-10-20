@@ -25,7 +25,8 @@ const corsOptions = {
             const host = origin ? new URL(origin).hostname.toLowerCase() : '';
             tenantOrigin = host === baseDomain || host.endsWith('.' + baseDomain);
         } catch (e) { /* invalid origin */ }
-        if (!origin || allowedOrigins.includes(origin) || tenantOrigin) {
+        const configured = require('./services/platformSettings.service').extraAllowedOrigins();
+        if (!origin || allowedOrigins.includes(origin) || tenantOrigin || configured.includes(origin)) {
             callback(null, true);
         } else {
             callback(new Error('Not allowed by CORS'));
@@ -34,6 +35,7 @@ const corsOptions = {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-slug'],
+    maxAge: 86400, // browsers remember the preflight answer for a day instead of asking before every call
 };
 
 app.use(cors(corsOptions));
@@ -80,6 +82,9 @@ const razorpayController = require('./controllers/razorpay.controller');
 app.post('/webhook/razorpay', razorpayController.webhookHandler);
 
 //Api routes
+// Scheduled jobs for serverless hosting (secured with CRON_SECRET)
+app.use('/v1/cron', require('./routes/cron.routes'));
+
 app.use('/v1/private', privateRoutes); // Private routes
 
 // Use public routes for /v1/public
@@ -88,9 +93,9 @@ app.use('/v1/public', publicRoutes); // Public routes
 // Default catch-all for /v1 (fallback)
 app.use("/v1", publicRoutes);
 
-//Api routes
+// Catch-all for undefined routes
 app.use((req, res, next) => {
-    next(new ApiError(httpStatus.NOT_FOUND, "Not found"));
+    next(new ApiError(404, "Not found"));
 });
 
 // Centralized error handling middleware

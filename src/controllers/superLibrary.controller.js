@@ -44,12 +44,12 @@ exports.getLibraryPlan = catchAsync(async (req, res) => {
 });
 
 exports.createLibrary = catchAsync(async (req, res) => {
-  const data = await svc.createLibrary(req.body, req.user, req.ip);
+  const data = await svc.createLibrary(req.body, req.user, req.ip, req.file ? [req.file] : null);
   res.status(201).json({ success: true, message: 'Library created successfully', data });
 });
 
 exports.updateLibrary = catchAsync(async (req, res) => {
-  const lib = await svc.updateLibrary(req.params.id, req.body, req.user._id, req.ip);
+  const lib = await svc.updateLibrary(req.params.id, req.body, req.user._id, req.ip, { file: req.file || null, removeImage: String(req.body.removeOwnerImage) === 'true' });
   res.json({ success: true, message: 'Library updated', data: lib });
 });
 

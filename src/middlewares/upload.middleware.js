@@ -59,6 +59,8 @@ const getTargetDirectory = (req, file, cb) => {
         subDir += file.fieldname === 'profileImage' ? 'profile/' : 'business/';
     } else if (file.fieldname === 'profileImage') {
         subDir += 'profiles/';
+    } else if (file.fieldname === 'platformLogo' || file.fieldname === 'platformFavicon') {
+        subDir += 'branding/';
     } else if (file.fieldname === 'logo') {
         subDir += 'logos/';
     } else if (file.fieldname === 'photos') {

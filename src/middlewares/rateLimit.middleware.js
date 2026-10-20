@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const securityLog = require('../utils/securityLog');
 
 const { ipKeyGenerator } = rateLimit;
 
@@ -11,11 +12,18 @@ const make = (windowMs, limit, message, extra = {}) =>
         message: { success: false, code: 429, message },
         standardHeaders: true,
         legacyHeaders: false,
+        // every block is a security event (who, where, which endpoint), then the normal 429 answer
+        handler: (req, res, next, options) => {
+            securityLog.record(req, { type: 'rate_limited', outcome: 'blocked', reason: 'too_many_requests', meta: { limit, windowMs } });
+            res.status(options.statusCode).json(options.message);
+        },
         ...extra
     });
 
 const loginLimiter = make(15 * 60 * 1000, 10, 'Too many login attempts. Please try again after 15 minutes.');
-const otpLimiter = make(10 * 60 * 1000, 5, 'Too many OTP requests. Please try again after 10 minutes.');
+const otpLimiter = make(10 * 60 * 1000, 8, 'Too many OTP requests. Please try again after 10 minutes.');
+// Verifying has its own budget (the 5-attempt lock on the OTP itself is the real brute-force guard)
+const otpVerifyLimiter = make(10 * 60 * 1000, 20, 'Too many OTP attempts. Please try again after 10 minutes.');
 const generalLimiter = make(60 * 1000, 100, 'Too many requests. Please slow down.');
 
 // Library owner registration: few per hour per IP
@@ -34,6 +42,6 @@ const reviewLimiter = make(60 * 60 * 1000, 5, 'Too many reviews submitted. Pleas
 });
 
 module.exports = {
-    loginLimiter, otpLimiter, generalLimiter,
+    loginLimiter, otpLimiter, otpVerifyLimiter, generalLimiter,
     registerLimiter, enquiryLimiter, studentLoginLimiter, aiLimiter, reviewLimiter
 };

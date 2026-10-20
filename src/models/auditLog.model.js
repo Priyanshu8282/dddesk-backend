@@ -8,7 +8,9 @@ const auditLogSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, required: true },
     userType: { type: String, enum: ['superadmin', 'admin', 'staff', 'student', 'system'], required: true },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
-    ipAddress: { type: String, default: 'unknown' }
+    ipAddress: { type: String, default: 'unknown' },
+    userAgent: { type: String, default: null },   // raw browser string (trimmed)
+    device: { type: mongoose.Schema.Types.Mixed, default: null } // parsed: browser, os, deviceType, model, summary
 }, { timestamps: true });
 
 auditLogSchema.index({ createdAt: -1 });

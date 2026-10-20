@@ -13,7 +13,8 @@ exports.getPermissions = catchAsync(async (req, res) => {
     includePlatform: req.userType === 'superadmin',
     grouped: req.query.grouped === 'true',
   });
-  res.status(200).json({ success: true, message: 'Permissions retrieved successfully', data: permissions });
+  // aliases: legacy key -> equivalent dotted key (the role editor shows each capability once)
+  res.status(200).json({ success: true, message: 'Permissions retrieved successfully', data: permissions, aliases: require('../seed/permissionCatalog').ALIASES });
 });
 
 exports.updatePermission = catchAsync(async (req, res) => {

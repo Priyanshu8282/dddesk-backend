@@ -88,6 +88,19 @@ const queryPayments = z.object({
         to: optDate.optional(),
         search: z.string().max(100).optional(),
         branchId: objectId.optional(),
+        planId: objectId.optional(),
+        overdue: z.enum(['true', 'false']).optional(),
+        sort: z.enum(['newest', 'oldest', 'amount', 'due', 'dueDate', 'paidDate']).optional(),
+        page: z.coerce.number().int().min(1).optional(),
+        limit: z.coerce.number().int().min(1).max(100).optional()
+    })
+});
+
+const queryDues = z.object({
+    query: z.object({
+        search: z.string().max(100).optional(),
+        sort: z.enum(['amount', 'oldest', 'name']).optional(),
+        branchId: objectId.optional(),
         page: z.coerce.number().int().min(1).optional(),
         limit: z.coerce.number().int().min(1).max(100).optional()
     })
@@ -127,6 +140,7 @@ module.exports = {
     adjustPayment,
     cancelPayment,
     queryPayments,
+    queryDues,
     createRazorpayOrder,
     verifyRazorpayPayment,
     idOnly

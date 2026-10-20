@@ -2,7 +2,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const authController = require('../../controllers/auth.controller');
 const adminController = require('../../controllers/admin.controller');
-const { loginLimiter, otpLimiter } = require('../../middlewares/rateLimit.middleware');
+const { loginLimiter, otpLimiter, otpVerifyLimiter } = require('../../middlewares/rateLimit.middleware');
 const validate = require('../../middlewares/validate.middleware');
 const { authValidation } = require('../../validations');
 const libraryValidation = require('../../validations/library.validation');
@@ -22,9 +22,9 @@ const registerLimiter = rateLimit({
 // Authentication endpoints
 router.post('/login', loginLimiter, validate(authValidation.login), authController.login);
 router.post('/send-otp', otpLimiter, validate(authValidation.sendOTP), authController.sendOTP);
-router.post('/verify-otp', otpLimiter, validate(authValidation.verifyOTP), authController.verifyOTP);
+router.post('/verify-otp', otpVerifyLimiter, validate(authValidation.verifyOTP), authController.verifyOTP);
 router.post('/forgot-password', otpLimiter, validate(authValidation.forgotPassword), authController.forgotPassword);
-router.post('/verify-reset-otp', otpLimiter, validate(authValidation.verifyResetOTP), authController.verifyResetOTP);
+router.post('/verify-reset-otp', otpVerifyLimiter, validate(authValidation.verifyResetOTP), authController.verifyResetOTP);
 router.post('/reset-password', loginLimiter, validate(authValidation.resetPassword), authController.resetPassword);
 
 // Public profile images

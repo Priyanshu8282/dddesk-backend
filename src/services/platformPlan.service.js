@@ -6,7 +6,7 @@ const { slugify } = require('../utils/slug');
 
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 
-const FIELDS = ['name', 'description', 'monthlyPrice', 'annualPrice', 'trialDays', 'graceDays',
+const FIELDS = ['name', 'description', 'monthlyPrice', 'annualPrice', 'gstPercent', 'isPopular', 'sortOrder', 'trialDays', 'graceDays',
   'maxStudents', 'maxSeats', 'maxStaff', 'maxBranches', 'features', 'isActive'];
 const LIMIT_FIELDS = ['maxStudents', 'maxSeats', 'maxStaff', 'maxBranches'];
 
@@ -19,17 +19,38 @@ const uniqueSlug = async (name) => {
   return `${base}-${Date.now()}`;
 };
 
-exports.list = async () => PlatformPlan.find({ isDeleted: false }).sort({ monthlyPrice: 1 });
+// Plans with the number of libraries on each (one grouped query, not one per plan)
+exports.list = async () => {
+  const [plans, counts] = await Promise.all([
+    PlatformPlan.find({ isDeleted: false }).sort({ sortOrder: 1, monthlyPrice: 1 }).lean(),
+    Library.aggregate([
+      { $match: { isDeleted: false, subscriptionPlanId: { $ne: null } } },
+      { $group: { _id: '$subscriptionPlanId', n: { $sum: 1 } } },
+    ]),
+  ]);
+  const byPlan = new Map(counts.map((c) => [String(c._id), c.n]));
+  return plans.map((p) => ({ ...p, gstPercent: p.gstPercent ?? 18, isPopular: !!p.isPopular, sortOrder: p.sortOrder ?? 0, libraryCount: byPlan.get(String(p._id)) || 0 }));
+};
+
+const assertUniqueName = async (name, exceptId = null) => {
+  if (!name) return;
+  const clash = await PlatformPlan.findOne({
+    isDeleted: false, name: new RegExp('^' + String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i'),
+    ...(exceptId ? { _id: { $ne: exceptId } } : {}),
+  }).select('_id').lean();
+  if (clash) throw err('A plan with this name already exists.', 409);
+};
 
 exports.get = async (id) => {
   const plan = await PlatformPlan.findOne({ _id: id, isDeleted: false });
   if (!plan) throw err('Plan not found.', 404);
   const libraries = await Library.countDocuments({ subscriptionPlanId: id, isDeleted: false });
-  return { ...plan.toObject(), libraryCount: libraries };
+  return { ...plan.toObject(), gstPercent: plan.gstPercent ?? 18, libraryCount: libraries };
 };
 
 exports.create = async (req) => {
   const body = pick(req.body, FIELDS);
+  await assertUniqueName(body.name);
   const plan = await PlatformPlan.create({ ...body, slug: await uniqueSlug(body.name), createdBy: req.user._id });
   await audit(req, 'platform_plan.create', 'PlatformPlan', plan._id, { name: plan.name });
   return plan;
@@ -39,6 +60,7 @@ exports.create = async (req) => {
 exports.update = async (req, id) => {
   const body = pick(req.body, FIELDS);
   if (!Object.keys(body).length) throw err('No valid fields to update.', 400);
+  await assertUniqueName(body.name, id);
   const plan = await PlatformPlan.findOneAndUpdate(
     { _id: id, isDeleted: false }, { $set: body }, { new: true, runValidators: true }
   );

@@ -23,6 +23,7 @@ const libParam = z.object({ params: z.object({ libraryId: objectId }) });
 // Library owner: mounted at /libraries/subscription
 const owner = express.Router();
 owner.get('/', requireOwner, c.getSubscription);
+owner.get('/plans', requireOwner, c.availablePlans);
 owner.post('/change-plan', requireOwner, validate(sv.changePlan), c.changePlan);
 owner.post('/cancel', requireOwner, validate(sv.cancel), c.cancel);
 owner.post('/resume', requireOwner, c.resume);

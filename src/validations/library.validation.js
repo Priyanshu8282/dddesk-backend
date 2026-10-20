@@ -115,6 +115,13 @@ const profileBody = z.object({
         reminderFrequencyDays: num.int().min(0).optional(),
         blockAfterDue: bool.optional(),
     })),
+    membershipPolicy: json(z.object({
+        allowPause: bool.optional(),
+        maxPauseDays: num.int().min(0).optional(),
+        allowExtend: bool.optional(),
+        maxExtendDays: num.int().min(0).optional(),
+        releaseSeatOnPause: bool.optional(),
+    })),
     attendanceRules: json(z.object({
         graceMinutes: num.int().min(0).optional(),
         lateAfterMinutes: num.int().min(0).optional(),

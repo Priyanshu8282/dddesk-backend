@@ -3,6 +3,12 @@ const ApiError = require('../utils/ApiError');
 const audit = require('../utils/audit');
 const svc = require('../services/subscription.service');
 
+// Owner: plans they can switch to (prices exclude GST; totals include it)
+exports.availablePlans = catchAsync(async (req, res) => {
+    const data = await svc.listAvailablePlans();
+    res.status(200).json({ success: true, message: 'Plans retrieved successfully', data });
+});
+
 // Owner: own library only
 exports.myPayments = catchAsync(async (req, res) => {
     if (!req.libraryId) throw new ApiError(400, 'Library context is required');

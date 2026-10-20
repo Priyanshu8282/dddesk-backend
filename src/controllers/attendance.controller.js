@@ -53,6 +53,18 @@ const getToday = catchAsync(async (req, res) => {
   ApiResponse.ok(res, data, "Today's attendance retrieved successfully");
 });
 
+const getTrend = catchAsync(async (req, res) => {
+  const data = await attendanceService.trend({ libraryId: req.libraryId, days: req.query.days, scope: branchFilter(req) });
+  ApiResponse.ok(res, data, 'Attendance trend retrieved successfully');
+});
+
+const exportList = catchAsync(async (req, res) => {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="attendance-${new Date().toISOString().slice(0, 10)}.csv"`);
+  await attendanceService.exportCsv({ libraryId: req.libraryId, query: req.query, scope: branchFilter(req), write: (chunk) => new Promise((resolve) => (res.write(chunk) ? resolve() : res.once('drain', resolve))) });
+  res.end();
+});
+
 const getActive = catchAsync(async (req, res) => {
   const data = await attendanceService.getActive(req.libraryId, branchFilter(req));
   ApiResponse.ok(res, data, 'Active students retrieved successfully');
@@ -122,6 +134,6 @@ const percentage = catchAsync(async (req, res) => {
 });
 
 module.exports = {
-  generateQR, scanQR, selfCheck, getMy, getToday, getActive, getAttendance,
+  generateQR, scanQR, selfCheck, getMy, getToday, getActive, getAttendance, getTrend, exportList,
   manualClose, markManual, punchIn, punchOut, correct, markLeave, studentSummary, percentage
 };

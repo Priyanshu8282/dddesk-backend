@@ -5,7 +5,7 @@ const Role = require('../models/role.model');
 const SidebarMenu = require('../models/sidebar.model');
 const config = require('../config/config');
 const { syncRBAC } = require('./rbacSync');
-const { seedSidebar } = require('./sidebarSeed');
+const { syncLibrarySidebar } = require('./librarySidebar');
 
 // Idempotent master seed. It never deletes permissions, menus, roles or accounts:
 //  1. base sidebar menus are upserted (matched by title + parent + userType)
@@ -80,18 +80,12 @@ const masterSeed = async () => {
         await mongoose.connect(config.mongoose.url);
         console.log('Connected to MongoDB for master seeding');
 
-        let created = 0;
-        for (const m of sidebarData) {
-            const r = await SidebarMenu.updateOne(
-                { title: m.title, parent_module_id: m.parent_module_id || '-1', userType: m.userType || 'admin' },
-                { $setOnInsert: m },
-                { upsert: true }
-            );
-            if (r.upsertedCount) created += 1;
+        // library sidebar: one ordered list of pages that exist (anything else admin-side is removed)
+        const sb = await syncLibrarySidebar({ apply: true });
+        for (const m of sidebarData.filter((x) => x.userType === 'student')) {
+            await SidebarMenu.updateOne({ title: m.title, parent_module_id: m.parent_module_id || '-1', userType: 'student' }, { $setOnInsert: m }, { upsert: true });
         }
-        console.log(`Base sidebar menus upserted (${created} new).`);
-        const op = await seedSidebar();
-        console.log(`Operational sidebar menus upserted (${op.created} new).`);
+        console.log(`Library sidebar synced (${sb.keep} kept, ${sb.create} created, ${sb.remove.length} removed).`);
 
         const rbac = await syncRBAC();
         console.log(`RBAC synced: ${rbac.permissions} permissions, ${rbac.menus} menus.`);

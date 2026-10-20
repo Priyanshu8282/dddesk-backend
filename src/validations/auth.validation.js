@@ -25,22 +25,31 @@ const login = z.object({
     })
 });
 
+// OTP login accepts an email OR a mobile number (as `identifier`, or explicitly as `email` / `mobile`)
+const otpTarget = {
+    identifier: z.string().trim().min(3).max(120).optional(),
+    email: z.string().trim().email('Valid email required').optional(),
+    mobile: z.string().trim().min(10, 'Valid 10-digit mobile number required').max(15).optional(),
+};
+const needsTarget = (data) => data.identifier || data.email || data.mobile;
+const targetMessage = { message: 'Enter your email or mobile number', path: ['identifier'] };
+
 const sendOTP = z.object({
     body: z.object({
-        mobile: z.string().trim().min(10, 'Valid 10-digit mobile number required').max(15),
+        ...otpTarget,
         userRole: z.string().optional(),
         ...tenantHint
-    })
+    }).refine(needsTarget, targetMessage)
 });
 
 const verifyOTP = z.object({
     body: z.object({
-        mobile: z.string().trim().min(10).max(15),
+        ...otpTarget,
         otp,
         userRole: z.string().optional(),
         fcmToken: z.string().max(500).optional(),
         ...tenantHint
-    })
+    }).refine(needsTarget, targetMessage)
 });
 
 const forgotPassword = z.object({
@@ -79,6 +88,8 @@ const resetPassword = z.object({
 const updateProfile = z.object({
     body: z.object({
         name: z.string().trim().min(2).max(100).optional(),
+        // sign-in identifier: changing it needs the current password (checked in the controller)
+        mobile: z.string().trim().regex(/^\+?[\d\s-]{10,16}$/, 'Enter a valid mobile number').optional(),
         currentPassword: z.string().optional(),
         newPassword: newPassword.optional(),
     }).refine((d) => !d.newPassword || !!d.currentPassword, {

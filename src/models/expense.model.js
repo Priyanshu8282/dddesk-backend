@@ -21,6 +21,8 @@ const expenseSchema = new mongoose.Schema({
         enum: ['cash', 'upi', 'bank_transfer', 'other'],
         default: 'cash'
     },
+    customCategory: { type: String, trim: true, maxlength: 40 },
+    vendor: { type: String, trim: true, maxlength: 120 },
     notes: { type: String },
     receiptImage: { type: String },
     isDeleted: { type: Boolean, default: false },

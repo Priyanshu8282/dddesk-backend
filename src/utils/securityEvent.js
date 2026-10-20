@@ -1,4 +1,5 @@
 const audit = require('./audit');
+const securityLog = require('./securityLog');
 
 // Records a tenant-isolation violation attempt (a request referenced a record of another library).
 // logSecurityEvent(req, 'tenant_mismatch', { resource: 'Student', id })  -> AuditLog action 'security.tenant_mismatch'
@@ -8,6 +9,7 @@ const logSecurityEvent = (req, type, details = {}) => {
         const { resource = 'Security', id = null, ...rest } = details;
         const meta = { ...rest, method: req.method, path: req.originalUrl };
         audit(req, `security.${type}`, resource, id || null, meta).catch(() => {});
+        securityLog.record(req, { type: type === 'tenant_mismatch' ? 'tenant_mismatch' : 'forbidden', outcome: 'blocked', reason: type, userId: req.user?._id || null, userType: req.userType || null, libraryId: req.libraryId || null, identifier: req.user?.email || null, meta: { resource, id: id ? String(id) : null } });
     } catch (_) { /* never break the request */ }
 };
 

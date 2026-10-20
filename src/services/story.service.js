@@ -6,6 +6,16 @@ const ApiError = require('../utils/ApiError');
 const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
 const { branchVisibility } = require('../utils/branchScope');
+const { startOfDayIST, endOfDayIST } = require('../utils/time');
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const STORY_SORTS = {
+    newest: { createdAt: -1, _id: -1 },
+    oldest: { createdAt: 1, _id: 1 },
+    views: { views: -1, createdAt: -1 },
+    expiring: { expiresAt: 1, _id: 1 },
+    title: { title: 1, _id: 1 }
+};
 
 const HOUR = 60 * 60 * 1000;
 const ARCHIVE_RETENTION_DAYS = 90;
@@ -67,7 +77,7 @@ const createStory = async (libraryId, body, media, creatorId) => {
  * Staff list (without per-student arrays) + summary
  */
 // `scope` = branch filter fragment from utils/branchScope.branchFilter(req): stories of those branches + all-branch stories
-const queryStories = async (libraryId, { search, status, page = 1, limit = 10 } = {}, scope = {}) => {
+const queryStories = async (libraryId, { search, status, type, from, to, sort = 'newest', page = 1, limit = 10 } = {}, scope = {}) => {
     const now = new Date();
     const filter = { libraryId };
     if (search) {
@@ -78,12 +88,19 @@ const queryStories = async (libraryId, { search, status, page = 1, limit = 10 } 
     else if (status === 'expired') Object.assign(filter, { archived: { $ne: true }, expiresAt: { $lte: now } });
     else if (status === 'scheduled') Object.assign(filter, { archived: { $ne: true }, publishAt: { $gt: now } });
     else if (status === 'active') Object.assign(filter, liveFilter(libraryId, now));
+    else if (status === 'inactive') Object.assign(filter, { isActive: false, archived: { $ne: true }, publishAt: { $lte: now }, expiresAt: { $gt: now } });
+    if (type) filter.type = type;
+    if (from || to) {
+        filter.publishAt = { ...(filter.publishAt || {}) };
+        if (from) filter.publishAt.$gte = DATE_ONLY.test(String(from)) ? startOfDayIST(new Date(from)) : new Date(from);
+        if (to) filter.publishAt.$lte = DATE_ONLY.test(String(to)) ? endOfDayIST(new Date(to)) : new Date(to);
+    }
     if (scope.branchId) filter.$and = [{ $or: [{ branchId: null }, scope] }];
 
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
     const [stories, totalResults, summary] = await Promise.all([
-        Story.find(filter).select('-viewedBy -repliesData -likedBy').sort({ createdAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+        Story.find(filter).select('-viewedBy -repliesData -likedBy').sort(STORY_SORTS[sort] || STORY_SORTS.newest).skip((p - 1) * l).limit(l).lean(),
         Story.countDocuments(filter),
         analytics(libraryId)
     ]);
@@ -109,12 +126,14 @@ const analytics = async (libraryId) => {
                 { $eq: ['$isActive', true] }, { $ne: ['$archived', true] },
                 { $lte: ['$publishAt', now] }, { $gt: ['$expiresAt', now] }
             ] }, 1, 0] } },
+            totalExpired: { $sum: { $cond: [{ $lte: ['$expiresAt', now] }, 1, 0] } },
+            totalInactive: { $sum: { $cond: [{ $and: [{ $eq: ['$isActive', false] }, { $ne: ['$archived', true] }, { $gt: ['$expiresAt', now] }] }, 1, 0] } },
             totalScheduled: { $sum: { $cond: [{ $and: [{ $ne: ['$archived', true] }, { $gt: ['$publishAt', now] }] }, 1, 0] } }
         } }
     ]);
     return agg ? { ...agg, _id: undefined } : {
         totalStories: 0, totalViews: 0, totalUniqueViews: 0, totalLikes: 0, totalReplies: 0,
-        todayViews: 0, totalActive: 0, totalScheduled: 0
+        todayViews: 0, totalActive: 0, totalScheduled: 0, totalExpired: 0, totalInactive: 0
     };
 };
 

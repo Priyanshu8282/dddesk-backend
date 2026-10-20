@@ -1,10 +1,16 @@
 const ApiError = require('../utils/ApiError');
+const securityLog = require('../utils/securityLog');
 
 // Role guards. Run after Authentication (req.userType is set there).
 const deny = (msg) => new ApiError(403, msg || 'You do not have access to this resource');
 
-const allow = (...types) => (req, res, next) =>
-    types.includes(req.userType) ? next() : next(deny());
+const allow = (...types) => (req, res, next) => {
+    if (types.includes(req.userType)) return next();
+    // Say exactly who was refused where, so a blocked call is easy to trace in the server log
+    console.warn(`[403] ${req.method} ${req.originalUrl} - role '${req.userType}' not in [${types.join(', ')}] (user ${req.user?._id})`);
+    securityLog.record(req, { type: 'forbidden', outcome: 'blocked', reason: 'wrong_role', userId: req.user?._id || null, userType: req.userType || null, libraryId: req.libraryId || null, identifier: req.user?.email || null, meta: { allowed: types } });
+    return next(deny());
+};
 
 const requireSuperAdmin = allow('superadmin');
 // Library owner (and superadmin acting on a tenant)

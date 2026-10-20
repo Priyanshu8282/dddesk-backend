@@ -3,16 +3,76 @@ const Notification = require('../models/notification.model');
 const ApiError = require('../utils/ApiError');
 
 // ─── Inbox (per user) ────────────────────────────────────────────────────────
-const getNotifications = async (userId, userType, { page = 1, limit = 50 } = {}) => {
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Filters: status (all|unread|read), type, search (title/message), from/to (YYYY-MM-DD, IST days), sort (newest|oldest)
+const getNotifications = async (userId, userType, query = {}) => {
+    const { page = 1, limit = 50, status, type, search, from, to, sort } = query;
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
     const base = { recipientId: userId, recipientType: userType };
-    const [notifications, unreadCount, total] = await Promise.all([
-        Notification.find(base).sort({ createdAt: -1 }).skip((p - 1) * l).limit(l).lean(),
+    const filter = { ...base };
+    if (status === 'unread') filter.isRead = false;
+    else if (status === 'read') filter.isRead = true;
+    if (type) filter.type = String(type);
+    const q = String(search || '').trim().slice(0, 80);
+    if (q) {
+        const re = new RegExp(escapeRe(q), 'i');
+        filter.$or = [{ title: re }, { message: re }];
+    }
+    const range = {};
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(from || ''))) range.$gte = new Date(`${from}T00:00:00+05:30`);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(String(to || ''))) range.$lte = new Date(`${to}T23:59:59.999+05:30`);
+    if (range.$gte || range.$lte) filter.createdAt = range;
+
+    const now = new Date();
+    const istDay = new Date(now.getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+    const todayStart = new Date(`${istDay}T00:00:00+05:30`);
+    const [notifications, unreadCount, total, all, today, types] = await Promise.all([
+        Notification.find(filter).sort({ createdAt: sort === 'oldest' ? 1 : -1, _id: -1 }).skip((p - 1) * l).limit(l).lean(),
         Notification.countDocuments({ ...base, isRead: false }),
-        Notification.countDocuments(base)
+        Notification.countDocuments(filter),
+        Notification.countDocuments(base),
+        Notification.countDocuments({ ...base, createdAt: { $gte: todayStart } }),
+        Notification.aggregate([
+            { $match: base },
+            { $group: { _id: '$type', count: { $sum: 1 }, unread: { $sum: { $cond: ['$isRead', 0, 1] } } } },
+            { $sort: { count: -1 } }
+        ])
     ]);
-    return { notifications, unreadCount, total, page: p, totalPages: Math.ceil(total / l) };
+    return {
+        notifications, unreadCount, total, page: p, totalPages: Math.ceil(total / l),
+        stats: { all, unread: unreadCount, read: all - unreadCount, today },
+        types: types.map((t) => ({ type: t._id, count: t.count, unread: t.unread }))
+    };
+};
+
+// Owner/staff broadcast to their students (in-app + push, optional email/sms/whatsapp via library prefs)
+const AUDIENCES = ['all', 'active', 'expiring', 'expired', 'pending'];
+const resolveStudentIds = async (libraryId, audience) => {
+    const Student = require('../models/student.model');
+    const filter = { libraryId, isDeleted: false };
+    if (audience === 'active') Object.assign(filter, { status: 'active', planStatus: 'active' });
+    else if (audience === 'expired') filter.planStatus = 'expired';
+    else if (audience === 'pending') filter.planStatus = 'pending';
+    else if (audience === 'expiring') {
+        const now = new Date();
+        Object.assign(filter, { planStatus: 'active', expiryDate: { $gte: now, $lte: new Date(now.getTime() + 7 * 86400000) } });
+    } else filter.status = 'active';
+    const rows = await Student.find(filter).select('_id').lean();
+    return rows.map((r) => r._id);
+};
+
+const broadcastToStudents = async (libraryId, { audience = 'all', title, message, channels }) => {
+    if (!AUDIENCES.includes(audience)) throw new ApiError(400, 'Unknown audience');
+    const ids = await resolveStudentIds(libraryId, audience);
+    if (!ids.length) throw new ApiError(400, 'No students match this audience');
+    const res = await notifyEvent('announcement', libraryId, {
+        studentIds: ids, title, message, channels: channels && channels.length ? channels : ['inapp', 'push'],
+        variables: { title, message }, data: { type: 'announcement', source: 'owner' }
+    });
+    if (res.error) throw new ApiError(500, res.error);
+    return { recipients: res.recipients, audience };
 };
 
 const markAllAsRead = async (userId, userType) => {
@@ -36,6 +96,11 @@ const markOneAsRead = async (id, userId, userType) => {
 const deleteNotifications = async (userId, userType, notificationIds) => {
     const ids = (notificationIds || []).filter((i) => mongoose.Types.ObjectId.isValid(i));
     await Notification.deleteMany({ _id: { $in: ids }, recipientId: userId, recipientType: userType });
+};
+
+const deleteRead = async (userId, userType) => {
+    const r = await Notification.deleteMany({ recipientId: userId, recipientType: userType, isRead: true });
+    return r.deletedCount || 0;
 };
 
 // ─── Event templates ─────────────────────────────────────────────────────────
@@ -426,9 +491,13 @@ const initProviders = () => {
 };
 initProviders();
 
+/** E-mail to a platform owner (settings alerts, test e-mail). Same transport/provider as every other e-mail. */
+const sendPlatformEmail = (to, title, message) => sendEmail(to, title, message);
+
 module.exports = {
+    sendPlatformEmail,
     notifyLibraryStatus, deliverOtp, initProviders,
-    getNotifications, markAllAsRead, markOneAsRead, deleteNotifications,
+    getNotifications, markAllAsRead, markOneAsRead, deleteNotifications, broadcastToStudents, AUDIENCES, deleteRead,
     notifyEvent, registerProvider, TEMPLATES, render,
     getProviderConfig, refreshProviderConfig
 };

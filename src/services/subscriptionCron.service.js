@@ -169,6 +169,10 @@ const processLapsed = async (now = new Date()) => {
                 res.suspended++;
                 systemAudit(lib._id, 'subscription.suspended', 'Library', lib._id, { endedOn: st.expiresAt, graceEndedAt: st.graceEndsAt });
                 await notifyOwners('subscription-suspended', lib._id);
+                require('./platformAlerts.service').notify('subscriptionSuspended', {
+                    message: `${lib.name || 'A library'} was suspended because its subscription ended and the grace period is over.`,
+                    libraryId: lib._id, dedupeKey: String(lib._id), data: { libraryId: lib._id },
+                });
             }
         }
     }

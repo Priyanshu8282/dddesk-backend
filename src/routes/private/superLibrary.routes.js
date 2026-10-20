@@ -3,6 +3,7 @@ const ctrl = require('../../controllers/superLibrary.controller');
 const validate = require('../../middlewares/validate.middleware');
 const { requireSuperAdmin } = require('../../middlewares/access.middleware');
 const v = require('../../validations/platform.validation');
+const upload = require('../../middlewares/upload.middleware');
 
 const router = express.Router();
 
@@ -10,9 +11,10 @@ const router = express.Router();
 router.use(requireSuperAdmin);
 
 router.get('/', ctrl.getAllLibraries);
-router.post('/', validate(v.superCreateLibrary), ctrl.createLibrary);
+// owner photo arrives as multipart (field: profileImage); plain JSON still works
+router.post('/', upload.single('profileImage'), validate(v.superCreateLibrary), ctrl.createLibrary);
 router.get('/:id', validate(v.idParam), ctrl.getLibraryById);
-router.put('/:id', validate(v.superUpdateLibrary), ctrl.updateLibrary);
+router.put('/:id', upload.single('profileImage'), validate(v.superUpdateLibrary), ctrl.updateLibrary);
 router.delete('/:id', validate(v.idParam), ctrl.deleteLibrary);
 
 // Library lifecycle - the only way library status changes

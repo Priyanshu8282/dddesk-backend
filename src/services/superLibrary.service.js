@@ -2,6 +2,8 @@ const jwt          = require('jsonwebtoken');
 const Library      = require('../models/library.model');
 const Admin        = require('../models/admin.model');
 const Student      = require('../models/student.model');
+const Seat         = require('../models/seat.model');
+const Branch       = require('../models/branch.model');
 const PlatformPlan = require('../models/platformPlan.model');
 const AuditLog     = require('../models/auditLog.model');
 const config       = require('../config/config');
@@ -24,40 +26,106 @@ const logAudit = async (action, libraryId, userId, metadata, ipAddress, extra = 
   } catch (_) { /* audit must never break the action */ }
 };
 
+const SORTS = {
+  newest: { createdAt: -1 },
+  oldest: { createdAt: 1 },
+  name_asc: { name: 1 },
+  name_desc: { name: -1 },
+  expiry_soon: { subscriptionExpiry: 1, createdAt: -1 },
+};
+const exactCI = (v) => new RegExp(`^${escapeRegex(String(v).trim())}$`, 'i');
+
 exports.listLibraries = async (query) => {
-  const { search, status } = query;
+  const { search, status, city, state, plan, subscription } = query;
   const page = Math.max(1, parseInt(query.page, 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
   const filter = { isDeleted: false };
+  const and = [];
+  // "All Libraries" never lists pending requests (they live on the Pending Requests page)
   if (status && status !== 'all') filter.status = status;
+  else if (query.excludePending === 'true' || query.excludePending === true) filter.status = { $ne: 'pending' };
+  if (city && city !== 'all') filter.city = exactCI(city);
+  if (state && state !== 'all') filter.state = exactCI(state);
+  if (plan && plan !== 'all') {
+    // "free" = no platform plan assigned
+    if (String(plan).toLowerCase() === 'free') and.push({ $or: [{ subscriptionPlan: null }, { subscriptionPlan: '' }, { subscriptionPlan: exactCI('free') }, { subscriptionPlan: { $exists: false } }] });
+    else filter.subscriptionPlan = exactCI(plan);
+  }
+  const now = new Date();
+  if (subscription === 'expired') and.push({ subscriptionExpiry: { $lt: now } });
+  else if (subscription === 'expiring') and.push({ subscriptionExpiry: { $gte: now, $lte: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000) } });
+  else if (subscription === 'no_plan') and.push({ $or: [{ subscriptionPlanId: null }, { subscriptionPlanId: { $exists: false } }] });
   if (search) {
     const re = new RegExp(escapeRegex(search), 'i');
-    filter.$or = [{ name: re }, { ownerName: re }, { mobile: re }, { email: re }, { city: re }, { state: re }, { libraryCode: re }, { slug: re }];
+    and.push({ $or: [{ name: re }, { ownerName: re }, { mobile: re }, { email: re }, { city: re }, { state: re }, { libraryCode: re }, { slug: re }] });
   }
-  const [libraries, total, totalAll, active, pending, suspended, rejected] = await Promise.all([
-    Library.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+  if (and.length) filter.$and = and;
+  const sort = SORTS[query.sort] || SORTS.newest;
+
+  // 5 round trips instead of 10 (each one is slow on a remote database): the status counts and the
+  // filter dropdown values each come from a single aggregate.
+  const [rows, total, statusAgg, facets] = await Promise.all([
+    Library.find(filter).sort(sort).skip((page - 1) * limit).limit(limit),
     Library.countDocuments(filter),
-    Library.countDocuments({ isDeleted: false }),
-    Library.countDocuments({ isDeleted: false, status: 'active' }),
-    Library.countDocuments({ isDeleted: false, status: 'pending' }),
-    Library.countDocuments({ isDeleted: false, status: 'suspended' }),
-    Library.countDocuments({ isDeleted: false, status: 'rejected' }),
+    Library.aggregate([{ $match: { isDeleted: false } }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
+    Library.aggregate([
+      { $match: { isDeleted: false } },
+      { $facet: {
+        cities: [{ $group: { _id: '$city' } }],
+        states: [{ $group: { _id: '$state' } }],
+        plans: [{ $group: { _id: '$subscriptionPlan' } }],
+      } },
+    ]),
   ]);
+  const byStatus = Object.fromEntries(statusAgg.map((x) => [x._id, x.n]));
+  const active = byStatus.active || 0;
+  const pending = byStatus.pending || 0;
+  const suspended = byStatus.suspended || 0;
+  const rejected = byStatus.rejected || 0;
+  const totalAll = statusAgg.reduce((sum, x) => sum + x.n, 0);
+  const f = facets[0] || {};
+  const cities = (f.cities || []).map((x) => x._id);
+  const states = (f.states || []).map((x) => x._id);
+  const plans = (f.plans || []).map((x) => x._id);
+
+  // Student counts for just this page (one grouped query) + computed subscription state
+  const ids = rows.map((l) => l._id);
+  const counts = ids.length
+    ? await Student.aggregate([
+        { $match: { libraryId: { $in: ids }, isDeleted: false } },
+        { $group: { _id: '$libraryId', n: { $sum: 1 } } },
+      ])
+    : [];
+  const studentCounts = new Map(counts.map((c) => [String(c._id), c.n]));
+  const libraries = rows.map((l) => ({
+    ...l.toObject(),
+    studentCount: studentCounts.get(String(l._id)) || 0,
+    subscription: getSubscriptionState(l),
+  }));
+
+  const clean = (arr) => arr.filter((x) => typeof x === 'string' && x.trim()).sort((a, b) => a.localeCompare(b));
   return {
     libraries,
     pagination: { total, page, limit, pages: Math.ceil(total / limit) },
-    counts: { total: totalAll, active, pending, suspended, rejected },
+    counts: { total: totalAll, registered: totalAll - pending, active, pending, suspended, rejected },
+    filters: { cities: clean(cities), states: clean(states), plans: clean(plans) },
   };
 };
 
 exports.getLibraryById = async (id) => {
   const library = await Library.findOne({ _id: id, isDeleted: false });
   if (!library) throw err('Library not found', 404);
-  const [studentCount, owner] = await Promise.all([
+  const [studentCount, owner, seatCount, staffCount, branchCount] = await Promise.all([
     Student.countDocuments({ libraryId: id, isDeleted: false }),
-    Admin.findOne({ libraryId: id, userType: 'admin' }).select('name email mobile status lastLogin'),
+    Admin.findOne({ libraryId: id, userType: 'admin' }).select('name email mobile status lastLogin profileImage'),
+    Seat.countDocuments({ libraryId: id, isDeleted: { $ne: true } }),
+    Admin.countDocuments({ libraryId: id, userType: 'staff', isDeleted: false }),
+    Branch.countDocuments({ libraryId: id, isDeleted: { $ne: true } }),
   ]);
-  return { ...library.toObject(), studentCount, owner, subscription: getSubscriptionState(library) };
+  return {
+    ...library.toObject(), studentCount, owner, subscription: getSubscriptionState(library),
+    usage: { students: studentCount, seats: seatCount, staff: staffCount, branches: branchCount },
+  };
 };
 
 // pending/rejected -> active. Provisions slug/subdomain, trial and an in-app owner notification.
@@ -145,18 +213,28 @@ exports.getLibraryPlan = async (id) => {
 };
 
 // Superadmin creates an active library (+ owner account) directly
-exports.createLibrary = async (body, user, ip) => {
+exports.createLibrary = async (body, user, ip, files = null) => {
   const { library, admin, onboarding } = await adminService.createLibraryWithAdmin(
-    { ...body, country: body.country || 'India' }, null, { _id: user._id, userType: 'superadmin' }
+    { ...body, country: body.country || 'India' }, files, { _id: user._id, userType: 'superadmin' }
   );
   await logAudit('library_created', library._id, user._id, { libraryName: library.name }, ip);
   return { library, admin, onboarding };
 };
 
-exports.updateLibrary = async (id, body, userId, ip) => {
+// delete an uploaded file we own (path must stay inside uploads/)
+const removeUpload = (rel) => {
+  try {
+    if (!rel) return;
+    const root = require('path').resolve(process.cwd(), 'uploads');
+    const full = require('path').resolve(process.cwd(), String(rel).replace(/\\/g, '/'));
+    if (full.startsWith(root + require('path').sep)) require('fs').unlinkSync(full);
+  } catch (_) { /* already gone */ }
+};
+
+exports.updateLibrary = async (id, body, userId, ip, { file = null, removeImage = false } = {}) => {
   const FIELDS = ['name', 'ownerName', 'email', 'mobile', 'alternativeMobileNumber', 'address', 'city', 'state', 'country', 'pincode', 'website', 'gstNumber'];
   const update = pick(body, FIELDS);
-  if (!Object.keys(update).length) throw err('No fields to update', 400);
+  if (!Object.keys(update).length && !file && !removeImage) throw err('No fields to update', 400);
   if (update.mobile) update.mobile = normalizeMobile(update.mobile);
   if (update.alternativeMobileNumber) update.alternativeMobileNumber = normalizeMobile(update.alternativeMobileNumber);
   if (update.email) update.email = String(update.email).toLowerCase();
@@ -174,12 +252,17 @@ exports.updateLibrary = async (id, body, userId, ip) => {
     throw err('An account with this email already exists', 409);
   }
 
-  const lib = await Library.findOneAndUpdate({ _id: id, isDeleted: false }, { $set: update }, { new: true, runValidators: true });
+  const lib = Object.keys(update).length
+    ? await Library.findOneAndUpdate({ _id: id, isDeleted: false }, { $set: update }, { new: true, runValidators: true })
+    : current;
 
   // Mirror contact fields to the owner account. Owner NAME comes only from ownerName (never the library name).
   if (owner) {
     const adminUpdate = pick(update, ['email', 'mobile', 'alternativeMobileNumber', 'address', 'city', 'state', 'country', 'pincode']);
     if (update.ownerName) adminUpdate.name = update.ownerName;
+    // owner photo: a new upload replaces the old one; "remove" clears it
+    if (file) { adminUpdate.profileImage = String(file.path).replace(/\\/g, '/'); removeUpload(owner.profileImage); }
+    else if (removeImage && owner.profileImage) { adminUpdate.profileImage = ''; removeUpload(owner.profileImage); }
     if (Object.keys(adminUpdate).length) await Admin.updateOne({ _id: owner._id }, { $set: adminUpdate });
   }
 

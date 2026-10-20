@@ -17,6 +17,12 @@ router.use('/tenant', tenantRoutes);
 // Health check: /v1/public/health
 router.use('/health', require('./health.routes'));
 
+// Platform name, logo, favicon, maintenance + registration state: /v1/public/branding
+router.use('/branding', require('./branding.routes'));
+
+// Country / state / city lists for address forms: /v1/public/locations/{countries,states,cities}
+router.use('/locations', require('./location.routes'));
+
 // Razorpay webhook (signature-verified, no JWT): /v1/public/razorpay/webhook
 router.use('/razorpay', require('./razorpay.routes'));
 

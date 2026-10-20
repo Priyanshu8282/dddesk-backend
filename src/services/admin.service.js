@@ -90,6 +90,14 @@ const validateBranchIds = async (branchIds, tenant) => {
   return ids;
 };
 
+// A mobile number may be used by one person of a library only
+const assertMobileFree = async (mobile, tenant, exceptId = null) => {
+  if (!mobile) return;
+  const filter = { mobile, libraryId: tenant, isDeleted: false };
+  if (exceptId) filter._id = { $ne: exceptId };
+  if (await Admin.findOne(filter)) throw err('This mobile number is already used by someone in your team', 400);
+};
+
 // ── Staff / Employee ──────────────────────────────────────────────────────────
 
 exports.createStaff = async (req) => {
@@ -101,6 +109,7 @@ exports.createStaff = async (req) => {
 
   const email = String(body.email).toLowerCase();
   if (await Admin.findOne({ email })) throw err('Email already exists', 400);
+  await assertMobileFree(normalizeMobile(body.mobile), tenant);
 
   // Plan limit (spec 12 / platform plan maxStaff)
   const maxStaff = library.planLimits?.maxStaff;
@@ -128,7 +137,7 @@ exports.createStaff = async (req) => {
     documents: parseDocuments(body.documentNames, files) || [],
     profileImage: pf ? normPath(pf.path) : '',
     createdBy: req.user._id,
-  });
+  }).catch((e) => { if (e && e.code === 11000) throw err('Email already exists', 400); throw e; });
 
   await audit(req, 'staff.create', 'Admin', staff._id, { email, roleId: role._id, roleName: role.name, branchIds });
   return Admin.findById(staff._id).populate('roleId', 'name').populate('branchIds', 'name');
@@ -196,26 +205,17 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
     return { library: r.library, admin, onboarding: r.onboarding };
   }
 
-  // In-app notice for superadmins about the new request (best effort)
-  {
-    try {
-      const sas = await Admin.find({ userType: 'superadmin', status: true }).select('_id');
-      if (sas.length) {
-        await Notification.insertMany(sas.map((s) => ({
-          recipientId: s._id, recipientType: 'Admin', type: 'library_registration',
-          title: 'New library registration',
-          message: `${library.name} (${library.city || ''}) has requested approval.`,
-          data: { libraryId: library._id },
-        })));
-      }
-    } catch (_) { /* notifications must never fail registration */ }
-  }
+  // Alert the platform owners (in-app + the e-mails set in Platform Settings; honours the on/off switch)
+  require('./platformAlerts.service').notify('newRegistration', {
+    message: `${library.name}${library.city ? ' (' + library.city + ')' : ''} has requested approval. Owner: ${admin.name}, ${admin.email}.`,
+    libraryId: library._id, dedupeKey: String(library._id), data: { libraryId: library._id },
+  });
 
   return { library, admin };
 };
 
 exports.listStaff = async (req, query = req.query) => {
-  const { page = 1, limit = 10, search = '', userType = 'staff', status = '', libraryId = '' } = query;
+  const { page = 1, limit = 10, search = '', userType = 'staff', status = '', libraryId = '', roleId = '', branchId = '', sort = 'newest' } = query;
   const filter = { isDeleted: false };
 
   if (req.userType === 'superadmin') {
@@ -230,28 +230,40 @@ exports.listStaff = async (req, query = req.query) => {
   if (status === 'active') filter.status = true;
   else if (status === 'inactive') filter.status = false;
 
+  if (roleId && mongoose.isValidObjectId(roleId)) filter.roleId = roleId;
+  // branchId=none -> staff who work in every branch (no branch list); otherwise staff allowed in that branch
+  if (branchId === 'none') filter.branchIds = { $size: 0 };
+  else if (branchId && mongoose.isValidObjectId(branchId)) filter.branchIds = branchId;
+
   if (search) {
     const re = new RegExp(escapeRegex(search), 'i');
     filter.$or = [{ name: re }, { email: re }, { mobile: re }];
   }
 
+  const SORTS = {
+    newest: { createdAt: -1 }, oldest: { createdAt: 1 }, name: { name: 1, _id: 1 },
+    lastLogin: { lastLogin: -1, createdAt: -1 }, joining: { joiningDate: -1, createdAt: -1 },
+  };
+  const sortBy = SORTS[sort] || SORTS.newest;
+
   const p = Math.max(1, parseInt(page, 10) || 1);
   const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 10));
   const [data, total] = await Promise.all([
     Admin.find(filter).populate('roleId', 'name').populate('libraryId', 'name').populate('branchIds', 'name')
-      .sort({ createdAt: -1 }).skip((p - 1) * l).limit(l),
+      .sort(sortBy).skip((p - 1) * l).limit(l),
     Admin.countDocuments(filter),
   ]);
 
   const summaryBase = { isDeleted: false, userType: filter.userType };
   if (filter.libraryId) summaryBase.libraryId = filter.libraryId;
-  const [totalCount, activeCount, inactiveCount] = await Promise.all([
+  const [totalCount, activeCount, inactiveCount, rolesUsed] = await Promise.all([
     Admin.countDocuments(summaryBase),
     Admin.countDocuments({ ...summaryBase, status: true }),
     Admin.countDocuments({ ...summaryBase, status: false }),
+    Admin.distinct('roleId', summaryBase),
   ]);
 
-  return { data, total, page: p, limit: l, totalPages: Math.ceil(total / l), summary: { total: totalCount, active: activeCount, inactive: inactiveCount } };
+  return { data, total, page: p, limit: l, totalPages: Math.ceil(total / l), summary: { total: totalCount, active: activeCount, inactive: inactiveCount, rolesInUse: rolesUsed.filter(Boolean).length } };
 };
 
 exports.getAdminById = async (req, id) => {
@@ -285,6 +297,7 @@ exports.updateAdmin = async (req, id) => {
   const update = pick(body, isSelf ? SELF_FIELDS : STAFF_FIELDS);
   if (update.mobile) update.mobile = normalizeMobile(update.mobile);
   if (update.alternativeMobileNumber) update.alternativeMobileNumber = normalizeMobile(update.alternativeMobileNumber);
+  if (update.mobile && update.mobile !== target.mobile && tenant) await assertMobileFree(update.mobile, tenant, target._id);
 
   if (update.email) {
     update.email = String(update.email).toLowerCase();

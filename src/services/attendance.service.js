@@ -735,6 +735,60 @@ const percentageReport = async ({ libraryId, library, query, scope = {} }) => {
     return { from, to, results, page, limit, totalResults: total, totalPages: Math.ceil(total / limit) };
 };
 
+// Daily head-count for the chart: how many different students were present / on leave each day (IST days, newest last)
+const trend = async ({ libraryId, days = 14, scope = {} }) => {
+    const n = Math.min(Math.max(parseInt(days, 10) || 14, 3), 90);
+    const to = startOfDayIST(new Date());
+    const from = new Date(to.getTime() - (n - 1) * DAY_MS);
+    const rows = await Attendance.aggregate([
+        { $match: { libraryId: new mongoose.Types.ObjectId(String(libraryId)), date: { $gte: from, $lte: endOfDayIST(to) }, status: { $in: ['present', 'leave'] }, ...scope } },
+        { $group: { _id: { d: '$date', s: '$studentId', st: '$status' }, minutes: { $sum: '$duration' } } },
+        { $group: { _id: { d: '$_id.d', st: '$_id.st' }, students: { $sum: 1 }, minutes: { $sum: '$minutes' } } }
+    ]);
+    const fmt = (d) => new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+    const map = new Map();
+    rows.forEach((r) => {
+        const k = fmt(new Date(r._id.d));
+        const cur = map.get(k) || { present: 0, leave: 0, minutes: 0 };
+        if (r._id.st === 'present') { cur.present = r.students; cur.minutes = r.minutes; } else cur.leave = r.students;
+        map.set(k, cur);
+    });
+    const activeStudents = await Student.countDocuments({ libraryId, status: 'active', ...scope });
+    const results = [];
+    for (let i = 0; i < n; i++) {
+        const day = new Date(from.getTime() + i * DAY_MS);
+        const k = fmt(day);
+        const v = map.get(k) || { present: 0, leave: 0, minutes: 0 };
+        results.push({ date: k, present: v.present, leave: v.leave, absent: Math.max(activeStudents - v.present - v.leave, 0), minutes: v.minutes });
+    }
+    return { days: n, activeStudents, results };
+};
+
+// CSV of the filtered history (up to 20,000 rows)
+const csvCell = (v) => {
+    let s = v == null ? '' : v instanceof Date ? v.toISOString() : String(v);
+    if (/^[=+@\t\r-]/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+const exportCsv = async ({ libraryId, query = {}, scope = {}, write }) => {
+    const filter = { libraryId, ...scope };
+    const range = buildRange(query);
+    if (range) filter.date = range;
+    if (query.status) filter.status = query.status;
+    if (query.studentId && isValidId(query.studentId)) filter.studentId = query.studentId;
+    if (query.search) {
+        const rx = new RegExp(escapeRegex(String(query.search).trim()), 'i');
+        const ids = await Student.find({ libraryId, $or: [{ name: rx }, { mobile: rx }, { rollNumber: rx }] }).select('_id').limit(500).lean();
+        filter.studentId = { $in: ids.map((s) => s._id) };
+    }
+    await write('\uFEFF' + ['Date', 'Student', 'Mobile', 'Roll no', 'Status', 'Check in', 'Check out', 'Minutes', 'Late', 'Source', 'Leave reason'].map(csvCell).join(',') + '\n');
+    const cursor = Attendance.find(filter).populate('studentId', 'name mobile rollNumber').sort({ date: -1, checkIn: -1 }).limit(20000).lean().cursor();
+    for await (const r of cursor) {
+        const day = new Date(new Date(r.date).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+        await write([day, r.studentId && r.studentId.name, r.studentId && r.studentId.mobile, r.studentId && r.studentId.rollNumber, r.status, r.checkIn, r.checkOut, r.duration, r.isLate ? 'yes' : '', r.source, r.leaveReason].map(csvCell).join(',') + '\n');
+    }
+};
+
 const myHistory = async ({ student, library, query }) => {
     const libraryId = idOf(student.libraryId);
     const page = Math.max(parseInt(query.page, 10) || 1, 1);
@@ -755,5 +809,5 @@ module.exports = {
     getRules, getHours, computeFlags, assertEligible, getStudentInLibrary, loadLibrary,
     checkIn, checkOut, autoCloseStaleSessions, markAbsentees,
     generateQR, verifyQR, studentScan, manualMark, manualClose, correctSession, markLeave,
-    getToday, getActive, queryAttendance, studentSummary, percentageReport, myHistory, isValidId
+    getToday, getActive, queryAttendance, trend, exportCsv, studentSummary, percentageReport, myHistory, isValidId
 };

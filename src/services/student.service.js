@@ -713,6 +713,17 @@ const buildStudentFilter = (libraryId, q = {}, scope = {}) => {
     }
     if (q.branchId && isValidId(q.branchId)) filter.branchId = new mongoose.Types.ObjectId(String(q.branchId));
     if (q.planId && isValidId(q.planId)) filter.planId = new mongoose.Types.ObjectId(String(q.planId));
+    if (q.gender && ['Male', 'Female', 'Other'].includes(q.gender)) filter.gender = q.gender;
+    if (q.hasSeat === 'yes') filter.seatId = { $ne: null };
+    if (q.hasSeat === 'no') filter.seatId = null;
+    // memberships ending within the next N days (7 or 30), still active
+    const exp = parseInt(q.expiringInDays, 10);
+    if (exp > 0 && exp <= 90) filter.expiryDate = { $gte: new Date(), $lte: new Date(Date.now() + exp * DAY_MS) };
+    // joined between two IST calendar days (YYYY-MM-DD)
+    const dayOk = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+    if (dayOk(q.joinedFrom) || dayOk(q.joinedTo)) {
+        filter.joiningDate = { ...(dayOk(q.joinedFrom) && { $gte: startOfDayIST(q.joinedFrom) }), ...(dayOk(q.joinedTo) && { $lte: endOfDayIST(q.joinedTo) }) };
+    }
     if (q.search) {
         const rx = { $regex: escapeRegex(String(q.search).trim()), $options: 'i' };
         filter.$or = [
@@ -724,6 +735,8 @@ const buildStudentFilter = (libraryId, q = {}, scope = {}) => {
     return filter;
 };
 
+const SORTS = { newest: { createdAt: -1 }, oldest: { createdAt: 1 }, name: { name: 1 }, expiry: { expiryDate: 1 }, joining: { joiningDate: -1 } };
+
 const queryStudents = async (libraryId, q = {}, scope = {}) => {
     const page = Math.max(parseInt(q.page) || 1, 1);
     const limit = Math.min(Math.max(parseInt(q.limit) || 10, 1), 100);
@@ -734,18 +747,29 @@ const queryStudents = async (libraryId, q = {}, scope = {}) => {
             .select('-notes')
             .populate('planId', 'name price finalPrice durationType durationDays')
             .populate('branchId', 'name')
-            .sort({ createdAt: -1 })
+            .sort({ ...(SORTS[q.sort] || SORTS.newest), _id: -1 })
             .skip((page - 1) * limit)
             .limit(limit),
         Student.countDocuments(filter)
     ]);
 
-    const grouped = await Student.aggregate([
-        { $match: { libraryId: new mongoose.Types.ObjectId(String(libraryId)), isDeleted: false, ...scope } },
-        { $group: { _id: '$status', count: { $sum: 1 } } }
+    // one pass for every header number (status, membership, expiring soon, unseated)
+    const base = { libraryId: new mongoose.Types.ObjectId(String(libraryId)), isDeleted: false, ...scope };
+    const [facet] = await Student.aggregate([
+        { $match: base },
+        { $facet: {
+            status: [{ $group: { _id: '$status', count: { $sum: 1 } } }],
+            membership: [{ $group: { _id: '$planStatus', count: { $sum: 1 } } }],
+            expiring: [{ $match: { expiryDate: { $gte: new Date(), $lte: new Date(Date.now() + 30 * DAY_MS) } } }, { $count: 'n' }],
+            noSeat: [{ $match: { seatId: null } }, { $count: 'n' }]
+        } }
     ]);
     const summary = { total: 0, active: 0, inactive: 0, leave: 0, suspended: 0 };
-    grouped.forEach((g) => { summary[g._id] = g.count; summary.total += g.count; });
+    (facet.status || []).forEach((g) => { summary[g._id] = g.count; summary.total += g.count; });
+    summary.membership = { none: 0, pending: 0, active: 0, paused: 0, expired: 0 };
+    (facet.membership || []).forEach((g) => { summary.membership[g._id || 'none'] = (summary.membership[g._id || 'none'] || 0) + g.count; });
+    summary.expiringSoon = facet.expiring[0] ? facet.expiring[0].n : 0;
+    summary.withoutSeat = facet.noSeat[0] ? facet.noSeat[0].n : 0;
 
     return { results: students, page, limit, totalPages: Math.ceil(totalResults / limit), totalResults, summary };
 };
@@ -847,6 +871,24 @@ const getStudentLedger = async (studentId, libraryId) => {
     };
 };
 
+// CSV of the filtered list (up to 20,000 rows); write(chunk) streams it out
+const csvCell = (v) => {
+    let s = v == null ? '' : v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
+    if (/^[=+@\t\r-]/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+
+const exportStudentsCsv = async (libraryId, q, scope, write) => {
+    await write('\uFEFF' + ['Reg. no', 'Name', 'Mobile', 'Email', 'Gender', 'Status', 'Plan', 'Plan status', 'Seat', 'Joined', 'Expires', 'Branch', 'City', 'Guardian', 'Guardian mobile'].map(csvCell).join(',') + '\n');
+    const cursor = Student.find(buildStudentFilter(libraryId, q, scope)).select('-notes').populate('planId', 'name').populate('branchId', 'name').sort({ createdAt: -1 }).limit(20000).lean().cursor();
+    let n = 0;
+    for await (const s of cursor) {
+        await write([s.registrationNumber, s.name, s.mobile, s.email, s.gender, s.status, s.planId && s.planId.name, s.planStatus, s.seatNumber, s.joiningDate, s.expiryDate, s.branchId && s.branchId.name, s.city, s.guardianName, s.guardianMobile].map(csvCell).join(',') + '\n');
+        n++;
+    }
+    return n;
+};
+
 module.exports = {
     activateMembership,
     registerStudent,
@@ -869,6 +911,7 @@ module.exports = {
     deleteStudentById,
     getStudentPayments,
     getStudentLedger,
+    exportStudentsCsv,
     getPolicy,
     generateTempPassword
 };

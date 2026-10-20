@@ -72,7 +72,8 @@ const listQuery = z.object({
         endDate: isoDate.optional(),
         studentId: objectId.optional(),
         status: z.enum(['present', 'absent', 'leave']).optional(),
-        search: z.string().trim().max(100).optional()
+        search: z.string().trim().max(100).optional(),
+        sort: z.string().optional()
     }).passthrough()
 });
 

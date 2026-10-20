@@ -13,7 +13,7 @@ const FLAT_FIELDS = [
   'website', 'gstNumber', 'facilities', 'seatCapacity', 'weeklyHolidays', 'rules', 'terms', 'timezone', 'currency',
 ];
 const NESTED_FIELDS = [
-  'mapLocation', 'socialLinks', 'workingHours', 'feePolicy', 'attendanceRules', 'notificationPrefs', 'receipt', 'brand', 'settings',
+  'mapLocation', 'socialLinks', 'workingHours', 'feePolicy', 'membershipPolicy', 'attendanceRules', 'notificationPrefs', 'receipt', 'brand', 'settings',
 ];
 const REMOVE_FLAGS = ['', 'null', 'REMOVE_IMAGE'];
 const MAX_PHOTOS = 20;

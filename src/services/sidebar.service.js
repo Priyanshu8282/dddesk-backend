@@ -46,7 +46,9 @@ exports.getMenusForUser = async (req) => {
   return sortMenus(menus);
 };
 
-exports.getAllMenus = async () => sortMenus(await SidebarMenu.find().lean());
+// libraryOnly: the menus a library role may use (no student / platform menus)
+exports.getAllMenus = async ({ libraryOnly = false } = {}) =>
+  sortMenus(await SidebarMenu.find(libraryOnly ? { userType: { $nin: ['student', 'superadmin'] }, title: { $nin: ['Libraries', 'Library Management'] } } : {}).lean());
 
 exports.createMenu = async (body) => SidebarMenu.create(pick(body, FIELDS));
 

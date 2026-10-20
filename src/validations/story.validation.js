@@ -37,7 +37,11 @@ const listStories = z.object({
         page: z.coerce.number().int().min(1).optional(),
         limit: z.coerce.number().int().min(1).max(100).optional(),
         search: z.string().trim().max(100).optional(),
-        status: z.enum(['scheduled', 'active', 'expired', 'archived']).optional()
+        status: z.enum(['all', 'scheduled', 'active', 'inactive', 'expired', 'archived']).optional(),
+        type: z.enum(['image', 'video', 'text', 'offer']).optional(),
+        from: isoDate.optional(),
+        to: isoDate.optional(),
+        sort: z.enum(['newest', 'oldest', 'views', 'expiring', 'title']).optional()
     }).passthrough()
 });
 

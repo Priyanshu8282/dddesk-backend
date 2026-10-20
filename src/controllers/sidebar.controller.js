@@ -14,7 +14,7 @@ exports.getSidebarMenus = catchAsync(async (req, res) => {
 });
 
 exports.getAllSidebarMenus = catchAsync(async (req, res) => {
-  const menus = await svc.getAllMenus();
+  const menus = await svc.getAllMenus({ libraryOnly: req.userType !== 'superadmin' });
   res.status(200).json({ success: true, message: 'All sidebar menus retrieved successfully', data: menus });
 });
 

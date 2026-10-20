@@ -57,7 +57,13 @@ const listBanners = z.object({
     query: z.object({
         page: z.coerce.number().int().min(1).optional(),
         limit: z.coerce.number().int().min(1).max(100).optional(),
-        search: z.string().trim().max(100).optional()
+        search: z.string().trim().max(100).optional(),
+        status: z.enum(['all', 'active', 'scheduled', 'inactive', 'expired']).optional(),
+        bannerType: z.enum(BANNER_TYPES).optional(),
+        displayLocation: z.enum(LOCATIONS).optional(),
+        from: isoDate.optional(),
+        to: isoDate.optional(),
+        sort: z.enum(['priority', 'newest', 'oldest', 'title', 'starting', 'ending']).optional()
     }).passthrough()
 });
 

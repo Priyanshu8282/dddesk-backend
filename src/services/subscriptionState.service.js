@@ -11,7 +11,7 @@ const DEFAULT_GRACE_DAYS = 7;
  */
 exports.getSubscriptionState = (lib, plan = null, now = new Date()) => {
   const p = plan || (lib.subscriptionPlanId && lib.subscriptionPlanId.graceDays !== undefined ? lib.subscriptionPlanId : null);
-  const graceDays = p?.graceDays ?? DEFAULT_GRACE_DAYS;
+  const graceDays = p?.graceDays ?? require('./platformSettings.service').defaultGraceDays() ?? DEFAULT_GRACE_DAYS;
   const expiresAt = lib.subscriptionExpiry || lib.trialEndsAt || null;
   const isTrial = !lib.subscriptionExpiry && !!lib.trialEndsAt ? true : !!lib.subscriptionIsTrial;
 

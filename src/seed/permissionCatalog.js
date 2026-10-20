@@ -144,13 +144,13 @@ const ROLE_TEMPLATES = {
 };
 
 // Sidebar menu titles each system role template starts with (menus are matched by title; owners/superadmin get all)
-const MENU_BASE = ['Main Menu', 'Dashboard', 'Student Management', 'Students'];
-const MENU_OPS = ['Operations', 'Seats', 'Attendance', 'Enquiries', 'Complaints'];
-const MENU_CONTENT = ['Content', 'Notices', 'Stories', 'Banners'];
-const MENU_FINANCE = ['Plan Management', 'Plans', 'Finance', 'Fees & Payments', 'Expenses', 'Reports'];
+const MENU_BASE = ['Dashboard', 'Students', 'Notifications'];
+const MENU_OPS = ['Seats', 'Attendance', 'Enquiries'];
+const MENU_CONTENT = ['Notices', 'Stories', 'Banners'];
+const MENU_FINANCE = ['Plans', 'Fees & Payments', 'Expenses', 'Reports'];
 const ROLE_MENU_TITLES = {
   Staff: [...MENU_BASE, ...MENU_OPS, ...MENU_CONTENT],
-  Receptionist: [...MENU_BASE, ...MENU_OPS, 'Plan Management', 'Plans'],
+  Receptionist: [...MENU_BASE, ...MENU_OPS, 'Plans'],
   Accountant: [...MENU_BASE, ...MENU_FINANCE],
   Manager: [...MENU_BASE, ...MENU_OPS, ...MENU_CONTENT, ...MENU_FINANCE],
 };

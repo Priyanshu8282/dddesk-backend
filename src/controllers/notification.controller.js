@@ -17,6 +17,8 @@ exports.getMyNotifications = catchAsync(async (req, res) => {
         notifications: result.notifications,
         unreadCount: result.unreadCount,
         total: result.total,
+        stats: result.stats,
+        types: result.types,
         page: result.page,
         totalPages: result.totalPages
     });
@@ -42,4 +44,16 @@ exports.deleteNotifications = catchAsync(async (req, res) => {
     }
     await notificationService.deleteNotifications(userId, userType, notificationIds);
     ApiResponse.ok(res, null, 'Notifications deleted successfully');
+});
+
+exports.deleteReadNotifications = catchAsync(async (req, res) => {
+    const { userId, userType } = who(req);
+    const n = await notificationService.deleteRead(userId, userType);
+    ApiResponse.ok(res, { deleted: n }, 'Read notifications deleted');
+});
+
+exports.sendToStudents = catchAsync(async (req, res) => {
+    if (!req.libraryId) throw new ApiError(400, 'Library context required');
+    const result = await notificationService.broadcastToStudents(req.libraryId, req.body);
+    ApiResponse.ok(res, result, `Sent to ${result.recipients} student${result.recipients === 1 ? '' : 's'}`);
 });

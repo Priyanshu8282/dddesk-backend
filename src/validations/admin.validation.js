@@ -32,15 +32,20 @@ const commonFields = {
     documentNames: z.string().max(5000).optional(),
 };
 
+// 8+ characters with at least one letter and one number
+const strongPassword = z.string('Password is required').min(8, 'Password must be at least 8 characters').max(128)
+    .regex(/[A-Za-z]/, 'Password must contain a letter').regex(/[0-9]/, 'Password must contain a number');
+
 const createStaff = z.object({
     body: z.object({
         ...commonFields,
         email: z.string().trim().toLowerCase().email('Valid email is required'),
-        password: z.string().min(8, 'Password must be at least 8 characters').max(128),
+        password: strongPassword,
+        confirmPassword: z.string('Please confirm the password'),
         roleId: emptyToUndef(objectId.optional()),
         branchIds: idList.optional(),
         libraryId: emptyToUndef(objectId.optional()), // superadmin only (ignored for tenants)
-    })
+    }).refine((b) => b.password === b.confirmPassword, { message: 'Passwords do not match', path: ['confirmPassword'] })
 });
 
 const updateStaff = z.object({
@@ -72,7 +77,8 @@ const updateStatus = z.object({
 
 const resetStaffPassword = z.object({
     params: z.object({ id: objectId }),
-    body: z.object({ newPassword: z.string().min(8, 'Password must be at least 8 characters').max(128) })
+    body: z.object({ newPassword: strongPassword, confirmPassword: z.string('Please confirm the password') })
+        .refine((b) => b.newPassword === b.confirmPassword, { message: 'Passwords do not match', path: ['confirmPassword'] })
 });
 
 module.exports = { createStaff, updateStaff, updateStatus, resetStaffPassword, idParam, objectId };

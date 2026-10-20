@@ -43,23 +43,49 @@ const createBanner = async (libraryId, body, file, creatorId) => {
 const sortSpec = { priority: -1, displayOrder: 1, createdAt: -1 };
 
 // `scope` = branch filter fragment from utils/branchScope.branchFilter(req): banners of those branches + all-branch banners
-const queryBanners = async (libraryId, { page = 1, limit = 10, search = '' } = {}, scope = {}) => {
+const BANNER_SORTS = {
+    priority: sortSpec,
+    newest: { createdAt: -1, _id: -1 },
+    oldest: { createdAt: 1, _id: 1 },
+    title: { title: 1, _id: 1 },
+    starting: { startDate: -1, _id: -1 },
+    ending: { endDate: 1, _id: 1 }
+};
+
+const statusOf = (b, now = new Date()) => {
+    if (new Date(b.endDate) < now) return 'expired';
+    if (!b.isActive) return 'inactive';
+    if (new Date(b.startDate) > now) return 'scheduled';
+    return 'active';
+};
+
+const queryBanners = async (libraryId, { page = 1, limit = 10, search = '', status, bannerType, displayLocation, from, to, sort = 'priority' } = {}, scope = {}) => {
     const now = new Date();
     const query = { libraryId };
+    if (status === 'expired') query.endDate = { $lt: now };
+    else if (status === 'inactive') Object.assign(query, { isActive: false, endDate: { $gte: now } });
+    else if (status === 'scheduled') Object.assign(query, { isActive: true, startDate: { $gt: now }, endDate: { $gte: now } });
+    else if (status === 'active') Object.assign(query, { isActive: true, startDate: { $lte: now }, endDate: { $gte: now } });
+    if (bannerType) query.bannerType = bannerType;
+    if (displayLocation) query.displayLocation = { $in: [displayLocation, 'both'] };
+    if (from) query.endDate = { ...(query.endDate || {}), $gte: DATE_ONLY.test(String(from)) ? startOfDayIST(new Date(from)) : new Date(from) };
+    if (to) query.startDate = { ...(query.startDate || {}), $lte: DATE_ONLY.test(String(to)) ? endOfDayIST(new Date(to)) : new Date(to) };
     if (scope.branchId) query.$and = [{ $or: [{ branchId: null }, scope] }];
     if (search) query.title = new RegExp(escapeRegex(String(search).trim()), 'i');
 
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
-    const [banners, totalResults, active, expired] = await Promise.all([
-        Banner.find(query).populate('createdBy', 'name userType').sort(sortSpec).skip((p - 1) * l).limit(l).lean(),
+    const [banners, totalResults, total, active, scheduled, expired] = await Promise.all([
+        Banner.find(query).populate('createdBy', 'name userType').sort(BANNER_SORTS[sort] || sortSpec).skip((p - 1) * l).limit(l).lean(),
         Banner.countDocuments(query),
+        Banner.countDocuments({ libraryId }),
         Banner.countDocuments({ libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now } }),
+        Banner.countDocuments({ libraryId, isActive: true, startDate: { $gt: now }, endDate: { $gte: now } }),
         Banner.countDocuments({ libraryId, endDate: { $lt: now } })
     ]);
     return {
-        results: banners, page: p, limit: l, totalPages: Math.ceil(totalResults / l), totalResults,
-        summary: { total: totalResults, active, expired, totalViews: 0 }
+        results: banners.map((b) => ({ ...b, status: statusOf(b, now) })), page: p, limit: l, totalPages: Math.ceil(totalResults / l), totalResults,
+        summary: { total, active, scheduled, expired, inactive: Math.max(0, total - active - scheduled - expired), totalViews: 0 }
     };
 };
 

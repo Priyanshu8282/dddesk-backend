@@ -16,7 +16,7 @@ const parseBound = (v, end) => {
  * Filters: action (prefix match with trailing *), resource, userId, from/to (date range), page, limit (<=200).
  */
 exports.queryLogs = async (query = {}, { forceLibraryId = null } = {}) => {
-  const { action, resource, userId, libraryId, from, to } = query;
+  const { action, resource, userId, libraryId, from, to, id } = query;
   const page = Math.max(1, parseInt(query.page, 10) || 1);
   const limit = Math.min(200, Math.max(1, parseInt(query.limit, 10) || 50));
 
@@ -30,6 +30,7 @@ exports.queryLogs = async (query = {}, { forceLibraryId = null } = {}) => {
   }
   if (resource) filter.resource = resource;
   if (userId) filter.userId = userId;
+  if (id) filter._id = id;
 
   const gte = parseBound(from, false);
   const lte = parseBound(to, true);

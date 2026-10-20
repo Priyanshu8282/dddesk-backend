@@ -19,6 +19,8 @@ router.get('/generate-qr', attendanceController.generateQR);
 // Live views
 router.get('/today', requirePermission('attendance.view'), attendanceController.getToday);
 router.get('/active', requirePermission('attendance.view'), attendanceController.getActive);
+router.get('/trend', requirePermission('attendance.view'), attendanceController.getTrend);
+router.get('/export', requirePermission('attendance.view'), validate(v.listQuery), attendanceController.exportList);
 router.get('/list', requirePermission('attendance.view'), validate(v.listQuery), attendanceController.getAttendance);
 
 // Reports

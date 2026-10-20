@@ -57,6 +57,13 @@ exports.getAllStudents = catchAsync(async (req, res) => {
     });
 });
 
+exports.exportStudents = catchAsync(async (req, res) => {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="students-${new Date().toISOString().slice(0, 10)}.csv"`);
+    await studentService.exportStudentsCsv(lib(req), req.query, branchFilter(req), (chunk) => new Promise((resolve) => (res.write(chunk) ? resolve() : res.once('drain', resolve))));
+    res.end();
+});
+
 exports.getStudentById = catchAsync(async (req, res) => {
     const student = await require('../utils/securityEvent').flagOnMiss(req, require('../models/student.model'), req.params.id, 'Student',
         () => studentService.getStudentById(req.params.id, lib(req)));

@@ -53,6 +53,9 @@ const QUICK_ACTIONS = [
  * @param libraryId tenant id
  * @param req       optional request, used to hide financial figures from staff without `fees.view`
  */
+// One $group can count many conditions at once: a single round trip instead of one per number.
+const cnt = (cond) => ({ $sum: { $cond: [cond, 1, 0] } });
+
 exports.getAdminDashboardData = async (libraryId, req = null) => {
   const libId = oid(libraryId);
   // Branch scope: {} for owners (consolidated view) / unrestricted staff; honors ?branchId= and branch-limited staff
@@ -70,37 +73,49 @@ exports.getAdminDashboardData = async (libraryId, req = null) => {
   const financialVisible = !req || req.userType !== 'staff' || (req.permissions || []).includes('fees.view');
 
   const sBase = { libraryId: libId, ...scope, isDeleted: false };
+  // 9 queries instead of 17 (each one is a slow round trip on a remote database)
+  const planActive = { $eq: ['$planStatus', 'active'] };
+  const expiresBy = (limit) => ({ $and: [planActive, { $gte: ['$expiryDate', todayStart] }, { $lte: ['$expiryDate', limit] }] });
   const [
-    totalStudents, activeStudents, trialStudents, expiring3, expiring7, expiring30, expiredMemberships,
+    studentAgg,
     attendedToday, insideNow,
     seatStats,
-    newEnquiries, newEnquiriesList, staleEnquiries,
-    openComplaints, urgentComplaints,
+    enquiryAgg, newEnquiriesList,
+    complaintAgg,
     expiringList,
     library,
   ] = await Promise.all([
-    Student.countDocuments(sBase),
-    Student.countDocuments({ ...sBase, status: 'active', planStatus: 'active' }),
-    Student.countDocuments({ ...sBase, planStatus: 'none' }),
-    Student.countDocuments({ ...sBase, planStatus: 'active', expiryDate: { $gte: todayStart, $lte: in3 } }),
-    Student.countDocuments({ ...sBase, planStatus: 'active', expiryDate: { $gte: todayStart, $lte: in7 } }),
-    Student.countDocuments({ ...sBase, planStatus: 'active', expiryDate: { $gte: todayStart, $lte: in30 } }),
-    Student.countDocuments({ ...sBase, planStatus: 'expired' }),
+    Student.aggregate([{ $match: sBase }, { $group: {
+      _id: null,
+      total: { $sum: 1 },
+      active: cnt({ $and: [{ $eq: ['$status', 'active'] }, planActive] }),
+      trial: cnt({ $eq: ['$planStatus', 'none'] }),
+      expiring3: cnt(expiresBy(in3)),
+      expiring7: cnt(expiresBy(in7)),
+      expiring30: cnt(expiresBy(in30)),
+      expired: cnt({ $eq: ['$planStatus', 'expired'] }),
+    } }]),
     Attendance.distinct('studentId', { libraryId: libId, ...scope, date: { $gte: todayStart, $lte: todayEnd }, status: 'present' }),
     Attendance.countDocuments({ libraryId: libId, ...scope, open: true }),
     Seat.aggregate([
       { $match: { libraryId: libId, ...scope, isDeleted: false } },
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ]),
-    Enquiry.countDocuments({ libraryId: libId, ...scope, status: 'new' }),
+    Enquiry.aggregate([{ $match: { libraryId: libId, ...scope, status: 'new' } },
+      { $group: { _id: null, n: { $sum: 1 }, stale: cnt({ $lte: ['$createdAt', dayAgo] }) } }]),
     Enquiry.find({ libraryId: libId, ...scope, status: 'new' }).sort({ createdAt: -1 }).limit(5).select('name mobile source createdAt').lean(),
-    Enquiry.countDocuments({ libraryId: libId, ...scope, status: 'new', createdAt: { $lte: dayAgo } }),
-    Complaint.countDocuments({ libraryId: libId, ...scope, status: { $in: OPEN_COMPLAINT } }),
-    Complaint.countDocuments({ libraryId: libId, ...scope, status: { $in: OPEN_COMPLAINT }, priority: 'urgent' }),
+    Complaint.aggregate([{ $match: { libraryId: libId, ...scope, status: { $in: OPEN_COMPLAINT } } },
+      { $group: { _id: null, n: { $sum: 1 }, urgent: cnt({ $eq: ['$priority', 'urgent'] }) } }]),
     Student.find({ ...sBase, planStatus: 'active', expiryDate: { $gte: todayStart, $lte: in7 } })
       .sort({ expiryDate: 1 }).limit(10).select('name mobile expiryDate seatNumber').lean(),
     Library.findById(libId).select('name status subscriptionExpiry trialEndsAt subscriptionIsTrial subscriptionPlanId planLimits seatCapacity').populate('subscriptionPlanId', 'graceDays name'),
   ]);
+
+  const st = studentAgg[0] || {};
+  const totalStudents = st.total || 0, activeStudents = st.active || 0, trialStudents = st.trial || 0;
+  const expiring3 = st.expiring3 || 0, expiring7 = st.expiring7 || 0, expiring30 = st.expiring30 || 0, expiredMemberships = st.expired || 0;
+  const newEnquiries = enquiryAgg[0]?.n || 0, staleEnquiries = enquiryAgg[0]?.stale || 0;
+  const openComplaints = complaintAgg[0]?.n || 0, urgentComplaints = complaintAgg[0]?.urgent || 0;
 
   const seats = { total: 0, available: 0, occupied: 0, reserved: 0, blocked: 0, maintenance: 0 };
   seatStats.forEach((s) => { seats[s._id] = s.count; seats.total += s.count; });
@@ -205,20 +220,35 @@ exports.getSuperAdminDashboardData = async () => {
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const live = { isDeleted: false };
 
+  // Library counts, student counts and payment counts each come from one $group (14 queries became 5)
+  const subOn = (extra) => ({ $and: [{ $eq: ['$status', 'active'] }, ...extra] });
   const [
-    totalLibraries, activeLibraries, pendingLibraries, suspendedLibraries, rejectedLibraries,
-    totalStudents, activeMemberships, occupiedSeatsAgg,
+    libraryAgg, studentAgg, paymentCountAgg, occupiedSeatsAgg,
     tenantCollections, monthlyRevenue, libraryTrend,
     recentRegistrations, pendingApprovals,
-    mrrAgg, subRevenueAgg, subRevenueMonth, failedPayments, graceCount, expiringSoon, expiredSubs, subscriptionTrend,
+    mrrAgg, subRevenueAgg, subRevenueMonth, subscriptionTrend,
   ] = await Promise.all([
-    Library.countDocuments(live),
-    Library.countDocuments({ ...live, status: 'active' }),
-    Library.countDocuments({ ...live, status: 'pending' }),
-    Library.countDocuments({ ...live, status: 'suspended' }),
-    Library.countDocuments({ ...live, status: 'rejected' }),
-    Student.countDocuments({ isDeleted: false }),
-    Student.countDocuments({ isDeleted: false, status: 'active', planStatus: 'active' }),
+    Library.aggregate([{ $match: live }, { $group: {
+      _id: null,
+      total: { $sum: 1 },
+      active: cnt({ $eq: ['$status', 'active'] }),
+      pending: cnt({ $eq: ['$status', 'pending'] }),
+      suspended: cnt({ $eq: ['$status', 'suspended'] }),
+      rejected: cnt({ $eq: ['$status', 'rejected'] }),
+      expiringSoon: cnt(subOn([{ $gte: ['$subscriptionExpiry', now] }, { $lte: ['$subscriptionExpiry', in7] }])),
+      // a missing expiry is not "expired": compare only when a date exists
+      expiredSubs: cnt(subOn([{ $gt: ['$subscriptionExpiry', null] }, { $lt: ['$subscriptionExpiry', now] }])),
+    } }]),
+    Student.aggregate([{ $match: { isDeleted: false } }, { $group: {
+      _id: null,
+      total: { $sum: 1 },
+      active: cnt({ $and: [{ $eq: ['$status', 'active'] }, { $eq: ['$planStatus', 'active'] }] }),
+    } }]),
+    PlatformPayment.aggregate([{ $group: {
+      _id: null,
+      failed: cnt({ $and: [{ $eq: ['$status', 'failed'] }, { $gte: ['$createdAt', thirtyDaysAgo] }] }),
+      grace: cnt({ $and: [{ $eq: ['$inGrace', true] }, { $gte: ['$graceUntil', now] }] }),
+    } }]),
     Seat.aggregate([{ $match: { status: 'occupied', isDeleted: false } }, { $count: 'total' }]),
     netSum({}),
     monthlyTransactions({}, sixMonthsAgo),
@@ -241,10 +271,6 @@ exports.getSuperAdminDashboardData = async () => {
     ]),
     PlatformPayment.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
     PlatformPayment.aggregate([{ $match: { status: 'paid', paidAt: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    PlatformPayment.countDocuments({ status: 'failed', createdAt: { $gte: thirtyDaysAgo } }),
-    PlatformPayment.countDocuments({ inGrace: true, graceUntil: { $gte: now } }),
-    Library.countDocuments({ ...live, status: 'active', subscriptionExpiry: { $gte: now, $lte: in7 } }),
-    Library.countDocuments({ ...live, status: 'active', subscriptionExpiry: { $lt: now } }),
     PlatformPayment.aggregate([
       { $match: { status: 'paid', paidAt: { $gte: sixMonthsAgo } } },
       { $group: { _id: { $dateToParts: { date: '$paidAt', timezone: TZ } }, total: { $sum: '$amount' } } },
@@ -252,6 +278,13 @@ exports.getSuperAdminDashboardData = async () => {
       { $sort: { '_id.year': 1, '_id.month': 1 } },
     ]),
   ]);
+
+  const la = libraryAgg[0] || {}, sa = studentAgg[0] || {}, pa = paymentCountAgg[0] || {};
+  const totalLibraries = la.total || 0, activeLibraries = la.active || 0, pendingLibraries = la.pending || 0;
+  const suspendedLibraries = la.suspended || 0, rejectedLibraries = la.rejected || 0;
+  const expiringSoon = la.expiringSoon || 0, expiredSubs = la.expiredSubs || 0;
+  const totalStudents = sa.total || 0, activeMemberships = sa.active || 0;
+  const failedPayments = pa.failed || 0, graceCount = pa.grace || 0;
 
   const label = (r) => `${MONTHS[r._id.month - 1]} ${r._id.year}`;
   const alerts = [];

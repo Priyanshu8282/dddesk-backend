@@ -28,6 +28,19 @@ exports.getExpenses = catchAsync(async (req, res) => {
   res.status(200).json({ success: true, message: 'Expenses retrieved successfully', ...result });
 });
 
+exports.getSummary = catchAsync(async (req, res) => {
+  const data = await svc.getSummary(lib(req), branchFilter(req));
+  res.status(200).json({ success: true, message: 'Expense summary retrieved successfully', data });
+});
+
+exports.exportExpenses = catchAsync(async (req, res) => {
+  const scope = branchFilter(req);
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="expenses-${new Date().toISOString().slice(0, 10)}.csv"`);
+  await svc.exportExpensesCsv(lib(req), req.query, scope, (chunk) => new Promise((resolve) => (res.write(chunk) ? resolve() : res.once('drain', resolve))));
+  res.end();
+});
+
 exports.getExpenseById = catchAsync(async (req, res) => {
   const expense = await svc.getExpense(req.params.id, lib(req));
   if (!expense) throw new ApiError(404, 'Expense not found');

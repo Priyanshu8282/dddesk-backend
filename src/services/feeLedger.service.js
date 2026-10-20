@@ -18,7 +18,7 @@ const Library = require('../models/library.model');
 const ApiError = require('../utils/ApiError');
 const audit = require('../utils/audit');
 const couponService = require('./coupon.service');
-const { endOfDayIST, startOfDayIST, DAY_MS } = require('../utils/time');
+const { endOfDayIST, startOfDayIST, istDateKey, DAY_MS } = require('../utils/time');
 
 const OPEN_STATUSES = ['credit', 'partial', 'overdue'];
 const TERMINAL_STATUSES = ['cancelled', 'refunded'];
@@ -149,7 +149,13 @@ const getOutstanding = async (libraryId, studentId) => {
 
 /** Library-wide outstanding summary, one row per student with dues. */
 // `scope` = branch filter fragment from utils/branchScope.branchFilter(req) ({} = all branches)
-const getLibraryOutstanding = async (libraryId, { overdueOnly = false, page = 1, limit = 20, search, scope = {} } = {}) => {
+const OUTSTANDING_SORTS = {
+    amount: { totalOutstanding: -1 },
+    oldest: { oldestDueDate: 1, totalOutstanding: -1 },
+    name: { name: 1 }
+};
+
+const getLibraryOutstanding = async (libraryId, { overdueOnly = false, page = 1, limit = 20, search, scope = {}, sort } = {}) => {
     const policy = await getPolicy(libraryId);
     const match = { libraryId: oid(libraryId), paymentStatus: { $in: OPEN_STATUSES }, dueAmount: { $gt: 0 }, ...scope };
     if (overdueOnly) {
@@ -175,7 +181,7 @@ const getLibraryOutstanding = async (libraryId, { overdueOnly = false, page = 1,
     const skip = (Math.max(1, page) - 1) * limit;
     const [res] = await Payment.aggregate([
         ...pipeline,
-        { $sort: { totalOutstanding: -1 } },
+        { $sort: OUTSTANDING_SORTS[sort] || OUTSTANDING_SORTS.amount },
         { $facet: {
             rows: [{ $skip: skip }, { $limit: limit }],
             meta: [{ $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$totalOutstanding' } } }]
@@ -996,14 +1002,25 @@ const waiveCharge = async ({ libraryId, paymentId, amount, reason, req, userId }
 };
 
 // ── queries ───────────────────────────────────────────────────────────────────
-const queryPayments = async (libraryId, q = {}, scope = {}) => {
+const buildPaymentFilter = async (libraryId, q = {}, scope = {}) => {
     const Escape = require('../utils/escapeRegex');
     const filter = { libraryId: oid(libraryId), ...scope };
-    if (q.status) {
-        const list = String(q.status).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
-        filter.paymentStatus = list.length > 1 ? { $in: list } : list[0];
+    const and = [];
+    if (q.planId) {
+        if (!isId(q.planId)) throw new ApiError(400, 'Invalid planId');
+        filter.planId = oid(q.planId);
     }
-    if (q.method) filter.paymentMethod = String(q.method);
+    if (q.overdue === true || q.overdue === 'true') {
+        const policy = await getPolicy(libraryId);
+        filter.paymentStatus = { $in: OPEN_STATUSES };
+        filter.dueAmount = { $gt: 0 };
+        filter.dueDate = { $lt: startOfDayIST(new Date(Date.now() - (policy.graceDays || 0) * DAY_MS)) };
+    }
+    if (q.status && !filter.paymentStatus) {
+        const list = String(q.status).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+        if (list.length) filter.paymentStatus = list.length > 1 ? { $in: list } : list[0];
+    }
+    if (q.method) and.push({ $or: [{ paymentMethod: String(q.method) }, { 'allocations.method': String(q.method) }] });
     if (q.studentId) {
         if (!isId(q.studentId)) throw new ApiError(400, 'Invalid studentId');
         filter.studentId = oid(q.studentId);
@@ -1013,7 +1030,7 @@ const queryPayments = async (libraryId, q = {}, scope = {}) => {
         if (q.from) {
             const d = new Date(q.from);
             if (Number.isNaN(d.getTime())) throw new ApiError(400, 'Invalid from date');
-            filter.createdAt.$gte = d;
+            filter.createdAt.$gte = startOfDayIST(d);
         }
         if (q.to) {
             const d = new Date(q.to);
@@ -1026,18 +1043,34 @@ const queryPayments = async (libraryId, q = {}, scope = {}) => {
         const students = await Student.find({ libraryId, $or: [{ name: rx }, { mobile: rx }, { rollNumber: rx }] }).select('_id').limit(500).lean();
         const rcpt = await PaymentTransaction.find({ libraryId, receiptNumber: rx }).select('allocations.paymentId').limit(200).lean();
         const fromReceipts = rcpt.flatMap((t) => t.allocations.map((a) => a.paymentId));
-        filter.$or = [{ studentId: { $in: students.map((s) => s._id) } }, { description: rx }, { _id: { $in: fromReceipts } }];
+        and.push({ $or: [{ studentId: { $in: students.map((s) => s._id) } }, { description: rx }, { _id: { $in: fromReceipts } }] });
     }
+    if (and.length) filter.$and = and;
+    return filter;
+};
 
+const PAYMENT_SORTS = {
+    newest: { createdAt: -1 },
+    oldest: { createdAt: 1 },
+    amount: { totalAmount: -1, createdAt: -1 },
+    due: { dueAmount: -1, createdAt: -1 },
+    dueDate: { dueDate: 1, createdAt: -1 },
+    paidDate: { paymentDate: -1, createdAt: -1 }
+};
+
+const queryPayments = async (libraryId, q = {}, scope = {}) => {
+    const filter = await buildPaymentFilter(libraryId, q, scope);
     const page = Math.max(1, parseInt(q.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(q.limit, 10) || 20));
+    const sort = PAYMENT_SORTS[q.sort] || PAYMENT_SORTS.newest;
+    const graceDays = (await getPolicy(libraryId)).graceDays;
 
     const [payments, total, stats] = await Promise.all([
         Payment.find(filter)
             .populate('studentId', 'name mobile email rollNumber')
             .populate('planId', 'name durationType')
             .populate('collectedBy', 'name')
-            .sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+            .sort(sort).skip((page - 1) * limit).limit(limit).lean(),
         Payment.countDocuments(filter),
         Payment.aggregate([
             { $match: filter },
@@ -1054,6 +1087,8 @@ const queryPayments = async (libraryId, q = {}, scope = {}) => {
     ]);
     const byStatus = await Payment.aggregate([{ $match: filter }, { $group: { _id: '$paymentStatus', count: { $sum: 1 }, due: { $sum: '$dueAmount' } } }]);
     const s = stats[0] || {};
+    const now = new Date();
+    payments.forEach((p) => { p.isOverdue = isChargeOverdue(p, graceDays, now); });
     return {
         data: payments,
         page, limit, total, totalPages: Math.ceil(total / limit),
@@ -1165,7 +1200,110 @@ const buildReceipt = async ({ libraryId, id, studentId }) => {
     };
 };
 
+// ── dashboard summary (cards + charts) ────────────────────────────────────────
+const SUMMARY_MONTHS = 6;
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+const getPaymentsSummary = async (libraryId, scope = {}) => {
+    const { monthRangeIST, todayRangeIST } = require('../utils/time');
+    const lib = oid(libraryId);
+    const now = new Date();
+    const today = todayRangeIST();
+    const thisMonth = monthRangeIST(now);
+    // month windows, oldest first
+    const ranges = [thisMonth];
+    for (let i = 1; i < SUMMARY_MONTHS; i += 1) ranges.unshift(monthRangeIST(new Date(ranges[0].start.getTime() - 1)));
+    const months = ranges.map((r) => {
+        const shifted = new Date(r.start.getTime() + 330 * 60000);
+        return { start: r.start, end: r.end, key: shifted.toISOString().slice(0, 7), label: `${MONTH_NAMES[shifted.getUTCMonth()]} ${shifted.getUTCFullYear()}` };
+    });
+    const policy = await getPolicy(libraryId);
+    const overdueBefore = startOfDayIST(new Date(Date.now() - (policy.graceDays || 0) * DAY_MS));
+    const txnMatch = { libraryId: lib, status: 'success', paymentDate: { $gte: months[0].start, $lte: thisMonth.end }, ...scope };
+
+    const [txn, dues] = await Promise.all([
+        PaymentTransaction.aggregate([
+            { $match: txnMatch },
+            { $facet: {
+                trend: [
+                    { $match: { type: 'collection' } },
+                    { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$paymentDate', timezone: '+05:30' } }, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+                ],
+                today: [
+                    { $match: { type: 'collection', paymentDate: { $gte: today.start, $lte: today.end } } },
+                    { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+                ],
+                methods: [
+                    { $match: { type: 'collection', paymentDate: { $gte: thisMonth.start, $lte: thisMonth.end } } },
+                    { $group: { _id: '$method', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+                ],
+                refunds: [
+                    { $match: { type: 'refund', paymentDate: { $gte: thisMonth.start, $lte: thisMonth.end } } },
+                    { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+                ]
+            } }
+        ]),
+        Payment.aggregate([
+            { $match: { libraryId: lib, paymentStatus: { $in: OPEN_STATUSES }, dueAmount: { $gt: 0 }, ...scope } },
+            { $group: {
+                _id: null,
+                due: { $sum: '$dueAmount' }, charges: { $sum: 1 }, students: { $addToSet: '$studentId' },
+                overdue: { $sum: { $cond: [{ $lt: ['$dueDate', overdueBefore] }, '$dueAmount', 0] } },
+                overdueCount: { $sum: { $cond: [{ $lt: ['$dueDate', overdueBefore] }, 1, 0] } }
+            } }
+        ])
+    ]);
+    const f = txn[0] || {};
+    const byKey = new Map((f.trend || []).map((t) => [t._id, t]));
+    const trend = months.map((m) => ({ key: m.key, label: m.label, total: r2((byKey.get(m.key) || {}).total), count: (byKey.get(m.key) || {}).count || 0 }));
+    const one = (arr) => (arr && arr[0]) || { total: 0, count: 0 };
+    const d = dues[0] || { due: 0, charges: 0, students: [], overdue: 0, overdueCount: 0 };
+    const methods = (f.methods || []).map((m) => ({ method: m._id || 'other', total: r2(m.total), count: m.count })).sort((a, b) => b.total - a.total);
+    const cashTotal = methods.filter((m) => m.method === 'cash').reduce((s, m) => s + m.total, 0);
+    const monthTotal = trend[trend.length - 1].total;
+    return {
+        today: { total: r2(one(f.today).total), count: one(f.today).count },
+        thisMonth: { total: monthTotal, count: trend[trend.length - 1].count },
+        lastMonth: { total: trend[trend.length - 2].total },
+        refundsThisMonth: { total: r2(one(f.refunds).total), count: one(f.refunds).count },
+        cashThisMonth: r2(cashTotal),
+        onlineThisMonth: r2(monthTotal - cashTotal),
+        pending: { total: r2(d.due), charges: d.charges, students: d.students.length },
+        overdue: { total: r2(d.overdue), charges: d.overdueCount },
+        methods,
+        trend
+    };
+};
+
+// ── CSV export of the filtered charges ────────────────────────────────────────
+const csvCell = (v) => {
+    let s = v == null ? '' : v instanceof Date ? istDateKey(v) : String(v);
+    if (/^[=+@\t\r-]/.test(s)) s = "'" + s;
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+
+const exportPaymentsCsv = async (libraryId, q, scope, write) => {
+    const filter = await buildPaymentFilter(libraryId, q, scope);
+    const sort = PAYMENT_SORTS[q.sort] || PAYMENT_SORTS.newest;
+    await write('﻿' + ['Billed on', 'Student', 'Mobile', 'Reg. no', 'For', 'Receipts', 'Total', 'Discount', 'Late fee', 'Waived', 'Paid', 'Refunded', 'Due', 'Method', 'Status', 'Due date', 'Last paid on'].map(csvCell).join(',') + '\n');
+    const cursor = Payment.find(filter).populate('studentId', 'name mobile rollNumber registrationNumber').populate('planId', 'name').sort(sort).limit(20000).lean().cursor();
+    let n = 0;
+    for await (const p of cursor) {
+        const s = p.studentId || {};
+        const receipts = [...new Set((p.allocations || []).map((a) => a.receiptNumber).filter(Boolean))].join(' ');
+        await write([
+            p.createdAt, s.name, s.mobile, s.registrationNumber || s.rollNumber, p.description || (p.planId && p.planId.name), receipts,
+            p.totalAmount, p.discountAmount, p.lateFee, p.waivedAmount, p.paidAmount, p.refundAmount, p.dueAmount,
+            p.paymentMethod, p.paymentStatus, p.dueDate, p.paymentDate
+        ].map(csvCell).join(',') + '\n');
+        n += 1;
+    }
+    return n;
+};
+
 module.exports = {
+    getPaymentsSummary,
+    exportPaymentsCsv,
     createCharge,
     recordPayment,
     getOutstanding,

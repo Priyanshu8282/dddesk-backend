@@ -6,6 +6,10 @@ const platformPlanSchema = new mongoose.Schema({
     description: { type: String, default: '' },
     monthlyPrice: { type: Number, required: true, default: 0, min: 0 },
     annualPrice: { type: Number, default: 0, min: 0 },
+    // Prices are EXCLUDING GST (Indian SaaS practice); GST is added at checkout and shown on the invoice
+    gstPercent: { type: Number, default: 18, min: 0, max: 28 },
+    isPopular: { type: Boolean, default: false },      // "Most popular" ribbon on the pricing cards
+    sortOrder: { type: Number, default: 0 },           // lower = shown first (ties: cheaper first)
     trialDays: { type: Number, default: 14, min: 0 },
     graceDays: { type: Number, default: 7, min: 0 },
     // Feature entitlements

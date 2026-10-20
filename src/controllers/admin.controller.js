@@ -2,6 +2,13 @@ const catchAsync = require('../utils/catchAsync');
 const ApiError   = require('../utils/ApiError');
 const svc        = require('../services/admin.service');
 const audit      = require('../utils/audit');
+const platformSettings = require('../services/platformSettings.service');
+
+// Registration can be paused from Platform Settings
+const assertRegistrationOpen = async () => {
+  await platformSettings.ensureFresh();
+  if (!platformSettings.registrationOpen()) throw new ApiError(403, 'New library registrations are paused right now. Please try again later or contact support.');
+};
 
 exports.createAdmin = catchAsync(async (req, res) => {
   const admin = await svc.createStaff(req);
@@ -26,6 +33,7 @@ exports.createLibrary = catchAsync(async (req, res) => {
 
 // Public self-registration (always pending approval)
 exports.sendRegistrationOtp = catchAsync(async (req, res) => {
+  await assertRegistrationOpen();
   const r = await require('../services/registrationVerification.service').sendOtp(req.body.mobile);
   const dev = r.isDev && r.otp;
   res.status(200).json({ success: true, message: 'An OTP has been sent to the mobile number', data: { isOTP: true, ...(dev ? { otp: r.otp } : {}) } });
@@ -37,11 +45,25 @@ exports.verifyRegistrationOtp = catchAsync(async (req, res) => {
 });
 
 exports.registerLibrary = catchAsync(async (req, res) => {
+  await assertRegistrationOpen();
   require('../services/registrationVerification.service').assertRegistrationToken(req.body.registrationToken, req.body.mobile);
-  const { library, admin } = await svc.createLibraryWithAdmin(req.body, req.files, null);
+  const { library: created, admin } = await svc.createLibraryWithAdmin(req.body, req.files, null);
+  let library = created;
+  // "Auto-approve new libraries" (Platform Settings): activate and provision straight away
+  if (platformSettings.autoApprove()) {
+    try {
+      const Library = require('../models/library.model');
+      library = (await Library.findOneAndUpdate({ _id: created._id, status: 'pending' }, { $set: { status: 'active', statusReason: null } }, { new: true })) || created;
+      if (library.status === 'active') {
+        await require('../services/libraryProvision.service').provisionLibrary(library);
+        require('../utils/systemAudit')(library._id, 'library.auto_approved', 'Library', library._id, { by: 'platform settings' });
+        library = (await Library.findById(created._id)) || library;
+      }
+    } catch (e) { console.error('[register] auto-approve failed, left pending:', e.message); }
+  }
   res.status(201).json({
     success: true,
-    message: 'Library registered successfully. Awaiting Super Admin approval.',
+    message: library.status === 'active' ? 'Library registered and approved. You can sign in now.' : 'Library registered successfully. Awaiting Super Admin approval.',
     data: {
       library: { id: library._id, name: library.name, status: library.status, libraryCode: library.libraryCode },
       admin: { id: admin._id, name: admin.name, email: admin.email },
