@@ -25,7 +25,7 @@ router.get('/list', requirePermission('attendance.view'), validate(v.listQuery),
 
 // Reports
 router.get('/percentage', requirePermission('attendance.view'), validate(v.rangeQuery), attendanceController.percentage);
-router.get('/student/:id/summary', requirePermission('attendance.view'), validate(v.rangeQuery), attendanceController.studentSummary);
+router.get('/student/:id/summary', requirePermission('attendance.view'), validate(v.studentRangeQuery), attendanceController.studentSummary);
 
 // Marking
 router.post('/manual', requirePermission('attendance.checkin', 'attendance.checkout'), validate(v.manualMark), attendanceController.markManual);

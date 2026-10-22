@@ -98,6 +98,10 @@ exports.publicBranding = async (req) => {
     tagline: s.general.tagline,
     supportEmail: s.general.supportEmail || null,
     supportPhone: s.general.supportPhone || null,
+    // Legal details printed on invoices
+    companyName: s.general.companyName || null,
+    gstin: s.general.gstin || null,
+    address: s.general.address || null,
     logoUrl: uploadUrl(s.branding.logoPath, base),
     faviconUrl: uploadUrl(s.branding.faviconPath, base),
     primaryColor: s.branding.primaryColor,

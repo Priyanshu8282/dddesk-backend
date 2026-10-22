@@ -24,4 +24,15 @@ const send = z.object({
     })
 });
 
-module.exports = { listQuery, send };
+const subscribe = z.object({
+    body: z.object({
+        subscription: z.object({
+            endpoint: z.string().url().max(1000),
+            keys: z.object({ p256dh: z.string().min(10).max(300), auth: z.string().min(5).max(100) })
+        }).passthrough()
+    })
+});
+
+const unsubscribe = z.object({ body: z.object({ endpoint: z.string().url().max(1000) }) });
+
+module.exports = { listQuery, send, subscribe, unsubscribe };

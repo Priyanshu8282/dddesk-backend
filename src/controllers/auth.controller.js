@@ -125,6 +125,11 @@ exports.updateFcmToken = catchAsync(async (req, res) => {
   res.status(200).json({ success: true, message: 'FCM Token updated successfully' });
 });
 
+exports.removeFcmToken = catchAsync(async (req, res) => {
+  await svc.removeFcmToken(req.user._id, req.userType, req.body.fcmToken);
+  res.status(200).json({ success: true, message: 'Device removed from notifications' });
+});
+
 exports.getMe = catchAsync(async (req, res) => {
   const user = req.user;
   const lib = req.library;

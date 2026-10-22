@@ -77,16 +77,19 @@ const listQuery = z.object({
     }).passthrough()
 });
 
-const rangeQuery = z.object({
-    params: z.object({ id: objectId }).optional(),
-    query: z.object({
-        month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'month must be YYYY-MM').optional(),
-        from: isoDate.optional(),
-        to: isoDate.optional(),
-        page: z.coerce.number().int().min(1).optional(),
-        limit: z.coerce.number().int().min(1).max(500).optional()
-    }).passthrough()
-});
+const rangeFields = z.object({
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'month must be YYYY-MM').optional(),
+    from: isoDate.optional(),
+    to: isoDate.optional(),
+    page: z.coerce.number().int().min(1).optional(),
+    limit: z.coerce.number().int().min(1).max(500).optional()
+}).passthrough();
+
+// Whole-library report: no id in the path (the validator passes an empty params object)
+const rangeQuery = z.object({ query: rangeFields });
+
+// Per-student report: /student/:id/summary
+const studentRangeQuery = z.object({ params: z.object({ id: objectId }), query: rangeFields });
 
 const myQuery = z.object({
     query: z.object({
@@ -99,4 +102,4 @@ const myQuery = z.object({
     }).passthrough()
 });
 
-module.exports = { scanQR, selfCheck, manualPunch, manualMark, manualClose, correct, leave, listQuery, rangeQuery, myQuery, emptyQuery };
+module.exports = { scanQR, selfCheck, manualPunch, manualMark, manualClose, correct, leave, listQuery, rangeQuery, studentRangeQuery, myQuery, emptyQuery };

@@ -328,5 +328,10 @@ exports.updateFcmToken = async (userId, userType, fcmToken) => {
   }
 };
 
+exports.removeFcmToken = async (userId, userType, fcmToken) => {
+  const Model = userType === 'student' ? Student : Admin;
+  await Model.updateOne({ _id: userId }, { $pull: { fcmTokens: fcmToken } });
+};
+
 exports.buildToken = buildToken;
 exports.buildUserData = buildUserData;

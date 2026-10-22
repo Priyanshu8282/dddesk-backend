@@ -11,6 +11,8 @@ router.get('/me', authController.getMe);
 router.put('/update-profile', upload.single('profileImage'), validate(authValidation.updateProfile), authController.updateProfile);
 router.post('/change-password', validate(authValidation.changePassword), authController.changePassword);
 router.put('/fcm-token', validate(authValidation.fcmToken), authController.updateFcmToken);
+// The phone app calls this on logout so the device stops receiving this account's alerts
+router.delete('/fcm-token', validate(authValidation.fcmToken), authController.removeFcmToken);
 router.delete('/delete-profile-image', authController.deleteProfileImage);
 
 module.exports = router;

@@ -64,6 +64,21 @@ const createStudent = z.object({
     })
 });
 
+// Rows are checked one by one in the service so a bad row is reported, not fatal; here we only bound the payload
+const importCell = z.union([z.string().max(300), z.number(), z.null()]).optional();
+const importStudents = z.object({
+    body: z.object({
+        dryRun: z.boolean().optional(),
+        branchId: z.preprocess(emptyToUndef, objectId.optional()),
+        rows: z.array(z.object({
+            rowNumber: z.number().int().positive().optional(),
+            name: importCell, mobile: importCell, email: importCell, gender: importCell, dob: importCell, joiningDate: importCell,
+            rollNumber: importCell, aadhaarNumber: importCell, guardianName: importCell, guardianMobile: importCell,
+            address: importCell, city: importCell, state: importCell, pincode: importCell, plan: importCell, seatNumber: importCell
+        })).min(1, 'The file has no student rows').max(100, 'Send at most 100 rows per request')
+    })
+});
+
 const updateStudent = z.object({
     body: z.object({
         ...studentFields,
@@ -196,6 +211,7 @@ const changePassword = z.object({
 
 module.exports = {
     createStudent,
+    importStudents,
     updateStudent,
     assignPlan,
     markAsPaid,

@@ -889,7 +889,150 @@ const exportStudentsCsv = async (libraryId, q, scope, write) => {
     return n;
 };
 
+// ---------------------------------------------------------------------------
+// Bulk import (spreadsheet rows are parsed in the browser, validated and created here)
+// ---------------------------------------------------------------------------
+const IMPORT_MAX_ROWS = 100;
+const clean = (v) => (v === undefined || v === null ? '' : String(v).trim());
+
+/** 10-digit Indian mobile; accepts +91 / 91 / 0 prefixes and spaces or dashes. Returns null when invalid. */
+const normaliseMobile = (v) => {
+    let d = clean(v).replace(/\D/g, '');
+    if (d.length === 12 && d.startsWith('91')) d = d.slice(2);
+    else if (d.length === 11 && d.startsWith('0')) d = d.slice(1);
+    return /^[6-9]\d{9}$/.test(d) ? d : null;
+};
+
+/** YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY or DD.MM.YYYY. Returns a Date, null when blank, undefined when unreadable. */
+const parseImportDate = (v) => {
+    const t = clean(v);
+    if (!t) return null;
+    let y; let m; let d;
+    let x = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(t);
+    if (x) {
+        [, y, m, d] = x;
+    } else {
+        x = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(t);
+        if (!x) return undefined;
+        [, d, m, y] = x;
+    }
+    const date = new Date(Date.UTC(+y, +m - 1, +d, 6, 30)); // noon IST, so the calendar day never shifts
+    return date.getUTCFullYear() === +y && date.getUTCMonth() === +m - 1 && date.getUTCDate() === +d ? date : undefined;
+};
+
+const GENDERS = { male: 'Male', m: 'Male', female: 'Female', f: 'Female', other: 'Other', o: 'Other' };
+
+/**
+ * Create many students from parsed spreadsheet rows. Each row succeeds or fails on its own, so one bad
+ * row never blocks the rest. The mobile number is the unique key: a number already in this library is
+ * reported as a duplicate and skipped. With dryRun nothing is written.
+ */
+const importStudents = async (libraryId, rows, req, { dryRun = false, branchId = null } = {}) => {
+    const [plans, seats] = await Promise.all([
+        Plan.find({ libraryId, isDeleted: { $ne: true } }).select('name').lean(),
+        Seat.find({ libraryId, isDeleted: { $ne: true }, status: 'available' }).select('seatNumber').lean()
+    ]);
+    const planByName = new Map(plans.map((p) => [String(p.name).trim().toLowerCase(), p]));
+    const seatByNumber = new Map(seats.map((s) => [String(s.seatNumber).trim().toLowerCase(), s]));
+
+    const parsed = rows.map((raw, i) => {
+        const row = { rowNumber: Number(raw.rowNumber) || i + 1, errors: [] };
+        const name = clean(raw.name);
+        if (name.length < 2) row.errors.push('Name is required (min 2 characters)');
+        const mobile = normaliseMobile(raw.mobile);
+        if (!mobile) row.errors.push('Mobile must be a valid 10-digit number');
+        const email = clean(raw.email).toLowerCase();
+        if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) row.errors.push('Invalid email address');
+        const g = clean(raw.gender);
+        const gender = g ? GENDERS[g.toLowerCase()] : undefined;
+        if (g && !gender) row.errors.push('Gender must be Male, Female or Other');
+        const dob = parseImportDate(raw.dob);
+        if (dob === undefined) row.errors.push('Date of birth must look like DD/MM/YYYY');
+        const joiningDate = parseImportDate(raw.joiningDate);
+        if (joiningDate === undefined) row.errors.push('Joining date must look like DD/MM/YYYY');
+        const guardianMobile = clean(raw.guardianMobile) ? normaliseMobile(raw.guardianMobile) : '';
+        if (guardianMobile === null) row.errors.push('Guardian mobile must be a valid 10-digit number');
+
+        const planText = clean(raw.plan);
+        const plan = planText ? planByName.get(planText.toLowerCase()) : null;
+        if (planText && !plan) row.errors.push(`Plan "${planText}" was not found`);
+        const seatText = clean(raw.seatNumber);
+        const seat = seatText ? seatByNumber.get(seatText.toLowerCase()) : null;
+        if (seatText && !seat) row.errors.push(`Seat "${seatText}" was not found or is not available`);
+
+        row.name = name;
+        row.mobile = mobile || clean(raw.mobile);
+        row.data = {
+            name, mobile,
+            ...(email && { email }), ...(gender && { gender }), ...(dob && { dob }), ...(joiningDate && { joiningDate }),
+            ...(clean(raw.rollNumber) && { rollNumber: clean(raw.rollNumber) }),
+            ...(clean(raw.aadhaarNumber) && { aadhaarNumber: clean(raw.aadhaarNumber).replace(/\s/g, '') }),
+            ...(clean(raw.guardianName) && { guardianName: clean(raw.guardianName) }),
+            ...(guardianMobile && { guardianMobile }),
+            ...(clean(raw.address) && { address: clean(raw.address) }),
+            ...(clean(raw.city) && { city: clean(raw.city) }),
+            ...(clean(raw.state) && { state: clean(raw.state) }),
+            ...(clean(raw.pincode) && { pincode: clean(raw.pincode) }),
+            ...(branchId && { branchId }),
+            ...(plan && { planId: plan._id }),
+            ...(seat && { seatId: seat._id })
+        };
+        return row;
+    });
+
+    // Duplicates inside the file (first occurrence wins) and against students already in the library
+    const seenMobile = new Map();
+    const seenSeat = new Set();
+    parsed.forEach((r) => {
+        if (r.data.mobile) {
+            if (seenMobile.has(r.data.mobile)) r.errors.push(`Duplicate mobile in the file (also on row ${seenMobile.get(r.data.mobile)})`);
+            else seenMobile.set(r.data.mobile, r.rowNumber);
+        }
+        if (r.data.seatId) {
+            const k = String(r.data.seatId);
+            if (seenSeat.has(k)) r.errors.push('Same seat used twice in the file');
+            seenSeat.add(k);
+        }
+    });
+    const existing = new Set((await Student.find({ libraryId, mobile: { $in: [...seenMobile.keys()] } }).select('mobile').lean()).map((s) => s.mobile));
+
+    const results = [];
+    for (let i = 0; i < parsed.length; i++) {
+        const r = parsed[i];
+        const base = { row: r.rowNumber, name: r.name, mobile: r.mobile };
+        if (r.data.mobile && existing.has(r.data.mobile)) {
+            results.push({ ...base, status: 'duplicate', message: 'A student with this mobile already exists' });
+            continue;
+        }
+        if (r.errors.length) {
+            results.push({ ...base, status: 'failed', message: r.errors.join('; ') });
+            continue;
+        }
+        if (dryRun) {
+            results.push({ ...base, status: 'valid' });
+            continue;
+        }
+        try {
+            const out = await registerStudent(libraryId, r.data, req);
+            results.push({ ...base, status: 'created', registrationNumber: out.student.registrationNumber, tempPassword: out.credentials && out.credentials.tempPassword, message: out.warnings.join('; ') || undefined });
+        } catch (e) {
+            results.push({ ...base, status: e.statusCode === 409 ? 'duplicate' : 'failed', message: e.message });
+            if (e.statusCode === 403) { // subscription limit: every remaining row would fail the same way
+                parsed.slice(i + 1).forEach((x) => results.push({ row: x.rowNumber, name: x.name, mobile: x.mobile, status: 'failed', message: e.message }));
+                break;
+            }
+        }
+    }
+
+    const count = (s) => results.filter((x) => x.status === s).length;
+    const summary = { total: results.length, created: count('created'), valid: count('valid'), duplicate: count('duplicate'), failed: count('failed') };
+    if (!dryRun && req && summary.created) audit(req, 'student.import', 'Student', null, { created: summary.created, duplicate: summary.duplicate, failed: summary.failed });
+    return { dryRun, summary, results };
+};
+
 module.exports = {
+    importStudents,
+    IMPORT_MAX_ROWS,
     activateMembership,
     registerStudent,
     assignPlan,

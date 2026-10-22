@@ -45,7 +45,18 @@ exports.createStudent = catchAsync(async (req, res) => {
     }, 201);
 });
 
-exports.getAllStudents = catchAsync(async (req, res) => {
+exports.importStudents = catchAsync(async (req, res) => {
+    const libraryId = lib(req);
+    const { rows, dryRun, branchId } = req.body;
+    const branch = await branchForCreate(req, libraryId, branchId);
+    const result = await studentService.importStudents(libraryId, rows, req, { dryRun: !!dryRun, branchId: branch });
+    const { summary } = result;
+    ok(res, dryRun
+        ? `${summary.valid} of ${summary.total} rows are ready to import`
+        : `${summary.created} student${summary.created === 1 ? '' : 's'} imported`, result.results, { summary, dryRun: result.dryRun }, 200);
+});
+
+exports.getAllStudents =catchAsync(async (req, res) => {
     const result = await studentService.queryStudents(lib(req), req.query, branchFilter(req));
     res.status(200).json({
         success: true,
