@@ -65,6 +65,15 @@ const adminSchema = new mongoose.Schema({
     failedLogins: { type: Number, default: 0, select: false },
     lockUntil: { type: Date, select: false },
     fcmTokens: [{ type: String }],
+    // Guided product tour progress (follows the user across devices). version = TOUR_VERSION it was last finished/skipped for
+    tour: {
+        completed: { type: Boolean, default: false },
+        skippedAt: { type: Date, default: null },
+        lastStep: { type: Number, default: 0, min: 0, max: 50 },
+        version: { type: Number, default: 0 },
+    },
+    // true when the owner registered with only a mobile number (e-mail below is a generated placeholder, never mailed)
+    emailIsPlaceholder: { type: Boolean, default: false },
     libraryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Library' }, // Links user to the library institution
     tenantId: { type: mongoose.Schema.Types.ObjectId }, // For future SaaS scalability
     

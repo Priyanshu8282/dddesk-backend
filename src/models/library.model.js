@@ -55,6 +55,7 @@ const librarySchema = new mongoose.Schema(
     state: String,
     country: String,
     pincode: String,
+    district: String,
     mapLocation: {
       lat: { type: Number, min: -90, max: 90 },
       lng: { type: Number, min: -180, max: 180 },
@@ -224,6 +225,11 @@ const librarySchema = new mongoose.Schema(
     statusReason: {
       type: String,
       default: null
+    },
+    // Consent given at self-registration (DPDP): which notice version, when, from where
+    registrationConsent: {
+      terms: { type: Boolean, default: false }, privacy: { type: Boolean, default: false }, marketing: { type: Boolean, default: false },
+      version: { type: String, default: null }, at: { type: Date, default: null }, ip: { type: String, default: null }
     },
     approvedAt: { type: Date, default: null },
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin", default: null },

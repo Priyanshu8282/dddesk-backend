@@ -11,6 +11,8 @@ const audit = require('../utils/audit');
 const securityLog = require('../utils/securityLog');
 const maintenance = require('../services/maintenance.service');
 const sessionService = require('../services/session.service');
+const humanCheck = require('../services/humanCheck.service');
+const loginIdentifier = (req) => (req.body && (req.body.identifier || req.body.email || req.body.mobile)) || '';
 
 // During maintenance only super admins may sign in ('all' scope), or everyone except the chosen libraries ('libraries' scope).
 // A read-only window still lets people sign in (they can look at their data), so the method is passed as GET here.
@@ -58,10 +60,19 @@ exports.login = async (req, res, next) => {
     if (await maintenanceBlock(req, res, verified.userData)) return;
     const result = await sessionService.startLoginSession(req, res, verified);
     securityLog.record(req, { type: 'login', outcome: 'success', userId: result.userData.id, userType: result.userData.userType, libraryId: result.userData.libraryId?._id || result.userData.libraryId || null, meta: { method: 'password' } });
+    humanCheck.clearLoginFailures(loginIdentifier(req)).catch(() => {});
     return authSuccess(res, `Welcome back, ${result.userData.name}!`, result);
   } catch (err) {
     securityLog.record(req, { type: 'login', outcome: err.libraryStatus ? 'blocked' : 'failure', reason: reasonOf(err), meta: { method: 'password', status: err.status || null } });
     if (err.libraryStatus) return sendBlocked(res, err);
+    if (err.status === 401) {
+      // count the failure; after the threshold the next attempt must carry a human-check token (requiresHumanCheck hint)
+      try {
+        await humanCheck.recordLoginFailure(loginIdentifier(req), req.ip);
+        const requiresHumanCheck = humanCheck.provider() !== 'off' && await humanCheck.loginNeedsChallenge(loginIdentifier(req), req.ip);
+        return res.status(401).json({ success: false, code: 401, message: err.message, requiresHumanCheck });
+      } catch (_) { /* fall through to the normal error */ }
+    }
     return next(err);
   }
 };
@@ -187,6 +198,7 @@ exports.getMe = catchAsync(async (req, res) => {
     impersonatedBy: req.impersonatedBy || null,
     lastLogin: user.lastLogin || null,
     createdAt: user.createdAt || null,
+    ...(req.userType !== 'student' ? { tour: require('../services/onboarding.service').tourOf(user) } : {}),
   };
 
   res.status(200).json({

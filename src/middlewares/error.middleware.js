@@ -48,7 +48,9 @@ const errorHandler = (err, req, res, next) => {
         code: statusCode,
         message: message || 'Internal Server Error',
         ...(req.id && statusCode >= 500 && { requestId: req.id }),
+        ...(err.errorCode && { errorCode: err.errorCode }),
         ...(err.errors && { errors: err.errors }),
+        ...(err.data && statusCode < 500 && { data: err.data }),
         ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
     };
 

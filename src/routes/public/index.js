@@ -4,6 +4,9 @@ const websiteRoutes = require('./website.routes');
 
 const router = express.Router();
 
+// Onboarding (plans, human check, signup wizard): /v1/public/plans, /human-check/*, /register/draft, /register/complete
+router.use('/', require('./onboarding.routes'));
+
 // Mount public auth & registration directly at /v1/public (e.g. /v1/public/login)
 router.use('/', authRoutes);
 

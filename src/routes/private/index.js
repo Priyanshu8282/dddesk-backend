@@ -43,6 +43,7 @@ router.get('/maintenance-check', (req, res) => res.json({ success: true, data: {
 
 // Auth / Profile
 router.use('/', authRoutes);
+router.use('/', require('./onboarding.routes')); // tour state + setup checklist
 
 // Dashboards
 router.use('/dashboard', dashboardRoutes);

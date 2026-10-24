@@ -67,4 +67,15 @@ const assertRegistrationToken = (token, rawMobile) => {
     }
 };
 
-module.exports = { sendOtp, verifyOtp, assertRegistrationToken, isRequired };
+// Always-on variant for the wizard (draft/complete): returns the verified mobile or throws 403 TOKEN_INVALID
+const mobileFromToken = (token) => {
+    const bad = (m) => Object.assign(new ApiError(403, m), { errorCode: 'TOKEN_INVALID' });
+    if (!token) throw bad('Mobile verification is required. Please verify your mobile number first.');
+    let payload;
+    try { payload = jwt.verify(String(token), config.jwt.secret); }
+    catch (_) { throw bad('Mobile verification expired. Please verify your mobile number again.'); }
+    if (payload.purpose !== 'register' || !payload.mobile) throw bad('Invalid verification token.');
+    return payload.mobile;
+};
+
+module.exports = { sendOtp, verifyOtp, assertRegistrationToken, mobileFromToken, isRequired };

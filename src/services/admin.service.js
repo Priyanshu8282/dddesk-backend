@@ -163,8 +163,10 @@ exports.createStaff = async (req) => {
 // Public self registration and superadmin library creation. Atomic via compensating delete
 // (MongoDB transactions need a replica set which is not guaranteed on the target deployments).
 exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
-  const email = String(input.email).toLowerCase();
   const mobile = normalizeMobile(input.mobile);
+  // Mobile-only sign-up (wizard): no e-mail given -> a generated, never-mailed placeholder login e-mail
+  const emailIsPlaceholder = !input.email;
+  const email = emailIsPlaceholder ? `m${mobile}@noemail.dddesk.invalid` : String(input.email).toLowerCase();
 
   if (await Admin.findOne({ email })) throw err('An account with this email already exists', 409);
   if (await Library.findOne({ mobile, isDeleted: false })) throw err('A library with this mobile number already exists', 409);
@@ -186,8 +188,18 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
 
   const library = new Library({
     name: input.name, ownerName: input.ownerName, mobile,
-    alternativeMobileNumber: input.alternativeMobileNumber, email,
+    alternativeMobileNumber: input.alternativeMobileNumber, email: emailIsPlaceholder ? undefined : email,
     roleId: adminRole._id,
+    ...(input.subscriptionPlan ? {
+      subscriptionPlanId: input.subscriptionPlan._id, subscriptionPlan: input.subscriptionPlan.name,
+      billingCycle: input.billingCycle === 'annual' ? 'annual' : 'monthly',
+      planLimits: {
+        maxStudents: input.subscriptionPlan.maxStudents, maxSeats: input.subscriptionPlan.maxSeats,
+        maxStaff: input.subscriptionPlan.maxStaff, maxBranches: input.subscriptionPlan.maxBranches || 0,
+      },
+    } : {}),
+    ...(input.registrationConsent ? { registrationConsent: input.registrationConsent } : {}),
+    district: input.district,
     address: input.address, city: input.city, state: input.state,
     country: input.country || 'India', pincode: input.pincode,
     description: input.description, website: input.website, gstNumber: input.gstNumber,
@@ -204,7 +216,8 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
   let admin;
   try {
     admin = await Admin.create({
-      name: input.ownerName, email, password: input.password,
+      name: input.ownerName, email, password: input.password || require('crypto').randomBytes(24).toString('hex'),
+      emailIsPlaceholder,
       userType: 'admin', roleId: adminRole._id, libraryId: library._id,
       mobile, alternativeMobileNumber: input.alternativeMobileNumber,
       address: input.address, city: input.city, state: input.state,

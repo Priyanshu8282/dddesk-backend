@@ -6,17 +6,18 @@ const validate = require('../../middlewares/validate.middleware');
 const { authValidation } = require('../../validations');
 const libraryValidation = require('../../validations/library.validation');
 const upload = require('../../middlewares/upload.middleware');
+const { requireHuman, requireHumanAfterFailures, requireHumanLegacy } = require('../../middlewares/humanCheck.middleware');
 
 const router = express.Router();
 
 // Authentication endpoints
-router.post('/login', loginLimiter, accountLoginLimiter, validate(authValidation.login), authController.login);
+router.post('/login', loginLimiter, accountLoginLimiter, requireHumanAfterFailures, validate(authValidation.login), authController.login);
 // Session cookie endpoints (CSRF-checked inside the service: custom header + allowed Origin)
 router.post('/refresh', refreshLimiter, authController.refresh);
 router.post('/logout', refreshLimiter, authController.logout);
 router.post('/send-otp', otpLimiter, accountOtpLimiter, validate(authValidation.sendOTP), authController.sendOTP);
 router.post('/verify-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(authValidation.verifyOTP), authController.verifyOTP);
-router.post('/forgot-password', otpLimiter, accountOtpLimiter, validate(authValidation.forgotPassword), authController.forgotPassword);
+router.post('/forgot-password', otpLimiter, accountOtpLimiter, requireHuman, validate(authValidation.forgotPassword), authController.forgotPassword);
 router.post('/verify-reset-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(authValidation.verifyResetOTP), authController.verifyResetOTP);
 router.post('/reset-password', loginLimiter, accountOtpVerifyLimiter, validate(authValidation.resetPassword), authController.resetPassword);
 
@@ -25,8 +26,8 @@ router.get('/admin-image/:id', authController.getPublicProfileImage);
 router.get('/library-image/:id', authController.getPublicProfileImage);
 
 // Public Library Registration (Self-onboarding). Always creates a PENDING library; role is resolved server side.
-router.post('/register/send-otp', otpLimiter, accountOtpLimiter, validate(libraryValidation.regSendOtp), adminController.sendRegistrationOtp);
+router.post('/register/send-otp', otpLimiter, accountOtpLimiter, requireHuman, validate(libraryValidation.regSendOtp), adminController.sendRegistrationOtp);
 router.post('/register/verify-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(libraryValidation.regVerifyOtp), adminController.verifyRegistrationOtp);
-router.post('/register', registerLimiter, upload.publicFields([{ name: 'profileImage', maxCount: 1 }, { name: 'logo', maxCount: 1 }, { name: 'photos', maxCount: 5 }]), validate(libraryValidation.register), adminController.registerLibrary);
+router.post('/register', registerLimiter, requireHumanLegacy, upload.publicFields([{ name: 'profileImage', maxCount: 1 }, { name: 'logo', maxCount: 1 }, { name: 'photos', maxCount: 5 }]), validate(libraryValidation.register), adminController.registerLibrary);
 
 module.exports = router;
