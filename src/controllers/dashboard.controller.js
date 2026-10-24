@@ -23,3 +23,36 @@ exports.getSuperAdminDashboard = catchAsync(async (req, res) => {
     data
   });
 });
+
+// ---- Role-based summaries (contract: backend/doc/dashboard-contract.md) ----
+const summarySvc = require('../services/dashboardSummary.service');
+const realtime = require('../realtime');
+
+const ok = (res, message, data) => res.status(200).json({ success: true, message, data });
+
+// superadmin without ?libraryId= -> platform summary; owners/staff (and superadmin with ?libraryId=) -> library summary
+const wantsPlatform = (req) => req.userType === 'superadmin' && !req.query.libraryId;
+
+exports.getSummary = catchAsync(async (req, res) => {
+  if (wantsPlatform(req)) {
+    const range = summarySvc.pickSuperRange(req.query.range);
+    return ok(res, 'Dashboard summary retrieved successfully', await summarySvc.getSuperadminSummary(range));
+  }
+  const libraryId = tenantId(req);
+  if (!libraryId) throw new ApiError(400, 'No library associated with this account');
+  const range = summarySvc.pickLibraryRange(req.query.range);
+  return ok(res, 'Dashboard summary retrieved successfully', await summarySvc.getLibrarySummary(libraryId, req, range));
+});
+
+exports.getCharts = catchAsync(async (req, res) => {
+  if (wantsPlatform(req)) {
+    const range = summarySvc.pickSuperRange(req.query.range);
+    return ok(res, 'Dashboard charts retrieved successfully', await summarySvc.getSuperadminCharts(range));
+  }
+  const libraryId = tenantId(req);
+  if (!libraryId) throw new ApiError(400, 'No library associated with this account');
+  const range = summarySvc.pickLibraryRange(req.query.range);
+  return ok(res, 'Dashboard charts retrieved successfully', await summarySvc.getLibraryCharts(libraryId, req, range));
+});
+
+exports.getRealtimeInfo = catchAsync(async (req, res) => ok(res, 'Realtime info', realtime.info()));

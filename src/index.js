@@ -17,6 +17,9 @@ connectDB().then(async () => {
     require('./services/maintenance.service').logStartup();
     initCronJobs();
 
+    // Live dashboards: socket.io runs only on this long-lived server (never in api/index.js on Vercel)
+    require('./realtime').init(server);
+
     server.listen(port, "0.0.0.0", () => {
       console.log("Listening at PORT:", port);
     });

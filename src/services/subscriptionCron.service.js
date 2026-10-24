@@ -258,3 +258,9 @@ const initSubscriptionCronJobs = () => {
 module.exports = {
     initSubscriptionCronJobs, runSubscriptionLifecycle, applyScheduledChanges, processLapsed, sendRenewalReminders, LAST_RUN_KEY
 };
+
+// ---- Live dashboards (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+for (const name of ['processLapsed', 'runSubscriptionLifecycle']) {
+    module.exports[name] = realtime.after(module.exports[name], () => realtime.subscriptionChanged({ state: 'lapsed' }));
+}

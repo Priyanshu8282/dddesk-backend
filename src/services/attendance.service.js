@@ -811,3 +811,13 @@ module.exports = {
     generateQR, verifyQR, studentScan, manualMark, manualClose, correctSession, markLeave,
     getToday, getActive, queryAttendance, trend, exportCsv, studentSummary, percentageReport, myHistory, isValidId
 };
+
+// ---- Live dashboards (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+const attendanceEvent = ([a]) => {
+    const libraryId = (a && (a.libraryId || (a.library && a.library._id))) || null;
+    if (libraryId) realtime.attendanceChanged({ libraryId, branchId: (a.student && a.student.branchId) || null });
+};
+for (const name of ['checkIn', 'checkOut', 'studentScan', 'manualMark', 'manualClose', 'correctSession', 'markLeave', 'markAbsentees', 'autoCloseStaleSessions']) {
+    module.exports[name] = realtime.after(module.exports[name], attendanceEvent);
+}

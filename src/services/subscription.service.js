@@ -304,6 +304,7 @@ const applyPaymentToLibrary = async (claimed) => {
     await reinstateIfSuspendedForNonPayment(claimed.libraryId, claimed._id);
     require('../middlewares/auth.middleware').invalidateAuthCacheForLibrary(claimed.libraryId);
     await PlatformPayment.updateOne({ _id: claimed._id }, { $unset: { applyPending: '' } });
+    require('../realtime/emitters').subscriptionChanged({ libraryId: claimed.libraryId, state: 'paid' });
 };
 
 /** Re-run the library update for a payment that was marked paid but never fully applied (crash between the writes) */
@@ -402,3 +403,6 @@ exports.handleFailed = async (pay) => {
     if (!record || record.status === 'paid') return;
     await markFailed(record, pay.error_description || 'Payment failed at gateway');
 };
+
+// ---- Live dashboards: a failed payment shows up in the superadmin payment activity ----
+exports.handleFailed = require('../realtime/emitters').after(exports.handleFailed, () => require('../realtime/emitters').subscriptionChanged({ state: 'changed' }));

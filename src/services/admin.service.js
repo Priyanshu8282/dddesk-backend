@@ -424,3 +424,11 @@ exports.resetPasswordByOwner = async (req, id, newPassword) => {
   await require('./session.service').revokeAllForUser(target._id, 'password_reset');
   await audit(req, 'staff.password_reset', 'Admin', target._id, { email: target.email });
 };
+
+// ---- Live dashboards (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+exports.createLibraryWithAdmin = realtime.after(exports.createLibraryWithAdmin, ([, , user], r) => {
+  const libraryId = r && (r.library ? r.library._id : r._id);
+  if (user && user.userType === 'superadmin') realtime.libraryStatusChanged({ libraryId, status: 'created' });
+  else realtime.libraryRegistered({ libraryId });
+});

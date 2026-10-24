@@ -584,3 +584,12 @@ module.exports = {
     getSeatStats, getPublicAvailability, getLayout, getSeatHistory, getRecoveryList,
     expireReservations, isSeatTypeEligible, checkSeatLimit, actorOf
 };
+
+// ---- Live dashboards (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+const seatEvent = (libraryIndex) => (args, r) => {
+    const seat = (r && (r.seat || r)) || {};
+    realtime.seatChanged({ libraryId: args[libraryIndex] || seat.libraryId, branchId: seat.branchId || null, seatId: seat._id || null, status: seat.status || 'released' });
+};
+const seatFns = { createSeat: 0, bulkCreateSeats: 0, updateSeat: 1, setSeatStatus: 1, assignSeat: 2, releaseSeat: 1, releaseSeatForStudent: 1, transferSeat: 2, reserveSeat: 1, deleteSeat: 1 };
+for (const [name, libraryIndex] of Object.entries(seatFns)) module.exports[name] = realtime.after(module.exports[name], seatEvent(libraryIndex));

@@ -1462,3 +1462,14 @@ module.exports = {
     getPolicy,
     generateTempPassword
 };
+
+// ---- Live dashboards: tell connected dashboards that student data changed (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+const branchOf = (r) => (r && (r.branchId || (r.student && r.student.branchId))) || null;
+const changed = (kind) => ([, libraryId], r) => realtime.studentChanged({ libraryId, branchId: branchOf(r), kind });
+module.exports.registerStudent = realtime.after(registerStudent, ([libraryId], r) => realtime.studentCreated({ libraryId, branchId: branchOf(r) }));
+module.exports.importStudents = realtime.after(importStudents, ([libraryId, , , opts], r) => { if (!(opts && opts.dryRun)) realtime.studentChanged({ libraryId, kind: 'import' }); });
+module.exports.deleteStudentById = realtime.after(deleteStudentById, changed('deleted'));
+for (const name of ['assignPlan', 'markAsPaid', 'changePlan', 'renewMembership', 'pauseMembership', 'resumeMembership', 'extendMembership', 'setStatus', 'updateStudentById']) {
+    module.exports[name] = realtime.after(module.exports[name], changed(name === 'setStatus' ? 'status' : name === 'updateStudentById' ? 'updated' : 'plan'));
+}

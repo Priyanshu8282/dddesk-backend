@@ -1534,3 +1534,16 @@ module.exports = {
     PERM_KEYS,
     OPEN_STATUSES
 };
+
+// ---- Live dashboards (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+const onCollected = ([a], r) => { const t = (r && r.transaction) || {}; realtime.paymentChanged({ libraryId: (a && a.libraryId) || t.libraryId, branchId: t.branchId || null, amount: t.amount, kind: 'collection' }); };
+module.exports.recordPayment = realtime.after(module.exports.recordPayment, onCollected);
+module.exports.finalizeOnlineAttempt = realtime.after(module.exports.finalizeOnlineAttempt, ([attempt], r) => {
+    const t = (r && r.transaction) || {};
+    realtime.paymentChanged({ libraryId: (attempt && attempt.libraryId) || t.libraryId, branchId: t.branchId || null, amount: t.amount, kind: 'collection' });
+});
+module.exports.refundPayment = realtime.after(module.exports.refundPayment, ([a], r) => realtime.paymentChanged({ libraryId: (a && a.libraryId) || (r && r.libraryId), branchId: (r && r.branchId) || null, amount: r && r.amount, kind: 'refund' }));
+for (const name of ['createCharge', 'cancelCharge', 'adjustCharge', 'waiveCharge']) {
+    module.exports[name] = realtime.after(module.exports[name], ([a], r) => realtime.chargeChanged({ libraryId: (a && a.libraryId) || (r && r.libraryId), branchId: (r && r.branchId) || null }));
+}

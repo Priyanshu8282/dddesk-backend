@@ -210,3 +210,7 @@ const logStartup = () => {
 };
 
 module.exports = { config, check, sendBlocked, publicStatus, cronsPaused, view, apply, logStartup };
+
+// ---- Live dashboards: connected apps re-read the public maintenance status (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+module.exports.apply = realtime.after(module.exports.apply, () => realtime.maintenanceChanged());

@@ -358,3 +358,14 @@ exports.impersonate = async (id, superAdmin, ip) => {
     impersonatedBy: superAdmin._id,
   };
 };
+
+// ---- Live dashboards (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+const libraryEvent = (status) => ([id]) => realtime.libraryStatusChanged({ libraryId: id, status });
+exports.approveLibrary = realtime.after(exports.approveLibrary, libraryEvent('approved'));
+exports.rejectLibrary = realtime.after(exports.rejectLibrary, libraryEvent('rejected'));
+exports.suspendLibrary = realtime.after(exports.suspendLibrary, libraryEvent('suspended'));
+exports.reinstateLibrary = realtime.after(exports.reinstateLibrary, libraryEvent('reinstated'));
+exports.deleteLibrary = realtime.after(exports.deleteLibrary, libraryEvent('deleted'));
+exports.assignPlan = realtime.after(exports.assignPlan, ([id]) => realtime.subscriptionChanged({ libraryId: id, state: 'changed' }));
+exports.createLibrary = realtime.after(exports.createLibrary, (args, r) => realtime.libraryStatusChanged({ libraryId: r && (r.library ? r.library._id : r._id), status: 'created' }));

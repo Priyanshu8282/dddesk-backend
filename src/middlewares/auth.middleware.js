@@ -104,7 +104,8 @@ const Authentication = async (req, res, next) => {
 
         // Maintenance mode (utils/maintenance.js): super admins always keep working; scope 'all' blocks everyone else,
         // 'readOnly' blocks changes only, 'libraries' blocks just the chosen libraries. Your own /me stays open so the app can show the notice.
-        if (!(req.method === 'GET' && req.path === '/me')) {
+        // (the realtime socket handshake sets skipMaintenanceCheck: it stays connected and is told through `maintenance:changed`)
+        if (!req.skipMaintenanceCheck && !(req.method === 'GET' && req.path === '/me')) {
             const blockedBody = await maintenance.check({
                 method: req.method, userType: user.userType, userId: String(user._id),
                 libraryId: String((user.libraryId && user.libraryId._id) || user.libraryId || ''), ip: req.ip,

@@ -291,3 +291,7 @@ module.exports = {
     createNotice, queryNotices, getNoticeById, updateNotice, setPublished, deleteNotice,
     getActiveStudentNotices, incrementViews, publishDueNotices, deliverOnce, resolveAudienceStudentIds
 };
+
+// ---- Live dashboards (no-op without sockets, never throws) ----
+const realtime = require('../realtime/emitters');
+module.exports.createNotice = realtime.after(module.exports.createNotice, ([libraryId], n) => realtime.noticeCreated({ libraryId, branchId: n && n.branchId, noticeId: n && n._id }));

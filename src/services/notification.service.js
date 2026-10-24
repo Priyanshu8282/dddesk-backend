@@ -428,6 +428,9 @@ const notifyEvent = async (eventName, libraryId, payload = {}) => {
             deliveries.forEach((d) => summary.deliveries.push({ recipientId: r.doc._id, ...d }));
         }
         await Notification.insertMany(rows);
+        // Live: tell each recipient's open apps (no-op without sockets, never throws)
+        const realtime = require('../realtime/emitters');
+        rows.forEach((n) => realtime.notificationNew({ userId: n.recipientId }));
     } catch (e) {
         console.error(`notifyEvent(${eventName}) failed:`, e.message);
         summary.error = e.message;
