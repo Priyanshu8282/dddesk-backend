@@ -12,6 +12,11 @@ const humanLimiter = limiter({ name: 'human', windowMs: 60 * 1000, limit: 30, me
 const completeLimiter = limiter({ name: 'reg-complete', windowMs: 60 * 60 * 1000, limit: 15, message: 'Too many registration attempts. Please try again later.' });
 const draftLimiter = limiter({ name: 'reg-draft', windowMs: 10 * 60 * 1000, limit: 120, message: 'Too many requests. Please slow down.' });
 
+const contactLimiter = limiter({ name: 'contact', windowMs: 60 * 60 * 1000, limit: 5, message: 'Too many messages sent. Please try again later.' });
+
+// Website contact form (human-checked, stored, owners alerted)
+router.post('/contact', contactLimiter, requireHuman, validate(v.contact), ctrl.contact);
+
 // Public plan catalogue for the pricing page and the signup wizard
 router.get('/plans', plansLimiter, ctrl.plans);
 

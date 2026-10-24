@@ -214,12 +214,27 @@ const completeRegistration = async ({ token, body, ip, issueSession }) => {
 
         const library = await activateIfAutoApprove(created.library);
         const admin = created.admin;
+
+        // optional quick setup (wizard step 5): one default membership plan with its standard fee and shift. Never blocks sign-up.
+        let defaultPlanCreated = false;
+        const qs = data.quickSetup || {};
+        if (qs.planName && Number(qs.planFee) > 0) {
+            try {
+                await require('../models/plan.model').create({
+                    libraryId: library._id, name: qs.planName, durationType: qs.planDuration || 'monthly', price: Number(qs.planFee),
+                    ...(qs.shiftName ? { shiftName: qs.shiftName } : {}), ...(qs.shiftStart ? { shiftStart: qs.shiftStart } : {}), ...(qs.shiftEnd ? { shiftEnd: qs.shiftEnd } : {}),
+                    createdBy: admin._id,
+                });
+                defaultPlanCreated = true;
+            } catch (e) { console.error('[register] default plan not created:', e.message); }
+        }
         const result = {
             status: library.status,
             library: { id: String(library._id), name: library.name, status: library.status, libraryCode: library.libraryCode },
             plan: { id: String(plan._id), name: plan.name, billingCycle: claimed.billingCycle, trialEndsAt: library.trialEndsAt || null },
             admin: { id: String(admin._id), name: admin.name, mobile },
             tour: { pending: true },
+            setup: { defaultPlanCreated },
         };
 
         await RegistrationDraft.updateOne(
@@ -318,7 +333,20 @@ const checklist = async (req) => {
     return buildChecklist({ counts: { plans, seats, students, payments }, profile: profileState(lib), trialEndsAt: lib.trialEndsAt });
 };
 
+/** Public website contact form: stored, and the platform owners are alerted (in-app + e-mail). */
+const submitContact = async (body, ip) => {
+    const ContactMessage = require('../models/contactMessage.model');
+    const doc = await ContactMessage.create({ name: body.name, mobile: body.mobile || '', email: body.email || '', subject: body.subject || '', message: body.message, ip: ip || null });
+    require('./platformAlerts.service').notify('contactMessage', {
+        message: `${body.name} (${body.mobile || body.email}) wrote: ${String(body.message).slice(0, 300)}`,
+        dedupeKey: `contact:${doc._id}`,
+        data: { contactMessageId: String(doc._id) },
+    });
+    return { id: String(doc._id) };
+};
+
 module.exports = {
+    submitContact,
     TOUR_VERSION, REQUIRED_FIELDS,
     serializePlan, sortPlans, listPublicPlans, clearPlansCache,
     activateIfAutoApprove, isMobileTaken,

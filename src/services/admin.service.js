@@ -203,6 +203,7 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
     address: input.address, city: input.city, state: input.state,
     country: input.country || 'India', pincode: input.pincode,
     description: input.description, website: input.website, gstNumber: input.gstNumber,
+    ...(input.libraryType ? { libraryType: input.libraryType } : {}),
     seatCapacity: input.seatCapacity, facilities: input.facilities,
     logo, photos,
     workingHours: input.workingHours,

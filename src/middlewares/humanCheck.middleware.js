@@ -51,7 +51,9 @@ const requireHumanAfterFailures = async (req, res, next) => {
     try {
         const b = req.body || {};
         const id = b.identifier || b.email || b.mobile || '';
-        if (humanCheck.provider() === 'off' || !(await humanCheck.loginNeedsChallenge(id, req.ip))) {
+        // a failing counter lookup must not block sign-in (per-account lockout and rate limits still apply)
+        const needs = humanCheck.provider() !== 'off' && await humanCheck.loginNeedsChallenge(id, req.ip).catch(() => false);
+        if (!needs) {
             if (req.body && typeof req.body === 'object') { delete req.body.humanToken; delete req.body.hp_website; delete req.body.fillMs; }
             return next();
         }

@@ -3,7 +3,8 @@ const mongoose = require('mongoose');
 // Self-registration progress, keyed by the OTP-verified mobile. Nothing here touches Library/Admin until
 // POST /v1/public/register/complete succeeds. Only allow-listed fields are ever stored (never a password or Aadhaar).
 const DATA_FIELDS = ['name', 'ownerName', 'email', 'address', 'city', 'state', 'district', 'pincode', 'country',
-    'seatCapacity', 'workingHours', 'facilities', 'alternativeMobileNumber', 'website', 'gstNumber', 'description'];
+    'seatCapacity', 'workingHours', 'facilities', 'alternativeMobileNumber', 'website', 'gstNumber', 'description',
+    'libraryType', 'quickSetup'];
 
 const DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DONE_TTL_MS = 60 * 60 * 1000;
@@ -11,7 +12,7 @@ const DONE_TTL_MS = 60 * 60 * 1000;
 const registrationDraftSchema = new mongoose.Schema({
     mobile: { type: String, required: true, unique: true },
     status: { type: String, enum: ['draft', 'completing', 'completed'], default: 'draft', index: true },
-    step: { type: Number, min: 1, max: 4, default: 1 },
+    step: { type: Number, min: 1, max: 6, default: 1 },
     planId: { type: mongoose.Schema.Types.ObjectId, ref: 'PlatformPlan', default: null },
     billingCycle: { type: String, enum: ['monthly', 'annual'], default: 'monthly' },
     data: {
@@ -26,6 +27,12 @@ const registrationDraftSchema = new mongoose.Schema({
         facilities: { type: [String], default: [] },
         alternativeMobileNumber: { type: String, default: '' }, website: { type: String, default: '' },
         gstNumber: { type: String, default: '' }, description: { type: String, default: '' },
+        // optional (wizard step 4 and 5)
+        libraryType: { type: String, default: '' },
+        quickSetup: {
+            shiftName: { type: String, default: '' }, shiftStart: { type: String, default: '' }, shiftEnd: { type: String, default: '' },
+            planName: { type: String, default: '' }, planFee: { type: Number, default: null }, planDuration: { type: String, default: 'monthly' },
+        },
     },
     consent: {
         terms: { type: Boolean, default: false }, privacy: { type: Boolean, default: false }, marketing: { type: Boolean, default: false },

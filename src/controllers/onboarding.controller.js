@@ -36,6 +36,11 @@ exports.humanStatus = catchAsync(async (req, res) => {
     res.status(200).json({ success: true, data: { required } });
 });
 
+exports.contact = catchAsync(async (req, res) => {
+    await svc.submitContact(req.body, req.ip);
+    res.status(201).json({ success: true, message: 'Thank you. We have your message and will reply soon.' });
+});
+
 exports.getDraft = catchAsync(async (req, res) => {
     const data = await svc.getOrCreateDraft(tokenOf(req));
     res.set('Cache-Control', 'no-store');

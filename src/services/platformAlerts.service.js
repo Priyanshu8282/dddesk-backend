@@ -9,6 +9,7 @@ const settings = require('./platformSettings.service');
 
 const EVENTS = {
   newRegistration: { title: 'New library registration', type: 'platform_alert' },
+  contactMessage: { title: 'New website contact message', type: 'platform_alert' },
   paymentFailed: { title: 'Subscription payment failed', type: 'platform_alert' },
   subscriptionSuspended: { title: 'Library suspended for non-payment', type: 'platform_alert' },
   securityAlert: { title: 'Security alert', type: 'security_alert' },

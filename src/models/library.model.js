@@ -18,6 +18,9 @@ const librarySchema = new mongoose.Schema(
 
     description: { type: String, trim: true, default: "" },
 
+    // What kind of place it is (optional, chosen at sign-up)
+    libraryType: { type: String, enum: ["", "library", "study_room", "reading_room", "self_study", "coaching", "other"], default: "" },
+
     // 🔹 Contact Info
     mobile: {
       type: String,

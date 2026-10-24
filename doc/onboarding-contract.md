@@ -39,6 +39,8 @@ Cached 60 s server side, rate limit 60/min/IP. Only active, non-deleted plans, s
   Find an integer `nonce` such that `SHA-256( challenge + ":" + nonce )` has at least `difficulty` leading zero **bits**. Send `humanToken = challenge + "~" + nonce`. Challenge lifetime 5 min, single use (server stores the id until expiry), minimum 1.5 s between issue and use. Solve in a Web Worker (≈0.2–2 s).
 - Failure: `400 { errorCode:'HUMAN_CHECK_FAILED' }` (bad/expired/replayed token, honeypot, too fast). Missing: `403 { errorCode:'HUMAN_CHECK_REQUIRED', humanCheck:{provider,siteKey,challengeUrl} }`. Provider down in production: `503 { errorCode:'HUMAN_CHECK_UNAVAILABLE' }` (fail closed).
 
+**Tokens are single use, even when the request then fails.** After ANY error response from a human-checked endpoint (including validation errors and `DRAFT_INCOMPLETE`), fetch a fresh token (reset the Turnstile/hCaptcha widget, or request a new proof-of-work challenge) before retrying. The human check runs before body validation so bots are rejected cheaply.
+
 ### 2.3 Where it is enforced
 | Endpoint | Rule |
 |---|---|

@@ -35,11 +35,20 @@ const draftData = z.strictObject({
     website: z.string().trim().max(200),
     gstNumber: z.union([z.literal(''), z.string().trim().transform((v) => v.toUpperCase()).refine((v) => GSTIN_RE.test(v), 'Enter a valid 15-character GSTIN')]),
     description: z.string().trim().max(1000),
+    libraryType: z.enum(['', 'library', 'study_room', 'reading_room', 'self_study', 'coaching', 'other']),
+    // optional first-day setup: one shift and one default membership plan with its standard fee
+    quickSetup: z.strictObject({
+        shiftName: z.string().trim().max(60),
+        shiftStart: timeStr, shiftEnd: timeStr,
+        planName: z.string().trim().max(80),
+        planFee: z.union([z.null(), z.coerce.number().min(0).max(1000000)]),
+        planDuration: z.enum(['daily', 'weekly', 'monthly', 'quarterly', 'half-yearly', 'yearly']),
+    }).partial(),
 }).partial();
 
 const patchDraft = z.object({
     body: z.strictObject({
-        step: z.coerce.number().int().min(1).max(4).optional(),
+        step: z.coerce.number().int().min(1).max(6).optional(),
         planId: z.union([z.null(), objectId]).optional(),
         billingCycle: z.enum(['monthly', 'annual']).optional(),
         data: draftData.optional(),
@@ -73,6 +82,18 @@ const completeData = z.object({
     workingHours: z.object({ openingTime: timeStr.min(1), closingTime: timeStr.min(1) }),
 });
 
+// Public contact form (website). Human check fields are stripped by the middleware before this runs.
+const contact = z.object({
+    body: z.strictObject({
+        name: z.string().trim().min(2, 'Please enter your name').max(100),
+        mobile: emptyToUndef(mobile.optional()),
+        email: emptyToUndef(z.string().trim().toLowerCase().email('Enter a valid email').max(120).optional()),
+        subject: emptyToUndef(z.string().trim().max(120).optional()),
+        message: z.string().trim().min(10, 'Please write at least a few words').max(2000),
+        ...humanFields,
+    }).refine((b) => !!b.mobile || !!b.email, { message: 'Give a mobile number or an email so we can reply', path: ['mobile'] }),
+});
+
 const humanStatus = z.object({ query: z.object({ identifier: z.string().trim().max(120).optional() }) });
 
 const tourPatch = z.object({
@@ -84,4 +105,4 @@ const tourPatch = z.object({
     }),
 });
 
-module.exports = { patchDraft, completeBody, completeData, humanStatus, tourPatch, humanFields, draftData };
+module.exports = { contact, patchDraft, completeBody, completeData, humanStatus, tourPatch, humanFields, draftData };
