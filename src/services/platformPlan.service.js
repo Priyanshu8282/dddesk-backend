@@ -2,7 +2,9 @@ const PlatformPlan = require('../models/platformPlan.model');
 const Library = require('../models/library.model');
 const pick = require('../utils/pick');
 const audit = require('../utils/audit');
-const { slugify } = require('../utils/slug');
+const slugify = (s = '') =>
+  String(s ?? '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/(^-+|-+$)/g, '').slice(0, 50).replace(/-+$/g, '');
 
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 

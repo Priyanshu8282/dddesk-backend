@@ -112,36 +112,6 @@ const librarySchema = new mongoose.Schema(
       unique: true
     },
 
-    // Public subdomain handle. Provisioned at approval time (not at registration).
-    // Sparse so that pending libraries without a slug do not collide on null.
-    slug: {
-      type: String,
-      unique: true,
-      sparse: true,
-      lowercase: true,
-      trim: true
-    },
-
-    // Old slugs kept so old links can redirect after a slug change
-    previousSlugs: {
-      type: [String],
-      default: undefined,
-      index: true
-    },
-    slugChangedAt: { type: Date },
-
-    // Custom domain (verified through DNS TXT; see website.service)
-    customDomain: {
-      type: String,
-      lowercase: true,
-      trim: true,
-      default: undefined
-    },
-    domainVerified: {
-      type: Boolean,
-      default: false
-    },
-
     // 🔹 Settings
     settings: {
       allowStudentRegistration: {
@@ -201,6 +171,14 @@ const librarySchema = new mongoose.Schema(
       prefix: { type: String, default: 'RCPT', trim: true },
       nextNumber: { type: Number, min: 1, default: 1 },
       footerNote: { type: String, trim: true, default: "" }
+    },
+
+    // 🔹 GST on student fee receipts (configurable per library - the library / its CA decides applicability).
+    // Fee amounts are treated as GST-INCLUSIVE: tax is extracted from the amount collected, never added on top.
+    feeTax: {
+      gstEnabled: { type: Boolean, default: false },
+      gstRate: { type: Number, min: 0, max: 28, default: 18 },
+      sacCode: { type: String, trim: true, default: '999293' }
     },
 
     // 🔹 Working Hours
@@ -328,33 +306,9 @@ const librarySchema = new mongoose.Schema(
   }
 );
 
-// One library per custom domain (only indexed when a domain is set)
-librarySchema.index(
-  { customDomain: 1 },
-  { unique: true, partialFilterExpression: { customDomain: { $type: "string" } } }
-);
 librarySchema.index({ status: 1, isDeleted: 1, createdAt: -1 });
 // Mobile is unique only among non-deleted libraries so a deleted library's number can re-register
 librarySchema.index({ mobile: 1 }, { unique: true, partialFilterExpression: { isDeleted: false } });
-
-const baseDomain = () => (process.env.BASE_DOMAIN || 'dddesk.ai').toLowerCase();
-
-// {slug}.dddesk.ai
-librarySchema.virtual('subdomain').get(function () {
-  return this.slug ? `${this.slug}.${baseDomain()}` : null;
-});
-librarySchema.virtual('websiteUrl').get(function () {
-  return this.slug ? `https://${this.slug}.${baseDomain()}` : null;
-});
-
-// Resolve a slug that may be an old one: { library, redirectTo }
-librarySchema.statics.findBySlugOrPrevious = async function (slug) {
-  const s = String(slug || '').toLowerCase();
-  let library = await this.findOne({ slug: s, isDeleted: false });
-  if (library) return { library, redirectTo: null };
-  library = await this.findOne({ previousSlugs: s, isDeleted: false });
-  return library ? { library, redirectTo: library.slug } : { library: null, redirectTo: null };
-};
 
 // Atomic yearly serial for library codes: LIB-YYYY-0001
 const nextLibraryCode = async (Model) => {
@@ -375,12 +329,6 @@ const nextLibraryCode = async (Model) => {
 };
 
 librarySchema.pre("save", async function () {
-  // Slug: only provisioned for active libraries (approval normally does it explicitly)
-  if (!this.slug && this.status === "active" && this.name) {
-    const { generateUniqueSlug } = require("../utils/slug");
-    this.slug = await generateUniqueSlug(this.name, { excludeId: this._id });
-  }
-
   if (this.isNew && !this.libraryCode) {
     this.libraryCode = await nextLibraryCode(this.constructor);
   }

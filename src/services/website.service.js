@@ -1,5 +1,3 @@
-const crypto = require('crypto');
-const dns = require('dns').promises;
 const mongoose = require('mongoose');
 const LibraryWebsite = require('../models/libraryWebsite.model');
 const Library = require('../models/library.model');
@@ -14,11 +12,7 @@ const Enquiry = require('../models/enquiry.model');
 const ApiError = require('../utils/ApiError');
 const pick = require('../utils/pick');
 const { branchVisibility, resolveBranch } = require('../utils/branchScope');
-const {
-    RESERVED_SLUGS, baseDomain, canonicalUrl, resolveTenantBySlug
-} = require('../middlewares/tenantHost.middleware');
-
-const SLUG_CHANGE_INTERVAL_MS = 30 * 24 * 60 * 60 * 1000;
+const { resolveTenantById } = require('../middlewares/publicLibrary.middleware');
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -28,8 +22,8 @@ const hasPath = (Model, p) => !!Model.schema.path(p);
 const oid = (v) => new mongoose.Types.ObjectId(String(v));
 
 // Fields from Library that are safe on a public page (never password/roleId/owner internals)
-const PUBLIC_LIBRARY_FIELDS = 'name slug address city state country pincode logo profileImage photos workingHours mobile alternativeMobileNumber email website customDomain domainVerified';
-const SETTINGS_LIBRARY_FIELDS = 'name ownerName email mobile address city state pincode logo profileImage photos workingHours website slug customDomain domainVerified previousSlugs';
+const PUBLIC_LIBRARY_FIELDS = 'name address city state country pincode logo profileImage photos workingHours mobile alternativeMobileNumber email website';
+const SETTINGS_LIBRARY_FIELDS = 'name ownerName email mobile address city state pincode logo profileImage photos workingHours website';
 
 // Flatten nested plain objects into dotted $set keys so partial updates do not wipe siblings
 const flatten = (obj, prefix = '', out = {}) => {
@@ -44,17 +38,12 @@ const flatten = (obj, prefix = '', out = {}) => {
 // ---------------------------------------------------------------------------
 // private settings (owner / staff)
 // ---------------------------------------------------------------------------
-const stripSecret = (doc) => {
-    if (!doc) return doc;
-    const { domainVerificationToken, ...rest } = doc;
-    return rest;
-};
 
 exports.getWebsiteSettings = async (libraryId) => {
     let doc = await LibraryWebsite.findOne({ libraryId }).lean();
     if (!doc) doc = (await LibraryWebsite.create({ libraryId })).toObject();
     const library = await Library.findById(libraryId).select(SETTINGS_LIBRARY_FIELDS).lean();
-    return { ...stripSecret(doc), library };
+    return { ...doc, library };
 };
 
 const SETTINGS_FIELDS = [
@@ -71,128 +60,7 @@ exports.updateWebsiteSettings = async (libraryId, body) => {
         { libraryId }, { $set: update, $setOnInsert: { libraryId } },
         { new: true, upsert: true, runValidators: true }
     ).lean();
-    return stripSecret(doc);
-};
-
-// ---- custom domain --------------------------------------------------------
-const txtHost = (domain) => `_dddesk-verify.${domain}`;
-
-const domainStatus = (library, website) => {
-    const pending = website?.pendingDomain || '';
-    return {
-        domain: library?.customDomain || null,
-        verified: !!(library?.customDomain && library?.domainVerified),
-        pendingDomain: pending || null,
-        verification: pending ? {
-            type: 'TXT',
-            host: txtHost(pending),
-            value: website.domainVerificationToken,
-            requestedAt: website.domainRequestedAt
-        } : null,
-        dns: { cnameTarget: process.env.CUSTOM_DOMAIN_CNAME || baseDomain() }
-    };
-};
-
-exports.getCustomDomainStatus = async (libraryId) => {
-    const [library, website] = await Promise.all([
-        Library.findById(libraryId).select('customDomain domainVerified').lean(),
-        LibraryWebsite.findOne({ libraryId }).lean()
-    ]);
-    return domainStatus(library, website);
-};
-
-exports.requestCustomDomain = async (libraryId, domain) => {
-    const base = baseDomain();
-    if (domain === base || domain.endsWith(`.${base}`)) throw new ApiError(400, `Domains under ${base} cannot be used as a custom domain`);
-    const taken = await Library.findOne({ _id: { $ne: libraryId }, customDomain: domain }).select('_id').lean();
-    const pendingElsewhere = await LibraryWebsite.findOne({ libraryId: { $ne: libraryId }, pendingDomain: domain }).select('_id').lean();
-    if (taken || pendingElsewhere) throw new ApiError(409, 'This domain is already connected to another library');
-
-    const token = `dddesk-verify=${crypto.randomBytes(16).toString('hex')}`;
-    const website = await LibraryWebsite.findOneAndUpdate(
-        { libraryId },
-        { $set: { pendingDomain: domain, domainVerificationToken: token, domainRequestedAt: new Date() }, $setOnInsert: { libraryId } },
-        { new: true, upsert: true }
-    ).lean();
-    const library = await Library.findById(libraryId).select('customDomain domainVerified').lean();
-    return domainStatus(library, website);
-};
-
-const resolveTxtWithTimeout = (host, ms = 8000) => Promise.race([
-    dns.resolveTxt(host),
-    new Promise((_, rej) => setTimeout(() => rej(Object.assign(new Error('DNS lookup timed out'), { code: 'ETIMEOUT' })), ms))
-]);
-
-exports.verifyCustomDomain = async (libraryId) => {
-    const website = await LibraryWebsite.findOne({ libraryId }).lean();
-    if (!website || !website.pendingDomain || !website.domainVerificationToken) {
-        throw new ApiError(400, 'No custom domain verification is in progress. Request a custom domain first.');
-    }
-    const host = txtHost(website.pendingDomain);
-    let records;
-    try {
-        records = await resolveTxtWithTimeout(host);
-    } catch (e) {
-        if (['ENOTFOUND', 'ENODATA', 'ETIMEOUT', 'ESERVFAIL', 'ECONNREFUSED'].includes(e.code)) {
-            throw new ApiError(422, `Verification record not found yet. Add a TXT record for ${host} with value ${website.domainVerificationToken}, then try again (DNS can take a few minutes).`);
-        }
-        throw new ApiError(502, 'DNS lookup failed. Please try again shortly.');
-    }
-    const flat = records.map((chunks) => chunks.join('').trim());
-    if (!flat.includes(website.domainVerificationToken)) {
-        throw new ApiError(422, `TXT record found at ${host} but the value does not match. Expected ${website.domainVerificationToken}.`);
-    }
-    try {
-        await Library.updateOne({ _id: libraryId }, { $set: { customDomain: website.pendingDomain, domainVerified: true } });
-    } catch (e) {
-        if (e.code === 11000) throw new ApiError(409, 'This domain is already connected to another library');
-        throw e;
-    }
-    await LibraryWebsite.updateOne({ libraryId }, { $set: { pendingDomain: '', domainVerificationToken: '', domainRequestedAt: null } });
-    return exports.getCustomDomainStatus(libraryId);
-};
-
-exports.removeCustomDomain = async (libraryId) => {
-    await Library.updateOne({ _id: libraryId }, { $unset: { customDomain: 1 }, $set: { domainVerified: false } });
-    await LibraryWebsite.updateOne({ libraryId }, { $set: { pendingDomain: '', domainVerificationToken: '', domainRequestedAt: null } });
-    return exports.getCustomDomainStatus(libraryId);
-};
-
-// ---- slug change ----------------------------------------------------------
-exports.changeSlug = async (libraryId, newSlug) => {
-    if (RESERVED_SLUGS.includes(newSlug)) throw new ApiError(400, 'This slug is reserved');
-    const library = await Library.findById(libraryId).select('slug previousSlugs').lean();
-    if (!library) throw new ApiError(404, 'Library not found');
-    if (library.slug === newSlug) throw new ApiError(400, 'This is already your current slug');
-
-    const website = await LibraryWebsite.findOne({ libraryId }).select('slugChangedAt').lean();
-    if (website?.slugChangedAt) {
-        const wait = website.slugChangedAt.getTime() + SLUG_CHANGE_INTERVAL_MS - Date.now();
-        if (wait > 0) {
-            throw new ApiError(429, `Slug can be changed once every 30 days. Try again in ${Math.ceil(wait / 86400000)} day(s).`);
-        }
-    }
-    const clash = await Library.findOne({
-        _id: { $ne: libraryId },
-        $or: [{ slug: newSlug }, { previousSlugs: newSlug }]
-    }).select('_id').lean();
-    if (clash) throw new ApiError(409, 'This slug is already taken');
-
-    const previous = [...new Set([...(library.previousSlugs || []).filter((s) => s !== newSlug), library.slug])].slice(-10);
-    let updated;
-    try {
-        updated = await Library.findOneAndUpdate(
-            { _id: libraryId, slug: library.slug },
-            { $set: { slug: newSlug, previousSlugs: previous } },
-            { new: true }
-        ).select('slug previousSlugs customDomain domainVerified').lean();
-    } catch (e) {
-        if (e.code === 11000) throw new ApiError(409, 'This slug is already taken');
-        throw e;
-    }
-    if (!updated) throw new ApiError(409, 'Slug was changed concurrently. Please retry.');
-    await LibraryWebsite.updateOne({ libraryId }, { $set: { slugChangedAt: new Date() }, $setOnInsert: { libraryId } }, { upsert: true });
-    return { slug: updated.slug, previousSlugs: updated.previousSlugs, url: canonicalUrl(updated), oldSlug: library.slug };
+    return doc;
 };
 
 // ---------------------------------------------------------------------------
@@ -353,14 +221,11 @@ const publicBranding = (library, website) => ({
 exports.getTenantSummary = (tenant) => {
     const { library, website } = tenant;
     return {
-        slug: library.slug,
         libraryId: library._id,
         name: library.name,
         branding: publicBranding(library, website),
         isPublished: !!website?.isPublished,
-        status: library.status,
-        customDomain: library.customDomain && library.domainVerified ? library.customDomain : null,
-        canonical: canonicalUrl(library)
+        status: library.status
     };
 };
 
@@ -370,16 +235,15 @@ const buildSeo = (library, website) => {
     return {
         title: website?.seo?.title || `${library.name}${place ? ` - Study Library in ${place}` : ''}`,
         description: website?.seo?.description || about.slice(0, 160) || `${library.name} study library${place ? ` in ${place}` : ''}. View plans, facilities and seat availability.`,
-        ogImage: website?.seo?.ogImage || website?.theme?.heroImage || library.logo || null,
-        canonical: canonicalUrl(library)
+        ogImage: website?.seo?.ogImage || website?.theme?.heroImage || library.logo || null
     };
 };
 
-/** Resolve (active + published) tenant by slug or throw a coded ApiError. */
-exports.requireTenant = async (rawSlug) => {
-    const t = await resolveTenantBySlug(rawSlug);
+/** Resolve (active + published) tenant by library id or throw a coded ApiError. */
+exports.requireTenant = async (rawId) => {
+    const t = await resolveTenantById(rawId);
     if (t.reason) {
-        const e = new ApiError(t.status === 301 ? 404 : t.status, t.message);
+        const e = new ApiError(t.status, t.message);
         e.errorCode = t.reason;
         throw e;
     }
@@ -399,7 +263,7 @@ exports.getPublicSite = async (tenant) => {
         : (w.openingHours?.weeklyHoliday && w.openingHours.weeklyHoliday !== 'None' ? [w.openingHours.weeklyHoliday] : []);
     return {
         profile: {
-            slug: full.slug, name: full.name,
+            libraryId: full._id, name: full.name,
             address: full.address || '', city: full.city || '', state: full.state || '', country: full.country || '', pincode: full.pincode || '',
             photos: full.photos || [], website: full.website || ''
         },
@@ -452,15 +316,9 @@ exports.createPublicEnquiry = async (library, body, ip) => {
     return { id: enquiry._id, duplicate };
 };
 
-// Legacy POST /public/website/enquiry: resolve the library from slug or libraryId (must be active)
-exports.findActiveLibraryForEnquiry = async ({ slug, libraryId }) => {
-    const filter = { isDeleted: { $ne: true }, status: 'active' };
-    if (slug) {
-        filter.$or = [{ slug }, { previousSlugs: slug }];
-    } else {
-        filter._id = libraryId;
-    }
-    const lib = await Library.findOne(filter).select('_id slug').lean();
+// Public enquiry by library id (body.libraryId): library must be active
+exports.findActiveLibraryForEnquiry = async ({ libraryId }) => {
+    const lib = await Library.findOne({ _id: libraryId, isDeleted: { $ne: true }, status: 'active' }).select('_id').lean();
     if (!lib) throw new ApiError(404, 'Library not found');
     return lib;
 };

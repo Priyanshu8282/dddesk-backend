@@ -6,11 +6,15 @@ const catchAsync = require('../../utils/catchAsync');
 const ApiError = require('../../utils/ApiError');
 const audit = require('../../utils/audit');
 const validate = require('../../middlewares/validate.middleware');
+const { limiter, userKey } = require('../../middlewares/rateLimit.middleware');
 const upload = require('../../middlewares/upload.middleware');
 const { requireSuperAdmin } = require('../../middlewares/access.middleware');
 const settings = require('../../services/platformSettings.service');
 const system = require('../../services/platformSystem.service');
 const providerConfig = require('../../services/notificationProviderConfig.service');
+const maintenanceService = require('../../services/maintenance.service');
+const serverOps = require('../../services/serverOps.service');
+const maintenanceRules = require('../../utils/maintenance');
 
 const router = express.Router();
 router.use(requireSuperAdmin);
@@ -35,7 +39,7 @@ const SECTIONS = {
     registrationEnabled: z.boolean(), autoApproveNewLibraries: z.boolean(),
     defaultTrialDays: z.coerce.number().int().min(0).max(365), defaultGraceDays: z.coerce.number().int().min(0).max(90),
   }).partial(),
-  maintenance: z.object({ enabled: z.boolean(), message: z.string().trim().min(3).max(300) }).partial(),
+  // maintenance is NOT a plain section any more: it has its own endpoints below (password check, validation, history)
   alerts: z.object({
     superAdminEmails: z.array(z.string().trim().toLowerCase().email()).max(10),
     events: z.object({ newRegistration: z.boolean(), paymentFailed: z.boolean(), subscriptionSuspended: z.boolean(), securityAlert: z.boolean() }).partial(),
@@ -65,6 +69,7 @@ router.get('/health', catchAsync(async (req, res) => {
 // ---------------------------------------------------------------------------
 router.put('/section/:section', catchAsync(async (req, res) => {
   if (req.impersonatedBy) throw new ApiError(403, IMPERSONATION);
+  if (req.params.section === 'maintenance') throw new ApiError(400, 'Maintenance is managed from the Maintenance controls (PUT /maintenance)');
   const { section } = sectionParams.parse({ section: req.params.section });
   const parsed = SECTIONS[section].safeParse(req.body);
   if (!parsed.success) {
@@ -72,10 +77,9 @@ router.put('/section/:section', catchAsync(async (req, res) => {
     throw new ApiError(400, `${issue.path.join('.') || section}: ${issue.message}`);
   }
   if (!Object.keys(parsed.data).length) throw new ApiError(400, 'Nothing to save');
-  if (section === 'maintenance' && parsed.data.enabled === true && !(parsed.data.message || settings.current().maintenance.message)) throw new ApiError(400, 'Write a message for visitors first');
   if (section === 'general' && parsed.data.supportPhone) parsed.data.supportPhone = require('../../utils/mobile').normalizeMobile(parsed.data.supportPhone);
   const next = await settings.updateSection(section, parsed.data);
-  await audit(req, `platform_settings.${section}`, 'GlobalSetting', null, { fields: Object.keys(parsed.data), ...(section === 'maintenance' ? { enabled: next.maintenance.enabled } : {}) });
+  await audit(req, `platform_settings.${section}`, 'GlobalSetting', null, { fields: Object.keys(parsed.data) });
   res.json({ success: true, message: 'Settings saved', data: next[section] });
 }));
 
@@ -135,7 +139,11 @@ router.get('/database', catchAsync(async (req, res) => {
 }));
 
 // Try a connection string without saving anything
-router.post('/database/test', validate(z.object({ body: z.object({ url: z.string().trim().min(10).max(1000) }) })), catchAsync(async (req, res) => {
+// Needs the super admin's password again (it makes the server open a network connection to an address of the caller's choosing)
+router.post('/database/test', limiter({ name: 'db-test', windowMs: 60 * 60 * 1000, limit: 15, message: 'Too many connection tests. Try again later.', keyGenerator: userKey }),
+  validate(z.object({ body: z.object({ url: z.string().trim().min(10).max(1000), password: z.string().min(1, 'Enter your password to confirm') }) })), catchAsync(async (req, res) => {
+  await system.verifyPassword(req, req.body.password);
+  await audit(req, 'platform_settings.database_test', 'GlobalSetting', null, { target: system.maskMongoUrl(req.body.url) });
   const r = await system.testDatabase(req.body.url);
   res.json({ success: r.ok, message: r.ok ? 'Connection works' : 'Could not connect', data: r });
 }));
@@ -148,6 +156,69 @@ router.put('/environment', validate(z.object({ body: z.object({
   // the audit trail records WHAT changed, never the value of a secret
   await audit(req, 'platform_settings.environment', 'GlobalSetting', null, { key: r.key, backup: r.backup, ...(r.key === 'MONGODB_URL' ? { to: r.valueMasked } : { to: r.valueMasked }) });
   res.json({ success: true, message: 'Saved to the server settings file. Restart the server for it to take effect.', data: r });
+}));
+
+// ---------------------------------------------------------------------------
+// Maintenance windows (immediate, scheduled, read-only, per library) + history
+// ---------------------------------------------------------------------------
+const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Not a valid id');
+const isoDate = z.string().trim().max(40).refine((v) => Number.isFinite(Date.parse(v)), 'Enter a valid date and time');
+const maintenanceBody = z.object({
+  action: z.enum(['enable', 'schedule', 'update', 'disable', 'cancel']),
+  password: z.string().max(200).optional(),
+  message: z.string().trim().max(300).optional(),
+  reason: z.string().trim().max(300).optional(),
+  scope: z.enum(maintenanceRules.SCOPES).optional(),
+  libraryIds: z.array(objectId).max(200).optional(),
+  allowUserIds: z.array(objectId).max(20).optional(),
+  allowIps: z.array(z.string().trim().max(45)).max(20).optional(),
+  pauseCrons: z.boolean().optional(),
+  startsAt: isoDate.nullish(),
+  endsAt: isoDate.nullish(),
+  estimatedBackAt: isoDate.nullish(),
+  notifyUsers: z.boolean().optional(),
+}).strict();
+const maintenanceLimiter = limiter({ name: 'maintenance', windowMs: 60 * 60 * 1000, limit: 30, message: 'Too many maintenance changes. Try again later.', keyGenerator: userKey });
+const opsLimiter = limiter({ name: 'server-ops', windowMs: 60 * 60 * 1000, limit: 30, message: 'Too many server actions. Try again later.', keyGenerator: userKey });
+const noSupportSession = (req) => { if (req.impersonatedBy) throw new ApiError(403, IMPERSONATION); };
+
+// GET /super/platform-settings/maintenance : current window, live phase, and the history of windows
+router.get('/maintenance', catchAsync(async (req, res) => {
+  res.json({ success: true, data: await maintenanceService.view(req.query.limit) });
+}));
+
+// PUT /super/platform-settings/maintenance : start now / schedule / change / switch off / cancel
+router.put('/maintenance', maintenanceLimiter, validate(z.object({ body: maintenanceBody })), catchAsync(async (req, res) => {
+  noSupportSession(req);
+  const { password, ...input } = req.body;
+  // starting or changing a window affects every library, so the password is asked again; switching OFF never needs it
+  if (['enable', 'schedule', 'update'].includes(input.action)) await system.verifyPassword(req, password);
+  const data = await maintenanceService.apply(req, input);
+  const msg = { enable: 'Maintenance mode is ON', schedule: 'Maintenance window scheduled', update: 'Maintenance window updated', disable: 'Maintenance mode is OFF', cancel: 'Scheduled window cancelled' }[input.action];
+  res.json({ success: true, message: msg, data });
+}));
+
+// ---------------------------------------------------------------------------
+// Server operations (safe actions only: status, clear this instance's caches, run one job by hand)
+// ---------------------------------------------------------------------------
+router.get('/ops/status', catchAsync(async (req, res) => {
+  res.json({ success: true, data: await serverOps.status() });
+}));
+
+router.post('/ops/clear-caches', opsLimiter, validate(z.object({ body: z.object({ password: z.string().min(1, 'Enter your password to confirm').max(200) }).strict() })), catchAsync(async (req, res) => {
+  noSupportSession(req);
+  await system.verifyPassword(req, req.body.password);
+  const data = serverOps.clearCaches();
+  await audit(req, 'server_ops.clear_caches', 'GlobalSetting', null, { cleared: data.cleared });
+  res.json({ success: true, message: 'Caches cleared on this server', data });
+}));
+
+router.post('/ops/run-job', opsLimiter, validate(z.object({ body: z.object({ job: z.enum(serverOps.JOB_KEYS), password: z.string().min(1, 'Enter your password to confirm').max(200) }).strict() })), catchAsync(async (req, res) => {
+  noSupportSession(req);
+  await system.verifyPassword(req, req.body.password);
+  await audit(req, 'server_ops.run_job', 'GlobalSetting', null, { job: req.body.job });
+  const data = await serverOps.runJob(req.body.job);
+  res.json({ success: true, message: `${data.label} finished`, data });
 }));
 
 module.exports = router;

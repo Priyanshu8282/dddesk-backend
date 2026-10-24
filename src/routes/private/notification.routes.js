@@ -1,7 +1,8 @@
 const express = require('express');
+const { broadcastLimiter } = require('../../middlewares/rateLimit.middleware');
 const notificationController = require('../../controllers/notification.controller');
 const validate = require('../../middlewares/validate.middleware');
-const { requireStaff } = require('../../middlewares/access.middleware');
+const { requireStaff, requirePermission } = require('../../middlewares/access.middleware');
 const v = require('../../validations/notification.validation');
 
 const router = express.Router();
@@ -12,7 +13,7 @@ router.patch('/read-all', notificationController.markMyNotificationsAsRead);
 router.post('/delete', notificationController.deleteNotifications);
 router.post('/delete-read', notificationController.deleteReadNotifications);
 // Library owner / staff announce to their own students
-router.post('/send', requireStaff, validate(v.send), notificationController.sendToStudents);
+router.post('/send', broadcastLimiter, requireStaff, requirePermission('content.create'), validate(v.send), notificationController.sendToStudents);
 // Browser push (service worker subscription of this browser)
 router.get('/push/key', notificationController.pushKey);
 router.get('/push/status', notificationController.pushStatus);

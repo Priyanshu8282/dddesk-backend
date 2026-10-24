@@ -1,21 +1,20 @@
 const express = require('express');
 const authRoutes = require('./auth.routes');
 const websiteRoutes = require('./website.routes');
-const tenantRoutes = require('./tenant.routes');
 
 const router = express.Router();
 
 // Mount public auth & registration directly at /v1/public (e.g. /v1/public/login)
 router.use('/', authRoutes);
 
-// Mount public website dynamic profile routes (e.g. /v1/public/website/:slug)
+// Mount public website dynamic profile routes (e.g. /v1/public/website/:libraryId)
 router.use('/website', websiteRoutes);
-
-// Tenant resolution from host (e.g. /v1/public/tenant/resolve?host=gyan.dddesk.ai)
-router.use('/tenant', tenantRoutes);
 
 // Health check: /v1/public/health
 router.use('/health', require('./health.routes'));
+
+// Maintenance window state (active / upcoming / off): /v1/public/maintenance-status
+router.use('/maintenance-status', require('./maintenance.routes'));
 
 // Platform name, logo, favicon, maintenance + registration state: /v1/public/branding
 router.use('/branding', require('./branding.routes'));

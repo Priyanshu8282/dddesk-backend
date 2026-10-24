@@ -1,5 +1,6 @@
 const { z } = require('zod');
-const { RESERVED_SLUGS, SLUG_RE } = require('../middlewares/tenantHost.middleware');
+
+const objectIdStr = z.string().trim().regex(/^[a-fd]{24}$/i, 'Invalid library id');
 
 // http(s) URL only (no javascript:, data:, etc.). Empty string clears the field.
 const httpUrl = z.string().trim().max(500).refine((v) => {
@@ -74,31 +75,12 @@ const updateSettings = z.object({
     })
 });
 
-const domainRe = /^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
-
-const customDomain = z.object({
-    body: z.object({
-        domain: z.string().trim().toLowerCase()
-            .transform((v) => v.replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/\.$/, ''))
-            .refine((v) => domainRe.test(v), { message: 'Enter a valid domain such as library.example.com' })
-    })
-});
-
-const changeSlug = z.object({
-    body: z.object({
-        slug: z.string().trim().toLowerCase()
-            .refine((v) => SLUG_RE.test(v), { message: 'Slug must be 3-40 characters: lowercase letters, numbers and hyphens, not starting or ending with a hyphen' })
-            .refine((v) => !v.includes('--'), { message: 'Slug cannot contain consecutive hyphens' })
-            .refine((v) => !RESERVED_SLUGS.includes(v), { message: 'This slug is reserved' })
-    })
-});
-
-const slugParam = z.object({
-    params: z.object({ slug: z.string().trim().toLowerCase().min(2).max(60) })
+const libraryIdParam = z.object({
+    params: z.object({ libraryId: objectIdStr })
 });
 
 const publicEnquiry = z.object({
-    params: z.object({ slug: z.string().trim().toLowerCase().min(2).max(60) }),
+    params: z.object({ libraryId: objectIdStr }),
     body: z.object({
         name: z.string().trim().min(2, 'Name is required').max(100),
         mobile: z.string().trim().transform((v) => v.replace(/[\s()-]/g, '').replace(/^(\+91|91|0)(?=\d{10}$)/, ''))
@@ -113,15 +95,8 @@ const publicEnquiry = z.object({
     })
 });
 
-const legacyPublicEnquiry = z.object({
-    body: publicEnquiry.shape.body.extend({
-        slug: z.string().trim().toLowerCase().max(60).optional(),
-        libraryId: z.string().regex(/^[a-f\d]{24}$/i).optional()
-    }).refine((b) => b.slug || b.libraryId, { message: 'slug or libraryId is required' })
+const bodyPublicEnquiry = z.object({
+    body: publicEnquiry.shape.body.extend({ libraryId: objectIdStr })
 });
 
-const resolveQuery = z.object({
-    query: z.object({ host: z.string().trim().max(255).optional(), slug: z.string().trim().max(60).optional() }).optional()
-});
-
-module.exports = { updateSettings, customDomain, changeSlug, slugParam, publicEnquiry, legacyPublicEnquiry, resolveQuery };
+module.exports = { updateSettings, libraryIdParam, publicEnquiry, bodyPublicEnquiry };

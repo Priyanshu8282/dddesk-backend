@@ -12,7 +12,15 @@ const ApiError = require('../utils/ApiError');
 const pick = require('../utils/pick');
 const escapeRegex = require('../utils/escapeRegex');
 const audit = require('../utils/audit');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+const { deriveAadhaar, isValidAadhaar } = require('../utils/aadhaar');
+const dpdp = require('../utils/dpdp');
+const { normalizeMobile } = require('../utils/mobile');
+const { describeRequest } = require('../utils/device');
 const { startOfDayIST, endOfDayIST, DAY_MS } = require('../utils/time');
+const { computeProration } = require('../utils/feeMath');
 const seatService = require('./seat.service');
 const planService = require('./plan.service');
 
@@ -22,7 +30,7 @@ const isValidId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 // planStatus, expiryDate, status, isDeleted, seat pointers, payment flags.
 const CREATE_FIELDS = [
     'name', 'email', 'mobile', 'rollNumber', 'dob', 'gender', 'aadhaarNumber', 'aadhaarCardImage',
-    'guardianName', 'guardianMobile', 'guardianOccupation', 'emergencyContact', 'documents',
+    'guardianName', 'guardianMobile', 'guardianRelation', 'guardianOccupation', 'emergencyContact', 'documents',
     'address', 'city', 'state', 'country', 'countryCode', 'stateCode', 'pincode',
     'joiningDate', 'branchId', 'profileImage'
 ];
@@ -92,7 +100,7 @@ const mapPaymentMethod = (m) => (m === 'cash' ? 'cash' : m ? 'online' : 'unpaid'
 const planAmount = (plan) => (plan.finalPrice ?? Math.max(0, (plan.price || 0) - (plan.discount || 0)));
 
 /** Create a charge in the fee ledger. Returns { pendingCharge, charge }. */
-const createPlanCharge = async ({ libraryId, student, plan, amount, joiningFee = 0, deposit = 0, dueDate, periodStart, periodEnd, paymentType, description, couponCode, referrerId, req }) => {
+const createPlanCharge = async ({ libraryId, student, plan, amount, joiningFee = 0, deposit = 0, dueDate, periodStart, periodEnd, paymentType, description, couponCode, referrerId, req, extraDiscount = 0, extraDiscountReason }) => {
     const ledger = getLedger();
     if (!ledger || typeof ledger.createCharge !== 'function') return { pendingCharge: false, charge: null };
     if ((Number(amount) || 0) + (Number(joiningFee) || 0) + (Number(deposit) || 0) <= 0) return { pendingCharge: false, charge: null }; // free plan
@@ -105,7 +113,9 @@ const createPlanCharge = async ({ libraryId, student, plan, amount, joiningFee =
         deposit,
         couponCode,
         referrerId,
-        skipCreditPolicy: true, // credit policy is enforced when the membership is activated (markAsPaid)
+        extraDiscount,
+        extraDiscountReason,
+        skipCreditPolicy: true, // credit policy is enforced when the membership is activated (markAsPaid / assertCreditAllowed)
         dueDate: dueDate || undefined, // ledger default: 7 days
 
         periodStart,
@@ -120,6 +130,44 @@ const createPlanCharge = async ({ libraryId, student, plan, amount, joiningFee =
 
 const LEDGER_METHODS = ['cash', 'upi', 'online', 'bank_transfer', 'other'];
 const ledgerMethod = (m) => (LEDGER_METHODS.includes(m) ? m : 'other');
+
+const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/** First/last day of a membership started on startDate. Must mirror activateMembership(). */
+const membershipWindow = (plan, startDate) => {
+    const days = planService.getPlanDurationDays(plan);
+    const start = startOfDayIST(startDate ? new Date(startDate) : new Date());
+    if (isNaN(start.getTime())) throw new ApiError(400, 'Invalid start date');
+    return { start, end: endOfDayIST(new Date(start.getTime() + (days - 1) * DAY_MS)) };
+};
+
+/**
+ * Credit policy for activating a membership (renew / change plan) while money is still owed.
+ *  chargeAmount : what the new charge will be after discounts, paidNow : collected at activation,
+ *  relief       : existing dues that are cleared by the same operation (plan-change waiver/cancel)
+ */
+const assertCreditAllowed = async ({ libraryId, studentId, chargeAmount, paidNow = 0, relief = 0, dueDate }) => {
+    const ledger = getLedger();
+    if (!ledger || typeof ledger.getPolicy !== 'function') return;
+    const remaining = money2(chargeAmount - paidNow);
+    if (remaining <= 0.009) return;
+    const policy = await ledger.getPolicy(libraryId);
+    if (!policy.allowCredit) {
+        throw new ApiError(400, `This library does not allow credit: collect ₹${remaining} now (send paidNow) to renew / change the plan`);
+    }
+    await ledger.enforceCreditPolicy({ libraryId, studentId, newDue: money2(remaining - relief), paidNow, dueDate, policy });
+};
+
+/** Collect money against the charge just created for a renewal / plan change (needs the fees.collect right). */
+const collectAtActivation = async ({ libraryId, student, charge, paidNow, paymentMethod, reference, requestId, req, note }) => {
+    const ledger = getLedger();
+    if (!ledger.hasPermission(req, ['fees.collect'])) throw new ApiError(403, 'You do not have permission to collect payments');
+    return ledger.recordPayment({
+        libraryId, studentId: student._id, amount: paidNow, method: ledgerMethod(paymentMethod || 'cash'), reference,
+        receivedBy: req?.user?._id, allocations: [{ paymentId: charge._id, amount: paidNow }], trustedAllocation: true,
+        collectRequestId: requestId, note, req
+    });
+};
 
 // ---------------------------------------------------------------------------
 // Membership core
@@ -210,6 +258,65 @@ const normaliseBody = (body) => {
     return data;
 };
 
+const INDIAN_MOBILE = /^[6-9]\d{9}$/;
+const INDIAN_PINCODE = /^[1-9]\d{5}$/;
+
+/** Indian mobile / pincode normalisation + checks on the fields we are about to store (400 on a bad value). */
+const normaliseContactFields = (data) => {
+    if (data.mobile !== undefined) {
+        data.mobile = normalizeMobile(data.mobile);
+        if (!INDIAN_MOBILE.test(data.mobile)) throw new ApiError(400, 'Enter a valid 10-digit Indian mobile number (starts with 6-9)');
+    }
+    if (data.guardianMobile !== undefined) {
+        if (data.guardianMobile === '' || data.guardianMobile === null) delete data.guardianMobile;
+        else {
+            data.guardianMobile = normalizeMobile(data.guardianMobile);
+            if (!INDIAN_MOBILE.test(data.guardianMobile)) throw new ApiError(400, 'Guardian mobile must be a valid 10-digit Indian mobile number');
+        }
+    }
+    if (data.pincode !== undefined) {
+        if (data.pincode === '' || data.pincode === null) delete data.pincode;
+        else if (!INDIAN_PINCODE.test(String(data.pincode).trim())) throw new ApiError(400, 'Pincode must be 6 digits');
+    }
+};
+
+/**
+ * Replace a typed Aadhaar number by its last 4 digits + keyed hash. The full number is dropped here and is
+ * never persisted or logged. An empty value leaves the stored Aadhaar untouched ("re-enter to replace").
+ */
+const applyAadhaar = async (data, libraryId, { excludeId } = {}) => {
+    const typed = data.aadhaarNumber;
+    delete data.aadhaarNumber;
+    if (typed === undefined || typed === null || String(typed).trim() === '') return;
+    let derived;
+    try {
+        derived = deriveAadhaar(typed, libraryId);
+    } catch (e) {
+        throw new ApiError(400, e.message);
+    }
+    const dup = await Student.findOne({ libraryId, aadhaarHash: derived.aadhaarHash, ...(excludeId && { _id: { $ne: excludeId } }) }).select('_id');
+    if (dup) throw new ApiError(409, 'This Aadhaar number is already registered for another student in this library');
+    data.aadhaarLast4 = derived.aadhaarLast4;
+    data.aadhaarHash = derived.aadhaarHash;
+};
+
+/** DPDP: consent record built from the admission request (who captured it, when, which notice version, from where). */
+const buildConsent = (req) => ({
+    given: true,
+    givenAt: new Date(),
+    version: dpdp.PRIVACY_POLICY_VERSION,
+    purpose: dpdp.CONSENT_PURPOSE,
+    capturedBy: req?.user?._id,
+    ip: req ? describeRequest(req).ip : undefined
+});
+
+/** Under-18 students need their guardian's name, mobile and recorded consent. */
+const assertMinorRules = (dob, { guardianName, guardianMobile, guardianConsentGiven }) => {
+    if (!dob || !dpdp.isMinor(dob)) return;
+    const issues = dpdp.minorGuardianIssues({ name: guardianName, mobile: guardianMobile, consentGiven: guardianConsentGiven });
+    if (issues.length) throw new ApiError(400, issues.map((i) => i.message).join('; '));
+};
+
 const validateBranch = async (branchId, libraryId) => {
     if (!branchId) return null;
     if (!isValidId(branchId)) throw new ApiError(400, 'Invalid branch');
@@ -218,8 +325,34 @@ const validateBranch = async (branchId, libraryId) => {
     return branch._id;
 };
 
+/**
+ * Undo a half-finished registration (seat/plan step failed): free the seat and delete the just-created student.
+ * Never deletes anything once a fee charge exists; returns false then so the caller can keep the student.
+ */
+const rollbackRegistration = async (student, libraryId, req) => {
+    try {
+        if (await Payment.exists({ studentId: student._id, libraryId })) return false;
+        await seatService.releaseSeatForStudent(student._id, libraryId, { actor: seatService.actorOf(req), reason: 'Registration rolled back' }).catch(() => {});
+        await MembershipHistory.deleteMany({ studentId: student._id, libraryId });
+        await Student.deleteOne({ _id: student._id, libraryId });
+        return true;
+    } catch (e) {
+        console.error('[student] registration rollback failed for', String(student._id), e.message);
+        return false;
+    }
+};
+
 const registerStudent = async (libraryId, body, req) => {
     const data = normaliseBody(body);
+    normaliseContactFields(data);
+
+    // DPDP: consent is mandatory at admission; a minor also needs the guardian's details and consent
+    if (!dpdp.toBool(body.consentGiven)) throw new ApiError(400, "The student's consent to data processing is required");
+    const guardianConsentGiven = dpdp.toBool(body.guardianConsentGiven);
+    assertMinorRules(data.dob, { guardianName: data.guardianName, guardianMobile: data.guardianMobile, guardianConsentGiven });
+    data.consent = buildConsent(req);
+    if (guardianConsentGiven) data.guardianConsent = { given: true, givenAt: new Date() };
+    await applyAadhaar(data, libraryId);
 
     // Subscription limit
     const library = await Library.findById(libraryId).select('planLimits');
@@ -270,13 +403,26 @@ const registerStudent = async (libraryId, body, req) => {
         throw e;
     }
 
+    // The limit check above is count-then-insert; re-check after the insert so concurrent admissions cannot overshoot
+    if (await Student.countDocuments({ libraryId, isDeleted: false }) > maxStudents) {
+        await Student.deleteOne({ _id: student._id, libraryId });
+        throw new ApiError(403, `Student limit reached (${maxStudents}). Upgrade your subscription plan to add more students.`);
+    }
+
+    // A requested seat / plan that cannot be applied undoes the admission instead of leaving a half-set-up student
     const warnings = [];
+    const failRegistration = async (what, e) => {
+        const undone = await rollbackRegistration(student, libraryId, req);
+        if (undone) throw new ApiError(e.statusCode || 400, `Student was not created. ${what} could not be assigned: ${e.message}`);
+        warnings.push(`${what} could not be assigned: ${e.message}`);
+    };
+
     let seatAssigned = null;
     if (seat) {
         try {
             seatAssigned = await seatService.assignSeat(seat._id, student._id, libraryId, seatService.actorOf(req));
         } catch (e) {
-            warnings.push(`Seat could not be assigned: ${e.message}`);
+            await failRegistration('Seat', e);
         }
     }
 
@@ -285,7 +431,7 @@ const registerStudent = async (libraryId, body, req) => {
         try {
             planResult = await assignPlan(student._id, libraryId, { planId: plan._id, joiningDate: data.joiningDate, dueDate: body.dueDate, couponCode: body.couponCode, referrerId: body.referrerId }, req, { skipAudit: true });
         } catch (e) {
-            warnings.push(`Plan could not be assigned: ${e.message}`);
+            await failRegistration('Plan', e);
         }
     }
 
@@ -362,10 +508,24 @@ const assignPlan = async (studentId, libraryId, { planId, joiningDate, dueDate, 
 /** Record a payment. Activates a pending membership; or settles a charge on an already active one. */
 const markAsPaid = async (studentId, libraryId, paymentData, req) => {
     const student = await loadStudent(studentId, libraryId);
-    if (!student.planId) throw new ApiError(400, 'No plan assigned to this student');
-    const plan = await loadPlan(student.planId, libraryId, { requireAssignable: false });
     const ledger = getLedger();
     const hasLedger = !!(ledger && typeof ledger.recordPayment === 'function');
+    const requestId = paymentData.requestId || undefined;
+    // Replay of a payment that already went through (double click / network retry): return the original receipt
+    if (hasLedger && requestId) {
+        const prev = await ledger.findCollectionByRequestId(libraryId, requestId);
+        if (prev) {
+            if (String(prev.studentId) !== String(student._id)) throw new ApiError(409, 'This request id was already used for a different student');
+            if (prev.status !== 'success') throw new ApiError(409, 'This payment request is already being processed, please wait a moment');
+            const outstandingAfter = (await ledger.getOutstanding(libraryId, student._id)).totalOutstanding;
+            return {
+                student, membership: undefined, paymentRecorded: true, replay: true,
+                payment: { transaction: prev, receiptNumber: prev.receiptNumber, allocations: prev.allocations, outstandingAfter, replay: true }
+            };
+        }
+    }
+    if (!student.planId) throw new ApiError(400, 'No plan assigned to this student');
+    const plan = await loadPlan(student.planId, libraryId, { requireAssignable: false });
 
     const isPending = student.planStatus === 'pending';
     let outstanding = null;
@@ -431,6 +591,7 @@ const markAsPaid = async (studentId, libraryId, paymentData, req) => {
                 reference: paymentData.transactionId,
                 note: paymentData.remarks || 'Payment received, plan activated',
                 receivedBy: req?.user?._id,
+                collectRequestId: requestId,
                 req
             });
             paymentRecorded = true;
@@ -449,8 +610,15 @@ const markAsPaid = async (studentId, libraryId, paymentData, req) => {
     return { ...result, payment, paymentRecorded };
 };
 
-/** Move an existing member to another plan (takes effect immediately; a new charge is raised). */
-const changePlan = async (studentId, libraryId, { planId, startDate, reason }, req) => {
+/**
+ * Move an existing member to another plan (takes effect immediately).
+ * Fees are prorated: the unused part of the current plan (whole days left, counted from the new start date) is
+ * credited. It first reduces what is still owed on the old charge (cancelled when nothing was used or paid, otherwise
+ * waived); the rest becomes a discount on the new charge. Money already paid is never moved or refunded
+ * automatically - if the credit exceeds the new price the surplus is reported as `creditLeftover` (refund it from Payments).
+ * Optional paidNow collects part/all of the new charge at once; without it the library's credit policy must allow the due.
+ */
+const changePlan = async (studentId, libraryId, { planId, startDate, reason, paidNow = 0, paymentMethod, reference, requestId }, req) => {
     const student = await loadStudent(studentId, libraryId);
     if (!student.planId || !['active', 'paused', 'pending', 'expired'].includes(student.planStatus)) {
         throw new ApiError(400, 'Student has no plan to change. Assign a plan first.');
@@ -466,21 +634,89 @@ const changePlan = async (studentId, libraryId, { planId, startDate, reason }, r
         }
     }
 
-    const result = await activateMembership(student, plan, {
-        libraryId, req, source: 'plan_change', startDate: startDate || new Date(),
-        closeReason: reason || 'plan_change', paymentStatus: 'pending', paymentMethod: 'unpaid'
+    const ledger = getLedger();
+    const window = membershipWindow(plan, startDate || new Date());
+
+    // 1. Credit for the unused part of the current plan
+    let oldCharge = null;
+    let proration = { oldChargeId: null, totalDays: 0, remainingDays: 0, credit: 0 };
+    let split = { cancelOld: false, waiveOld: 0, discountNew: 0 };
+    if (ledger && student.planStatus !== 'expired') {
+        oldCharge = await ledger.findMembershipCharge(libraryId, student._id, student.planId, new Date());
+        if (oldCharge) {
+            const net = ledger.membershipNetOf(oldCharge);
+            const pr = student.planStatus === 'pending'
+                ? { totalDays: 0, remainingDays: 0, credit: net } // never started: nothing was used
+                : computeProration({ netAmount: net, periodStart: oldCharge.periodStart, periodEnd: oldCharge.periodEnd, asOf: window.start });
+            proration = { oldChargeId: oldCharge._id, ...pr };
+            split = ledger.splitPlanChangeCredit({ credit: pr.credit, dueAmount: oldCharge.dueAmount, paidAmount: oldCharge.paidAmount, membershipNet: net });
+        }
+    }
+
+    // 2. New charge = price - credit left after the old charge was settled (never below zero)
+    const price = planAmount(plan);
+    const newDiscount = money2(Math.min(split.discountNew, price));
+    const chargeAmount = money2(price - newDiscount);
+    const creditLeftover = money2(split.discountNew - newDiscount);
+    const paid = money2(Math.max(0, Number(paidNow) || 0));
+    if (paid > chargeAmount + 0.009) throw new ApiError(400, `paidNow ₹${paid} is more than the new charge ₹${chargeAmount}`);
+    const relief = split.cancelOld ? (oldCharge?.dueAmount || 0) : split.waiveOld;
+    await assertCreditAllowed({ libraryId, studentId: student._id, chargeAmount, paidNow: paid, relief });
+
+    const creditReason = `Plan change: unused period of the previous plan${reason ? ` (${reason})` : ''}`;
+    let pendingCharge = false;
+    let charge = null;
+    if (chargeAmount > 0) {
+        ({ pendingCharge, charge } = await createPlanCharge({
+            libraryId, student, plan, amount: price, extraDiscount: newDiscount, extraDiscountReason: creditReason,
+            periodStart: window.start, periodEnd: window.end, description: `${plan.name} plan change fee`, req
+        }));
+    }
+
+    // 3. Take the money (if any), then switch the membership; a failure before the switch voids the new charge
+    let payment = null;
+    try {
+        if (charge && paid > 0) {
+            payment = await collectAtActivation({ libraryId, student, charge, paidNow: paid, paymentMethod, reference, requestId, req, note: 'Paid at plan change' });
+        }
+    } catch (e) {
+        if (charge) await ledger.rollbackCharge(libraryId, charge._id, `Plan change failed: ${e.message}`);
+        throw e;
+    }
+    let result;
+    try {
+        result = await activateMembership(student, plan, {
+            libraryId, req, source: 'plan_change', startDate: startDate || new Date(),
+            closeReason: reason || 'plan_change', paymentStatus: 'pending', paymentMethod: 'unpaid'
+        });
+    } catch (e) {
+        if (charge && !payment) await ledger.rollbackCharge(libraryId, charge._id, `Plan change failed: ${e.message}`);
+        throw e;
+    }
+
+    // 4. Settle the old charge
+    const warnings = [];
+    if (oldCharge && (split.cancelOld || split.waiveOld > 0)) {
+        try {
+            await ledger.applyPlanChangeToOldCharge({ libraryId, charge: oldCharge, split, reason: creditReason, req, userId: req?.user?._id });
+        } catch (e) {
+            console.error('[changePlan] could not settle the old charge:', e.message);
+            warnings.push(`The previous plan's fee could not be adjusted automatically (${e.message}). Cancel or waive it manually to avoid double billing.`);
+        }
+    }
+    if (ledger) await ledger.refreshStudentPaymentStatus(libraryId, student._id);
+
+    if (req) audit(req, 'student.change_plan', 'Student', student._id, {
+        from: student.planId, to: plan._id, reason, credit: proration.credit, waivedOld: split.waiveOld, cancelledOld: split.cancelOld, discountNew: newDiscount, creditLeftover
     });
-    const { pendingCharge, charge } = await createPlanCharge({
-        libraryId, student: result.student, plan, amount: planAmount(plan),
-        periodStart: result.membership.startDate, periodEnd: result.membership.endDate,
-        description: `${plan.name} plan change fee`, req
-    });
-    if (req) audit(req, 'student.change_plan', 'Student', student._id, { from: student.planId, to: plan._id, reason });
-    return { ...result, pendingCharge, charge };
+    return {
+        ...result, pendingCharge, charge, payment, warnings,
+        proration: { ...proration, cancelledOld: split.cancelOld, waivedFromOld: split.waiveOld, discountOnNew: newDiscount, creditLeftover, newCharge: chargeAmount }
+    };
 };
 
 /** Renew a membership, keeping the seat when it is still held or free. */
-const renewMembership = async (studentId, libraryId, { planId, startDate, keepSeat = true, dueDate, couponCode, referrerId }, req) => {
+const renewMembership = async (studentId, libraryId, { planId, startDate, keepSeat = true, dueDate, couponCode, referrerId, paidNow = 0, paymentMethod, reference, requestId }, req) => {
     const student = await loadStudent(studentId, libraryId);
     const targetPlanId = planId || student.planId;
     if (!targetPlanId) throw new ApiError(400, 'No plan to renew. Provide a planId.');
@@ -488,11 +724,18 @@ const renewMembership = async (studentId, libraryId, { planId, startDate, keepSe
         throw new ApiError(400, `Cannot renew a membership that is ${student.planStatus}`);
     }
     const plan = await loadPlan(targetPlanId, libraryId);
+    let couponDiscount = 0;
     if (couponCode) {
         // fail before any state changes if the coupon is unusable
-        await require('./coupon.service').validateCoupon({ code: couponCode, amount: planAmount(plan), planId: plan._id, studentId: student._id, libraryId, referrerId });
+        const v = await require('./coupon.service').validateCoupon({ code: couponCode, amount: planAmount(plan), planId: plan._id, studentId: student._id, libraryId, referrerId });
+        couponDiscount = Number(v?.discountAmount) || 0;
     }
     if (plan.allowRenewal === false) throw new ApiError(400, `Plan "${plan.name}" does not allow renewal`);
+    const chargeAmount = money2(Math.max(0, planAmount(plan) - couponDiscount));
+    const paid = money2(Math.max(0, Number(paidNow) || 0));
+    if (paid > chargeAmount + 0.009) throw new ApiError(400, `paidNow ₹${paid} is more than the renewal fee ₹${chargeAmount}`);
+    // Credit policy first: reject before the seat or membership is touched
+    await assertCreditAllowed({ libraryId, studentId: student._id, chargeAmount, paidNow: paid, dueDate });
 
     const now = new Date();
     let start = startDate ? new Date(startDate) : now;
@@ -516,19 +759,38 @@ const renewMembership = async (studentId, libraryId, { planId, startDate, keepSe
     }
     const fresh = await Student.findOne({ _id: student._id, libraryId });
 
-    const result = await activateMembership(fresh, plan, {
-        libraryId, req, source: 'renewal', startDate: start,
-        closeReason: 'renewed', paymentStatus: 'pending', paymentMethod: 'unpaid'
-    });
+    // Charge (and optional payment) first, then switch the membership; a failure before the switch voids the charge
+    const window = membershipWindow(plan, start);
     const { pendingCharge, charge } = await createPlanCharge({
-        libraryId, student: result.student, plan, amount: planAmount(plan),
+        libraryId, student: fresh, plan, amount: planAmount(plan),
         dueDate: dueDate ? new Date(dueDate) : undefined, couponCode, referrerId,
-        periodStart: result.membership.startDate, periodEnd: result.membership.endDate,
+        periodStart: window.start, periodEnd: window.end,
         paymentType: 'renewal', description: `${plan.name} renewal`, req
     });
+    const ledger = getLedger();
+    let payment = null;
+    try {
+        if (charge && paid > 0) {
+            payment = await collectAtActivation({ libraryId, student: fresh, charge, paidNow: paid, paymentMethod, reference, requestId, req, note: 'Paid at renewal' });
+        }
+    } catch (e) {
+        if (charge) await ledger.rollbackCharge(libraryId, charge._id, `Renewal failed: ${e.message}`);
+        throw e;
+    }
+    let result;
+    try {
+        result = await activateMembership(fresh, plan, {
+            libraryId, req, source: 'renewal', startDate: start,
+            closeReason: 'renewed', paymentStatus: 'pending', paymentMethod: 'unpaid'
+        });
+    } catch (e) {
+        if (charge && !payment) await ledger.rollbackCharge(libraryId, charge._id, `Renewal failed: ${e.message}`);
+        throw e;
+    }
+    if (ledger && charge) await ledger.refreshStudentPaymentStatus(libraryId, student._id);
     if (req) audit(req, 'student.renew', 'Student', student._id, { planId: plan._id, seatNote });
     if (result.student) notifyMembership(libraryId, result.student, result.student.expiryDate);
-    return { ...result, pendingCharge, charge, seatNote };
+    return { ...result, pendingCharge, charge, payment, seatNote };
 };
 
 // ---------------------------------------------------------------------------
@@ -684,6 +946,7 @@ const resetPassword = async (studentId, libraryId, req) => {
     student.mustChangePassword = true;
     student.tokensValidAfter = new Date(); // invalidate every session issued before the reset
     await student.save();
+    await require('./session.service').revokeAllForUser(student._id, 'password_reset');
     audit(req, 'student.reset_password', 'Student', student._id, {});
     return { tempPassword, mustChangePassword: true };
 };
@@ -794,10 +1057,27 @@ const getStudentById = async (id, libraryId) => {
     return obj;
 };
 
-const updateStudentById = async (id, libraryId, body) => {
+const updateStudentById = async (id, libraryId, body, req) => {
     const student = await loadStudent(id, libraryId);
+    if (student.erasedAt) throw new ApiError(400, 'This student record has been erased and cannot be edited');
     const data = pick(body, UPDATE_FIELDS);
     if (data.email === '') data.email = undefined;
+    normaliseContactFields(data);
+    await applyAadhaar(data, libraryId, { excludeId: student._id });
+
+    // DPDP: consent can be recorded later for older records; guardian consent can be given or withdrawn
+    if (dpdp.toBool(body.consentGiven) && !student.consent?.given) data.consent = buildConsent(req);
+    const guardianConsentTouched = body.guardianConsentGiven !== undefined;
+    if (guardianConsentTouched) data.guardianConsent = dpdp.toBool(body.guardianConsentGiven) ? { given: true, givenAt: new Date() } : { given: false };
+
+    // Minors: re-check the guardian block only when the request changes it (or the date of birth), so unrelated edits to an older record are never blocked
+    if (data.dob !== undefined || data.guardianName !== undefined || data.guardianMobile !== undefined || guardianConsentTouched) {
+        assertMinorRules(data.dob !== undefined ? data.dob : student.dob, {
+            guardianName: data.guardianName !== undefined ? data.guardianName : student.guardianName,
+            guardianMobile: data.guardianMobile !== undefined ? data.guardianMobile : student.guardianMobile,
+            guardianConsentGiven: data.guardianConsent ? data.guardianConsent.given : student.guardianConsent?.given
+        });
+    }
 
     if (data.mobile && data.mobile !== student.mobile) {
         const dup = await Student.findOne({ libraryId, mobile: data.mobile, _id: { $ne: student._id } });
@@ -834,6 +1114,117 @@ const deleteStudentById = async (id, libraryId, req) => {
     );
     if (req) audit(req, 'student.archive', 'Student', student._id, { registrationNumber: student.registrationNumber });
     return updated;
+};
+
+// ---------------------------------------------------------------------------
+// DPDP Act 2023: right to erasure, right to access, storage limitation
+// The three functions below read/write through the native collection on purpose: the Student model hides archived
+// students from every query, and erasure/retention must work on exactly those records.
+// ---------------------------------------------------------------------------
+const oid = (v) => new mongoose.Types.ObjectId(String(v));
+
+/** Delete an uploaded file (path as stored on the student) - only ever inside the uploads / temp upload folders. */
+const removeUploadedFile = async (p) => {
+    if (!p || typeof p !== 'string') return false;
+    const full = path.resolve(path.isAbsolute(p) ? p : path.join(process.cwd(), p));
+    const roots = [path.resolve(process.cwd(), 'uploads'), path.resolve(require('os').tmpdir())];
+    if (!roots.some((r) => full === r || full.startsWith(r + path.sep))) return false;
+    try {
+        await fs.promises.unlink(full);
+        return true;
+    } catch (e) {
+        return false;
+    }
+};
+
+/**
+ * Erase a student's personal data (owner-only, reason required). Name, contact details, date of birth, address,
+ * Aadhaar, guardian, photo, documents, notes and push tokens are wiped and the files deleted from disk.
+ * Payments, receipts and membership history are kept (tax / audit duty) and still point at the anonymised record.
+ */
+const eraseStudent = async (id, libraryId, { reason } = {}, req) => {
+    if (!isValidId(id)) throw new ApiError(404, 'Student not found');
+    const why = String(reason || '').trim();
+    if (why.length < 3) throw new ApiError(400, 'A reason for the erasure is required');
+
+    const _id = oid(id);
+    const lib = oid(libraryId);
+    const student = await Student.collection.findOne({ _id, libraryId: lib });
+    if (!student) throw new ApiError(404, 'Student not found');
+    if (student.erasedAt) throw new ApiError(409, 'This student has already been erased');
+
+    // free the seat and close live memberships (history stays)
+    try {
+        await seatService.releaseSeatForStudent(_id, lib, { actor: seatService.actorOf(req), reason: 'Student data erased' });
+    } catch (e) { /* the seat may already be free */ }
+    await MembershipHistory.updateMany({ studentId: _id, libraryId: lib, status: { $in: ['active', 'paused'] } }, { $set: { status: 'cancelled', closedReason: 'student_erased' } });
+
+    const files = [student.profileImage, ...(student.aadhaarCardImage || []), ...(student.documents || []).map((d) => d.url)].filter(Boolean);
+    const now = new Date();
+    const randomPassword = await bcrypt.hash(crypto.randomBytes(24).toString('hex'), 10);
+
+    await Student.collection.updateOne({ _id, libraryId: lib }, {
+        $set: {
+            name: 'Erased Student', mobile: `erased-${String(_id)}`, password: randomPassword, mustChangePassword: false,
+            status: 'inactive', statusReason: 'Personal data erased', statusChangedAt: now,
+            isDeleted: true, deletedAt: student.deletedAt || now, erasedAt: now, erasureReason: why,
+            seatId: null, seatNumber: null, tokensValidAfter: now, updatedAt: now,
+            fcmTokens: [], documents: [], aadhaarCardImage: [], notes: [], 'consent.given': false, 'guardianConsent.given': false,
+            ...(req?.user?._id && { updatedBy: req.user._id })
+        },
+        $unset: {
+            email: '', dob: '', gender: '', address: '', city: '', state: '', country: '', countryCode: '', stateCode: '', pincode: '',
+            aadhaarNumber: '', aadhaarLast4: '', aadhaarHash: '', guardianName: '', guardianMobile: '', guardianRelation: '', guardianOccupation: '',
+            emergencyContact: '', profileImage: '', rollNumber: '', otp: '', otpExpires: '', leaveUntil: '', 'consent.ip': ''
+        }
+    });
+
+    // Other records that carry the same personal data
+    const Review = require('../models/review.model');
+    const Enquiry = require('../models/enquiry.model');
+    await Review.updateMany({ studentId: _id, libraryId: lib }, { $set: { studentName: 'Erased Student', isAnonymous: true } }).catch(() => {});
+    await Enquiry.updateMany({ convertedStudentId: _id, libraryId: lib }, { $set: { name: 'Erased Student', mobile: 'erased' }, $unset: { email: '', address: '', message: '' } }).catch(() => {});
+
+    let filesRemoved = 0;
+    for (const p of files) if (await removeUploadedFile(p)) filesRemoved++;
+
+    if (req) audit(req, 'student.erase', 'Student', _id, { registrationNumber: student.registrationNumber, reason: why, filesRemoved });
+    return { id: String(_id), registrationNumber: student.registrationNumber, erasedAt: now, filesRemoved };
+};
+
+/** Archived (not yet erased) students whose retention period has passed. Review them, then erase one by one. */
+const listRetentionCandidates = async (libraryId, { days } = {}) => {
+    const keepDays = Math.min(Math.max(parseInt(days, 10) || dpdp.DEFAULT_RETENTION_DAYS, 1), 3650);
+    const cutoff = new Date(Date.now() - keepDays * DAY_MS);
+    const rows = await Student.collection.find(
+        { libraryId: oid(libraryId), isDeleted: true, erasedAt: { $exists: false }, deletedAt: { $lte: cutoff } },
+        { projection: { name: 1, registrationNumber: 1, mobile: 1, deletedAt: 1, branchId: 1 } }
+    ).sort({ deletedAt: 1 }).limit(500).toArray();
+    return { retentionDays: keepDays, cutoff, count: rows.length, students: rows };
+};
+
+/** DPDP right to access: everything we hold about the student, as one JSON document (Aadhaar masked). */
+const exportStudentData = async (id, libraryId, req) => {
+    if (!isValidId(id)) throw new ApiError(404, 'Student not found');
+    const _id = oid(id);
+    const lib = oid(libraryId);
+    const raw = await Student.collection.findOne({ _id, libraryId: lib });
+    if (!raw) throw new ApiError(404, 'Student not found');
+    const profile = new Student(raw).toObject();
+    delete profile.password;
+    const PaymentTransaction = require('../models/paymentTransaction.model');
+    const [memberships, charges, transactions] = await Promise.all([
+        MembershipHistory.find({ studentId: _id, libraryId: lib }).lean(),
+        Payment.find({ studentId: _id, libraryId: lib }).lean(),
+        PaymentTransaction.find({ studentId: _id, libraryId: lib }).lean()
+    ]);
+    if (req) audit(req, 'student.data_export', 'Student', _id, {});
+    return {
+        exportedAt: new Date(),
+        privacyPolicyVersion: dpdp.PRIVACY_POLICY_VERSION,
+        note: 'Aadhaar is held only as its last 4 digits; the full number is not stored.',
+        profile, memberships, charges, transactions
+    };
 };
 
 const getStudentPayments = async (studentId, libraryId) => {
@@ -927,7 +1318,9 @@ const GENDERS = { male: 'Male', m: 'Male', female: 'Female', f: 'Female', other:
  * row never blocks the rest. The mobile number is the unique key: a number already in this library is
  * reported as a duplicate and skipped. With dryRun nothing is written.
  */
-const importStudents = async (libraryId, rows, req, { dryRun = false, branchId = null } = {}) => {
+const importStudents = async (libraryId, rows, req, { dryRun = false, branchId = null, consentConfirmed = false } = {}) => {
+    // DPDP: nobody is imported without the importer confirming consent was collected (guardian consent for under-18s)
+    if (!dryRun && !consentConfirmed) throw new ApiError(400, "Confirm that each student's consent (and a guardian's consent for students under 18) has been collected before importing");
     const [plans, seats] = await Promise.all([
         Plan.find({ libraryId, isDeleted: { $ne: true } }).select('name').lean(),
         Seat.find({ libraryId, isDeleted: { $ne: true }, status: 'available' }).select('seatNumber').lean()
@@ -952,6 +1345,13 @@ const importStudents = async (libraryId, rows, req, { dryRun = false, branchId =
         if (joiningDate === undefined) row.errors.push('Joining date must look like DD/MM/YYYY');
         const guardianMobile = clean(raw.guardianMobile) ? normaliseMobile(raw.guardianMobile) : '';
         if (guardianMobile === null) row.errors.push('Guardian mobile must be a valid 10-digit number');
+        const aadhaarText = clean(raw.aadhaarNumber).replace(/[\s-]/g, '');
+        if (aadhaarText && !isValidAadhaar(aadhaarText)) row.errors.push('Aadhaar number is not valid (12 digits, starting 2-9, correct check digit)');
+        const pincodeText = clean(raw.pincode);
+        if (pincodeText && !INDIAN_PINCODE.test(pincodeText)) row.errors.push('Pincode must be 6 digits');
+        if (dob && dpdp.isMinor(dob) && (!clean(raw.guardianName) || !guardianMobile)) {
+            row.errors.push('Guardian name and a valid guardian mobile are required for a student under 18');
+        }
 
         const planText = clean(raw.plan);
         const plan = planText ? planByName.get(planText.toLowerCase()) : null;
@@ -966,7 +1366,8 @@ const importStudents = async (libraryId, rows, req, { dryRun = false, branchId =
             name, mobile,
             ...(email && { email }), ...(gender && { gender }), ...(dob && { dob }), ...(joiningDate && { joiningDate }),
             ...(clean(raw.rollNumber) && { rollNumber: clean(raw.rollNumber) }),
-            ...(clean(raw.aadhaarNumber) && { aadhaarNumber: clean(raw.aadhaarNumber).replace(/\s/g, '') }),
+            ...(aadhaarText && { aadhaarNumber: aadhaarText }),
+            consentGiven: true, guardianConsentGiven: true, // confirmed once for the whole file (checked above)
             ...(clean(raw.guardianName) && { guardianName: clean(raw.guardianName) }),
             ...(guardianMobile && { guardianMobile }),
             ...(clean(raw.address) && { address: clean(raw.address) }),
@@ -1052,6 +1453,9 @@ module.exports = {
     getStudentById,
     updateStudentById,
     deleteStudentById,
+    eraseStudent,
+    listRetentionCandidates,
+    exportStudentData,
     getStudentPayments,
     getStudentLedger,
     exportStudentsCsv,

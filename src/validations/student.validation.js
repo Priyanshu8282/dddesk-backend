@@ -1,8 +1,17 @@
 const { z } = require('zod');
+const { normalizeMobile } = require('../utils/mobile');
+const { isValidAadhaar } = require('../utils/aadhaar');
+const { isMinor, toBool, minorGuardianIssues } = require('../utils/dpdp');
 
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
-const mobile = z.string().trim().regex(/^\+?\d{10,15}$/, 'Valid mobile number required (10-15 digits)');
 const emptyToUndef = (v) => (v === '' || v === null ? undefined : v);
+// Indian mobile: 10 digits starting 6-9. +91 / 91 / 0 prefixes, spaces and dashes are accepted and stripped.
+const mobile = z.string().trim().transform((v) => normalizeMobile(v)).refine((v) => /^[6-9]\d{9}$/.test(v), 'Enter a valid 10-digit Indian mobile number (starts with 6-9)');
+const optionalMobile = z.preprocess(emptyToUndef, mobile.optional());
+const pincode = z.preprocess(emptyToUndef, z.string().trim().regex(/^[1-9]\d{5}$/, 'Pincode must be 6 digits').optional());
+const aadhaar = z.preprocess(emptyToUndef, z.string().trim().refine(isValidAadhaar, 'Aadhaar number is not valid (12 digits, starting 2-9, correct check digit)').optional());
+// multipart bodies deliver booleans as 'true' / 'false' strings
+const flag = z.preprocess((v) => (v === undefined || v === '' ? undefined : toBool(v)), z.boolean().optional());
 
 // Multipart bodies deliver nested objects as JSON strings
 const jsonObject = (schema) => z.preprocess((v) => {
@@ -25,10 +34,13 @@ const studentFields = {
     rollNumber: z.string().optional(),
     dob: z.preprocess(emptyToUndef, z.coerce.date().optional()),
     gender: z.preprocess(emptyToUndef, z.enum(['Male', 'Female', 'Other']).optional()),
-    aadhaarNumber: z.string().optional(),
-    guardianName: z.string().optional(),
-    guardianMobile: z.string().optional(),
+    aadhaarNumber: aadhaar,
+    guardianName: z.string().trim().max(100).optional(),
+    guardianMobile: optionalMobile,
+    guardianRelation: z.string().trim().max(50).optional(),
     guardianOccupation: z.string().optional(),
+    consentGiven: flag,
+    guardianConsentGiven: flag,
     emergencyContact: emergencyContact.optional(),
     address: z.string().optional(),
     city: z.string().optional(),
@@ -36,7 +48,7 @@ const studentFields = {
     country: z.string().optional(),
     countryCode: z.string().optional(),
     stateCode: z.string().optional(),
-    pincode: z.string().optional(),
+    pincode,
     branchId: z.preprocess(emptyToUndef, objectId.optional()),
     joiningDate: z.preprocess(emptyToUndef, z.coerce.date().optional())
 };
@@ -61,6 +73,13 @@ const createStudent = z.object({
         if (b.confirmPassword !== undefined && b.confirmPassword !== b.password) {
             ctx.addIssue({ code: 'custom', path: ['confirmPassword'], message: 'Passwords do not match' });
         }
+        if (!b.consentGiven) {
+            ctx.addIssue({ code: 'custom', path: ['consentGiven'], message: "The student's consent to data processing is required" });
+        }
+        if (b.dob && isMinor(b.dob)) {
+            minorGuardianIssues({ name: b.guardianName, mobile: b.guardianMobile, consentGiven: b.guardianConsentGiven })
+                .forEach((i) => ctx.addIssue({ code: 'custom', path: [i.path], message: i.message }));
+        }
     })
 });
 
@@ -69,6 +88,8 @@ const importCell = z.union([z.string().max(300), z.number(), z.null()]).optional
 const importStudents = z.object({
     body: z.object({
         dryRun: z.boolean().optional(),
+        // The person importing confirms consent (and guardian consent for under-18s) was collected for every row
+        consentConfirmed: z.boolean().optional(),
         branchId: z.preprocess(emptyToUndef, objectId.optional()),
         rows: z.array(z.object({
             rowNumber: z.number().int().positive().optional(),
@@ -85,6 +106,13 @@ const updateStudent = z.object({
         name: studentFields.name.optional(),
         mobile: mobile.optional(),
         documentType: z.string().optional()
+    }).superRefine((b, ctx) => {
+        // Only checked when the request touches the guardian block together with the date of birth, so editing
+        // an address on a legacy record is never blocked; the service re-checks against the stored record.
+        if (b.dob && isMinor(b.dob) && (b.guardianName !== undefined || b.guardianMobile !== undefined || b.guardianConsentGiven !== undefined)) {
+            minorGuardianIssues({ name: b.guardianName, mobile: b.guardianMobile, consentGiven: b.guardianConsentGiven })
+                .forEach((i) => ctx.addIssue({ code: 'custom', path: [i.path], message: i.message }));
+        }
     })
 });
 
@@ -105,7 +133,9 @@ const markAsPaid = z.object({
         amount: z.coerce.number().min(0).optional(),
         transactionId: z.string().optional(),
         startDate: z.preprocess(emptyToUndef, z.coerce.date().optional()),
-        remarks: z.string().max(500).optional()
+        remarks: z.string().max(500).optional(),
+        // idempotency key: a retry with the same key returns the original receipt instead of charging twice
+        requestId: z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9_.:-]+$/).optional()
     })
 });
 
@@ -113,7 +143,12 @@ const changePlan = z.object({
     body: z.object({
         planId: objectId,
         startDate: z.preprocess(emptyToUndef, z.coerce.date().optional()),
-        reason: z.string().max(300).optional()
+        reason: z.string().max(300).optional(),
+        // collected at once against the new charge (required when the library does not allow credit)
+        paidNow: z.preprocess(emptyToUndef, z.coerce.number().min(0).max(10000000).optional()),
+        paymentMethod: z.enum(['cash', 'online', 'upi', 'card', 'bank_transfer', 'cheque', 'other']).optional(),
+        reference: z.string().max(100).optional(),
+        requestId: z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9_.:-]+$/).optional()
     })
 });
 
@@ -124,7 +159,11 @@ const renew = z.object({
         keepSeat: z.boolean().optional().default(true),
         dueDate: z.preprocess(emptyToUndef, z.coerce.date().optional()),
         couponCode: z.preprocess(emptyToUndef, z.string().trim().min(1).max(40).optional()),
-        referrerId: z.preprocess(emptyToUndef, objectId.optional())
+        referrerId: z.preprocess(emptyToUndef, objectId.optional()),
+        paidNow: z.preprocess(emptyToUndef, z.coerce.number().min(0).max(10000000).optional()),
+        paymentMethod: z.enum(['cash', 'online', 'upi', 'card', 'bank_transfer', 'cheque', 'other']).optional(),
+        reference: z.string().max(100).optional(),
+        requestId: z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9_.:-]+$/).optional()
     })
 });
 
@@ -181,6 +220,18 @@ const setStatus = z.object({
     })
 });
 
+// Erasure is irreversible: the caller must give a reason and type the confirmation word
+const eraseStudent = z.object({
+    body: z.object({
+        reason: z.string().trim().min(3, 'A reason for the erasure is required').max(300),
+        confirm: z.literal('ERASE', { error: 'Type ERASE to confirm' })
+    })
+});
+
+const retentionQuery = z.object({
+    query: z.object({ days: z.coerce.number().int().min(1).max(3650).optional() }).passthrough()
+});
+
 const addNote = z.object({
     body: z.object({
         text: z.string().trim().min(1, 'Note text is required').max(2000)
@@ -224,6 +275,8 @@ module.exports = {
     extendMembership,
     setStatus,
     addNote,
+    eraseStudent,
+    retentionQuery,
     listStudents,
     changePassword
 };

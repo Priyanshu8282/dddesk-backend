@@ -26,6 +26,11 @@ const platformPaymentSchema = new mongoose.Schema({
     inGrace: { type: Boolean, default: false },
     graceUntil: { type: Date },
     paidAt: { type: Date },
+    // Money is captured but the library was not (fully) updated yet: set when the payment is claimed, cleared once
+    // the library extension has been applied. A retry / the cron picks up records that still carry the marker.
+    applyPending: { type: Boolean, default: undefined },
+    // Gateway captured money that does not match the order: needs a human look
+    needsReview: { type: Boolean, default: undefined },
     initiatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
 }, { timestamps: true });
 

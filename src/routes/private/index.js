@@ -37,6 +37,10 @@ const router = express.Router();
 // Apply Authentication middleware to all private routes
 router.use(Authentication);
 
+// Cheap "am I allowed in right now?" probe. Authentication applies the maintenance rules, so this answers 503 while this
+// user is blocked and 200 once the window is over: the maintenance screen polls it to recover on its own.
+router.get('/maintenance-check', (req, res) => res.json({ success: true, data: { ok: true } }));
+
 // Auth / Profile
 router.use('/', authRoutes);
 
@@ -45,6 +49,7 @@ router.use('/dashboard', dashboardRoutes);
 router.use('/superadmin/dashboard', dashboardRoutes.superRouter);
 
 // Core Modules
+router.use('/files', require('./files.routes'));
 router.use('/admins', adminRoutes);
 router.use('/staff', adminRoutes); // alias for frontend /staff/*
 router.use('/roles', roleRoutes);

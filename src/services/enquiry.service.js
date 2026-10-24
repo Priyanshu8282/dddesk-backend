@@ -13,17 +13,12 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 const isId = (v) => mongoose.Types.ObjectId.isValid(v) && String(new mongoose.Types.ObjectId(v)) === String(v);
 const assertId = (id, label = 'ID') => { if (!isId(id)) throw new ApiError(400, `Invalid ${label}`); };
 
-// Resolve the target library of a public submission (slug or libraryId). Must be active.
-const resolvePublicLibrary = async ({ slug, libraryId }) => {
-    if (!slug && !libraryId) throw new ApiError(400, 'Library slug or ID is required to submit an enquiry');
-    const filter = { status: 'active', isDeleted: { $ne: true } };
-    if (libraryId) {
-        assertId(libraryId, 'library ID');
-        filter._id = libraryId;
-    } else {
-        filter.slug = String(slug).toLowerCase();
-    }
-    const lib = await Library.findOne(filter).select('_id name slug');
+// Resolve the target library of a public submission (libraryId). Must be active.
+const resolvePublicLibrary = async ({ libraryId }) => {
+    if (!libraryId) throw new ApiError(400, 'Library ID is required to submit an enquiry');
+    assertId(libraryId, 'library ID');
+    const filter = { _id: libraryId, status: 'active', isDeleted: { $ne: true } };
+    const lib = await Library.findOne(filter).select('_id name');
     if (!lib) throw new ApiError(404, 'Library not found');
     return lib;
 };
@@ -202,7 +197,12 @@ const convertEnquiry = async (id, libraryId, body, req) => {
                 branchId: enquiry.branchId || undefined,
                 joiningDate: body.joiningDate ? new Date(body.joiningDate) : undefined,
                 planId: plan ? String(plan._id) : undefined,
-                seatId: body.seatId
+                seatId: body.seatId,
+                dob: body.dob ? new Date(body.dob) : undefined,
+                guardianName: body.guardianName || undefined,
+                guardianMobile: body.guardianMobile || undefined,
+                consentGiven: body.consentGiven,
+                guardianConsentGiven: body.guardianConsentGiven
             }, req);
             student = reg.student;
             created = true;

@@ -19,6 +19,8 @@ const GlobalSetting = require('../models/setting.model');
 const providerConfig = require('./notificationProviderConfig.service');
 const { RETENTION_DAYS } = require('../models/securityEvent.model');
 const pkg = require('../../package.json');
+const dns = require('dns').promises;
+const net = require('net');
 
 const err = (msg, status = 400) => Object.assign(new Error(msg), { status });
 const ENV_PATH = process.env.ENV_FILE_PATH || path.join(__dirname, '..', '..', '.env'); // override is for tests
@@ -63,10 +65,10 @@ exports.verifyPassword = async (req, password) => {
 const EDITABLE = {
   MONGODB_URL: { label: 'MongoDB connection URL', secret: true, check: (v) => /^mongodb(\+srv)?:\/\/.+/i.test(v) || 'Must start with mongodb:// or mongodb+srv://' },
   ALLOWED_ORIGINS: { label: 'Allowed website addresses (CORS), comma separated', check: (v) => v.split(',').every((o) => { try { return /^https?:$/.test(new URL(o.trim()).protocol); } catch (_) { return false; } }) || 'Each item must be a full address like https://app.example.com' },
-  BASE_DOMAIN: { label: 'Base domain for library websites', check: (v) => /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/i.test(v) || 'Enter a domain like dddesk.ai (no https://)' },
   OTP_IN_RESPONSE: { label: 'Show OTP in the API response (development only)', check: (v) => ['true', 'false'].includes(v) || 'Must be true or false' },
   SECURITY_LOG_RETENTION_DAYS: { label: 'Days to keep security events', check: (v) => (/^\d+$/.test(v) && Number(v) >= 7 && Number(v) <= 3650) || 'Enter a number of days between 7 and 3650' },
 };
+if (process.env.NODE_ENV === 'production') delete EDITABLE.OTP_IN_RESPONSE; // never switch the OTP leak on from a web form
 exports.EDITABLE_KEYS = Object.keys(EDITABLE);
 
 const envWritable = () => {
@@ -129,13 +131,71 @@ exports.databaseStatus = async () => {
   };
 };
 
+// ---------------------------------------------------------------------------
+// SSRF guard for "test a connection string": the server must not be usable to probe its own private network
+// (loopback, RFC1918, link-local / cloud metadata 169.254.169.254, CGNAT, unique-local IPv6).
+// Enforced in production; ALLOW_PRIVATE_DB_HOSTS=true opts out (e.g. a database inside the same private network).
+// ---------------------------------------------------------------------------
+const isPrivateIp = (ip) => {
+  let a = String(ip).toLowerCase().replace(/^\[|\]$/g, '');
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+  if (mapped) a = mapped[1];
+  if (net.isIPv4(a)) {
+    const [p, q] = a.split('.').map(Number);
+    return p === 0 || p === 10 || p === 127 || (p === 100 && q >= 64 && q <= 127) || (p === 169 && q === 254)
+      || (p === 172 && q >= 16 && q <= 31) || (p === 192 && q === 168) || (p === 192 && q === 0) || p >= 224;
+  }
+  if (net.isIPv6(a)) return a === '::' || a === '::1' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a) || a.startsWith('ff');
+  return true; // unparsable: treat as unsafe
+};
+
+/** Host names inside a mongodb:// or mongodb+srv:// URL (credentials, ports and options removed). */
+const mongoHosts = (url) => {
+  const m = /^(mongodb(?:\+srv)?):\/\/([^/?]*)/i.exec(String(url).trim());
+  if (!m) return { srv: false, hosts: [] };
+  const authority = m[2];
+  const at = authority.lastIndexOf('@');
+  const hostsRaw = at >= 0 ? authority.slice(at + 1) : authority;
+  const hosts = hostsRaw.split(',').map((h) => h.trim()).filter(Boolean).map((h) => {
+    if (h.startsWith('[')) return h.slice(1, h.indexOf(']'));
+    return h.replace(/:\d+$/, '');
+  });
+  return { srv: /srv/i.test(m[1]), hosts };
+};
+
+const assertSafeDatabaseTarget = async (url, { enforce = process.env.NODE_ENV === 'production' && process.env.ALLOW_PRIVATE_DB_HOSTS !== 'true', resolve = dns } = {}) => {
+  if (!enforce) return;
+  const { srv, hosts } = mongoHosts(url);
+  if (!hosts.length || hosts.length > 10) throw err('Enter a valid MongoDB connection URL');
+  const names = [];
+  for (const h of hosts) {
+    if (net.isIP(h)) { names.push(h); continue; }
+    if (srv) {
+      try { (await resolve.resolveSrv('_mongodb._tcp.' + h)).forEach((r) => names.push(r.name)); } catch (_) { /* unresolvable: the connection fails anyway */ }
+    } else names.push(h);
+  }
+  for (const n of names) {
+    if (net.isIP(n)) { if (isPrivateIp(n)) throw err('That address points to a private or internal network and cannot be tested from here', 400); continue; }
+    if (/^localhost$|[.]local$|[.]internal$/i.test(n)) throw err('That address points to a private or internal network and cannot be tested from here', 400);
+    let addrs = [];
+    try { addrs = await resolve.lookup(n, { all: true }); } catch (_) { continue; }
+    if (addrs.some((x) => isPrivateIp(x.address))) throw err('That address points to a private or internal network and cannot be tested from here', 400);
+  }
+};
+exports._isPrivateIp = isPrivateIp;
+exports._mongoHosts = mongoHosts;
+exports.assertSafeDatabaseTarget = assertSafeDatabaseTarget;
+
 /** Try a connection string for real, then drop it. Never touches the live connection or any data. */
 exports.testDatabase = async (url) => {
   if (!EDITABLE.MONGODB_URL.check(url) || EDITABLE.MONGODB_URL.check(url) !== true) throw err('Enter a valid MongoDB connection URL (mongodb:// or mongodb+srv://)');
+  await assertSafeDatabaseTarget(url);
   const started = Date.now();
   let c;
   try {
-    c = await mongoose.createConnection(url, { serverSelectionTimeoutMS: 8000, family: 4, maxPoolSize: 1 }).asPromise();
+    const opts = { serverSelectionTimeoutMS: 8000, maxPoolSize: 1 };
+    if (process.env.DB_IP_FAMILY) opts.family = Number(process.env.DB_IP_FAMILY);
+    c = await mongoose.createConnection(url, opts).asPromise();
     await c.db.admin().ping();
     const latencyMs = Date.now() - started;
     const names = (await c.db.listCollections({}, { nameOnly: true }).toArray()).map((x) => x.name);

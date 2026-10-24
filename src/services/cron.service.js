@@ -14,9 +14,21 @@ const { startOfDayIST, DAY_MS } = require('../utils/time');
 const TZ = { timezone: 'Asia/Kolkata' };
 const MIN = 60 * 1000;
 
+/** True while a maintenance window with "pause scheduled jobs" is active: the job is skipped (and logged), not failed. */
+const pausedByMaintenance = async (name) => {
+    try {
+        if (await require('./maintenance.service').cronsPaused()) {
+            console.log(`[cron] skipped ${name}: maintenance window active (jobs paused)`);
+            return true;
+        }
+    } catch (_) { /* if the state cannot be read, run the job */ }
+    return false;
+};
+
 /** Run `fn` only if this instance wins the lock for the given slot (guards duplicate runs). */
 const withLock = async (key, ttlMs, fn) => {
     if (mongoose.connection.readyState !== 1) return;
+    if (await pausedByMaintenance(key.split(':')[0])) return;
     let got = false;
     try {
         got = await CronLock.acquire(key, ttlMs);
@@ -78,6 +90,35 @@ const expireMemberships = async (now = new Date()) => {
         } catch (e) { console.error('[cron] expiry notify failed:', e.message); }
     }
     return total;
+};
+
+/**
+ * Return students on leave to active once their leaveUntil day has passed (the leaveUntil day itself still counts as
+ * leave). Without this a student marked 'leave' stayed blocked from check-in forever.
+ */
+const autoReturnFromLeave = async (now = new Date()) => {
+    const today = startOfDayIST(now);
+    const due = await Student.find({ status: 'leave', leaveUntil: { $lt: today } }).select('_id libraryId').lean();
+    let returned = 0;
+    const perLibrary = new Map();
+    for (const s of due) {
+        const updated = await Student.findOneAndUpdate(
+            { _id: s._id, status: 'leave', leaveUntil: { $lt: today } },
+            { $set: { status: 'active', statusReason: 'Leave ended', statusChangedAt: now }, $unset: { leaveUntil: '' } },
+            { new: true }
+        );
+        if (!updated) continue;
+        returned++;
+        const key = String(s.libraryId);
+        if (!perLibrary.has(key)) perLibrary.set(key, []);
+        perLibrary.get(key).push(s._id);
+    }
+    for (const [, ids] of perLibrary) {
+        try {
+            await notifyMultipleStudents(ids, 'Welcome back', 'Your leave has ended and your account is active again.', {}, 'plan_alert');
+        } catch (e) { console.error('[cron] leave-return notification failed:', e.message); }
+    }
+    return returned;
 };
 
 /** Resume memberships that stayed paused beyond the library's max pause window. */
@@ -239,7 +280,8 @@ const initCronJobs = () => {
         return withLock(`membership-expiry:${hour}`, 50 * MIN, async () => {
             const expired = await expireMemberships();
             const resumed = await autoResumePaused();
-            if (expired || resumed) console.log(`[cron] expired ${expired} membership(s), auto-resumed ${resumed}`);
+            const returned = await autoReturnFromLeave();
+            if (expired || resumed || returned) console.log(`[cron] expired ${expired} membership(s), auto-resumed ${resumed}, returned ${returned} student(s) from leave`);
         });
     }, TZ);
 
@@ -311,4 +353,4 @@ const initCronJobs = () => {
     }
 };
 
-module.exports = { initCronJobs, expireMemberships, autoResumePaused, sendDailyAlerts, releaseNoShowSeats, migrateLegacyIndexes };
+module.exports = { initCronJobs, expireMemberships, autoResumePaused, autoReturnFromLeave, sendDailyAlerts, releaseNoShowSeats, migrateLegacyIndexes };

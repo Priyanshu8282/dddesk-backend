@@ -10,8 +10,9 @@ const config       = require('../config/config');
 const pick         = require('../utils/pick');
 const escapeRegex  = require('../utils/escapeRegex');
 const { normalizeMobile } = require('../utils/mobile');
-const { isValidSlug, isReserved, isTaken } = require('../utils/slug');
+const { invalidateAuthCacheForLibrary } = require('../middlewares/auth.middleware');
 const { getSubscriptionState } = require('./subscriptionState.service');
+const { SUSPEND_REASON } = require('../utils/subscriptionLifecycle');
 const { provisionLibrary } = require('./libraryProvision.service');
 const adminService = require('./admin.service');
 
@@ -52,12 +53,15 @@ exports.listLibraries = async (query) => {
     else filter.subscriptionPlan = exactCI(plan);
   }
   const now = new Date();
-  if (subscription === 'expired') and.push({ subscriptionExpiry: { $lt: now } });
-  else if (subscription === 'expiring') and.push({ subscriptionExpiry: { $gte: now, $lte: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000) } });
+  // A trial library has no subscriptionExpiry, only trialEndsAt: both count as "the subscription end"
+  const endsBefore = (d) => ({ $or: [{ subscriptionExpiry: { $lt: d } }, { subscriptionExpiry: null, trialEndsAt: { $lt: d } }] });
+  const endsBetween = (a, b) => ({ $or: [{ subscriptionExpiry: { $gte: a, $lte: b } }, { subscriptionExpiry: null, trialEndsAt: { $gte: a, $lte: b } }] });
+  if (subscription === 'expired') and.push(endsBefore(now));
+  else if (subscription === 'expiring') and.push(endsBetween(now, new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)));
   else if (subscription === 'no_plan') and.push({ $or: [{ subscriptionPlanId: null }, { subscriptionPlanId: { $exists: false } }] });
   if (search) {
     const re = new RegExp(escapeRegex(search), 'i');
-    and.push({ $or: [{ name: re }, { ownerName: re }, { mobile: re }, { email: re }, { city: re }, { state: re }, { libraryCode: re }, { slug: re }] });
+    and.push({ $or: [{ name: re }, { ownerName: re }, { mobile: re }, { email: re }, { city: re }, { state: re }, { libraryCode: re }] });
   }
   if (and.length) filter.$and = and;
   const sort = SORTS[query.sort] || SORTS.newest;
@@ -65,7 +69,7 @@ exports.listLibraries = async (query) => {
   // 5 round trips instead of 10 (each one is slow on a remote database): the status counts and the
   // filter dropdown values each come from a single aggregate.
   const [rows, total, statusAgg, facets] = await Promise.all([
-    Library.find(filter).sort(sort).skip((page - 1) * limit).limit(limit),
+    Library.find(filter).sort(sort).skip((page - 1) * limit).limit(limit).populate('subscriptionPlanId', 'graceDays name'),
     Library.countDocuments(filter),
     Library.aggregate([{ $match: { isDeleted: false } }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
     Library.aggregate([
@@ -97,11 +101,13 @@ exports.listLibraries = async (query) => {
       ])
     : [];
   const studentCounts = new Map(counts.map((c) => [String(c._id), c.n]));
-  const libraries = rows.map((l) => ({
-    ...l.toObject(),
-    studentCount: studentCounts.get(String(l._id)) || 0,
-    subscription: getSubscriptionState(l),
-  }));
+  const libraries = rows.map((l) => {
+    const o = l.toObject();
+    // populate() is only used to read graceDays; keep the plain id on the payload
+    const plan = o.subscriptionPlanId && o.subscriptionPlanId._id ? o.subscriptionPlanId : null;
+    if (plan) o.subscriptionPlanId = plan._id;
+    return { ...o, studentCount: studentCounts.get(String(l._id)) || 0, subscription: getSubscriptionState(l, plan) };
+  });
 
   const clean = (arr) => arr.filter((x) => typeof x === 'string' && x.trim()).sort((a, b) => a.localeCompare(b));
   return {
@@ -115,6 +121,7 @@ exports.listLibraries = async (query) => {
 exports.getLibraryById = async (id) => {
   const library = await Library.findOne({ _id: id, isDeleted: false });
   if (!library) throw err('Library not found', 404);
+  const plan = library.subscriptionPlanId ? await PlatformPlan.findById(library.subscriptionPlanId).select('graceDays').lean() : null;
   const [studentCount, owner, seatCount, staffCount, branchCount] = await Promise.all([
     Student.countDocuments({ libraryId: id, isDeleted: false }),
     Admin.findOne({ libraryId: id, userType: 'admin' }).select('name email mobile status lastLogin profileImage'),
@@ -123,23 +130,37 @@ exports.getLibraryById = async (id) => {
     Branch.countDocuments({ libraryId: id, isDeleted: { $ne: true } }),
   ]);
   return {
-    ...library.toObject(), studentCount, owner, subscription: getSubscriptionState(library),
+    ...library.toObject(), studentCount, owner, subscription: getSubscriptionState(library, plan),
     usage: { students: studentCount, seats: seatCount, staff: staffCount, branches: branchCount },
   };
 };
 
-// pending/rejected -> active. Provisions slug/subdomain, trial and an in-app owner notification.
+// pending/rejected -> active. Provisions the trial and an in-app owner notification.
+// If provisioning throws, the claim is rolled back so the library stays pending/rejected and can be approved again
+// (instead of being left active without a trial window).
 exports.approveLibrary = async (id, userId, ip) => {
+  const prior = await Library.findOne({ _id: id, isDeleted: false, status: { $in: ['pending', 'rejected'] } });
+  if (!prior) throw err('Library not found or not awaiting approval', 404);
+  const priorState = { status: prior.status, statusReason: prior.statusReason ?? null };
+  // claim: compare-and-set so two concurrent approvals cannot both provision
   const lib = await Library.findOneAndUpdate(
-    { _id: id, isDeleted: false, status: { $in: ['pending', 'rejected'] } },
+    { _id: id, isDeleted: false, status: priorState.status },
     { status: 'active', statusReason: null, approvedAt: new Date(), approvedBy: userId },
     { new: true }
   );
   if (!lib) throw err('Library not found or not awaiting approval', 404);
-  const { library, onboarding } = await provisionLibrary(lib, { approvedBy: userId });
+  let result;
+  try {
+    result = await provisionLibrary(lib, { approvedBy: userId });
+  } catch (e) {
+    await Library.updateOne({ _id: id, status: 'active' }, { $set: { ...priorState, approvedAt: prior.approvedAt ?? null, approvedBy: prior.approvedBy ?? null } });
+    invalidateAuthCacheForLibrary(id);
+    throw e;
+  }
+  invalidateAuthCacheForLibrary(id);
   // (owner notification is sent from provisionLibrary)
-  await logAudit('library_approved', lib._id, userId, { libraryName: lib.name, slug: library.slug }, ip);
-  return { library, onboarding };
+  await logAudit('library_approved', lib._id, userId, { libraryName: lib.name }, ip);
+  return result;
 };
 
 exports.rejectLibrary = async (id, reason, userId, ip) => {
@@ -148,6 +169,7 @@ exports.rejectLibrary = async (id, reason, userId, ip) => {
     { _id: id, isDeleted: false, status: 'pending' }, { status: 'rejected', statusReason: reason.trim() }, { new: true }
   );
   if (!lib) throw err('Library not found or not pending', 404);
+  invalidateAuthCacheForLibrary(lib._id);
   await logAudit('library_rejected', lib._id, userId, { reason, libraryName: lib.name }, ip);
   require('./notification.service').notifyLibraryStatus(lib, 'rejected', reason.trim()).catch(() => {});
   return lib;
@@ -159,17 +181,35 @@ exports.suspendLibrary = async (id, reason, userId, ip) => {
     { _id: id, isDeleted: false, status: 'active' }, { status: 'suspended', statusReason: reason.trim() }, { new: true }
   );
   if (!lib) throw err('Library not found or not active', 404);
+  invalidateAuthCacheForLibrary(lib._id);
   await logAudit('library_suspended', lib._id, userId, { reason, libraryName: lib.name }, ip);
   require('./notification.service').notifyLibraryStatus(lib, 'suspended', reason.trim()).catch(() => {});
   return lib;
 };
 
+// Reinstating must also lift the lapse that may have caused the suspension: if the subscription end (and grace) is
+// already in the past the 02:00 cron would suspend the library again, so a short fresh period is granted.
+const REINSTATE_EXTENSION_DAYS = 7;
 exports.reinstateLibrary = async (id, userId, ip) => {
-  const lib = await Library.findOneAndUpdate(
-    { _id: id, isDeleted: false, status: 'suspended' }, { status: 'active', statusReason: null }, { new: true }
-  );
+  const current = await Library.findOne({ _id: id, isDeleted: false, status: 'suspended' });
+  if (!current) throw err('Library not found or not suspended', 404);
+  const plan = current.subscriptionPlanId ? await PlatformPlan.findById(current.subscriptionPlanId).select('graceDays').lean() : null;
+  const st = getSubscriptionState(current, plan);
+  const set = { status: 'active', statusReason: null };
+  const update = { $set: set };
+  let extendedTo = null;
+  if (st.isExpired) {
+    extendedTo = new Date(Date.now() + REINSTATE_EXTENSION_DAYS * 24 * 60 * 60 * 1000);
+    if (current.subscriptionExpiry) set.subscriptionExpiry = extendedTo; else set.trialEndsAt = extendedTo;
+    set.subscriptionStatus = current.subscriptionExpiry && !current.subscriptionIsTrial ? 'active' : 'trial';
+    update.$unset = { lastReminderStage: '' };
+  } else if (current.subscriptionStatus === 'expired') {
+    set.subscriptionStatus = st.state === 'grace' ? 'grace' : (current.subscriptionIsTrial || !current.subscriptionExpiry ? 'trial' : 'active');
+  }
+  const lib = await Library.findOneAndUpdate({ _id: id, isDeleted: false, status: 'suspended' }, update, { new: true });
   if (!lib) throw err('Library not found or not suspended', 404);
-  await logAudit('library_reinstated', lib._id, userId, { libraryName: lib.name }, ip);
+  invalidateAuthCacheForLibrary(lib._id);
+  await logAudit('library_reinstated', lib._id, userId, { libraryName: lib.name, extendedTo }, ip);
   require('./notification.service').notifyLibraryStatus(lib, 'reinstated').catch(() => {});
   return lib;
 };
@@ -188,19 +228,36 @@ exports.assignPlan = async (id, planId, subscriptionExpiry, userId, ip, { isTria
   if (!plan) throw err('Platform plan not found or inactive', 404);
   const expiry = subscriptionExpiry ? new Date(subscriptionExpiry) : null;
   if (expiry && isNaN(expiry)) throw err('Invalid subscription expiry date', 400);
+  const stillRunning = !expiry || expiry.getTime() > Date.now();
   const lib = await Library.findOneAndUpdate(
     { _id: id, isDeleted: false },
     {
-      subscriptionPlanId: plan._id, subscriptionPlan: plan.name,
-      subscriptionExpiry: expiry,
-      subscriptionIsTrial: !!isTrial,
-      trialEndsAt: null,           // an explicit assignment supersedes the onboarding trial window
-      ...planLimitsOf(plan),
+      $set: {
+        subscriptionPlanId: plan._id, subscriptionPlan: plan.name,
+        subscriptionExpiry: expiry,
+        subscriptionIsTrial: !!isTrial,
+        trialEndsAt: null,           // an explicit assignment supersedes the onboarding trial window
+        subscriptionStatus: !stillRunning ? 'expired' : (isTrial ? 'trial' : 'active'),
+        cancelAtPeriodEnd: false,    // a manual assignment replaces any scheduled cancellation / plan change
+        ...planLimitsOf(plan),
+      },
+      $unset: { pendingPlanChange: '', cancelReason: '', cancelRequestedAt: '', lastReminderStage: '' },
     },
     { new: true }
   );
   if (!lib) throw err('Library not found', 404);
-  await logAudit('library_plan_assigned', lib._id, userId, { planName: plan.name, planId: plan._id, expiry, isTrial: !!isTrial }, ip);
+  // A library the lifecycle suspended for non-payment comes back once it has a running subscription again
+  // (manual suspensions by the super admin keep their own reason and stay suspended).
+  let reinstated = false;
+  if (stillRunning) {
+    const r = await Library.updateOne(
+      { _id: lib._id, status: 'suspended', statusReason: SUSPEND_REASON, isDeleted: false },
+      { $set: { status: 'active', statusReason: null } }
+    );
+    reinstated = !!r.modifiedCount;
+  }
+  invalidateAuthCacheForLibrary(lib._id);
+  await logAudit('library_plan_assigned', lib._id, userId, { planName: plan.name, planId: plan._id, expiry, isTrial: !!isTrial, reinstated }, ip);
   return { lib, planName: plan.name };
 };
 
@@ -276,31 +333,8 @@ exports.deleteLibrary = async (id, userId, ip) => {
 
   await Library.updateOne({ _id: id }, { isDeleted: true, status: 'rejected', statusReason: 'Deleted by superadmin' });
   await Admin.updateMany({ libraryId: id, isDeleted: false }, { $set: { isDeleted: true, status: false } });
+  invalidateAuthCacheForLibrary(id);
   await logAudit('library_deleted', lib._id, userId, { libraryName: lib.name }, ip);
-};
-
-// Controlled slug change: validated, unique, old slug kept for redirects
-exports.changeSlug = async (id, rawSlug, userId, ip) => {
-  const slug = String(rawSlug || '').trim().toLowerCase();
-  if (isReserved(slug)) throw err('This subdomain is reserved', 400);
-  if (!isValidSlug(slug)) throw err('Slug must be 3-63 characters: lowercase letters, digits and hyphens, not starting or ending with a hyphen', 400);
-
-  const lib = await Library.findOne({ _id: id, isDeleted: false });
-  if (!lib) throw err('Library not found', 404);
-  if (lib.slug === slug) throw err('Library already uses this slug', 400);
-  // taken by another library (current or historical)
-  if (await isTaken(Library, slug, lib._id)) throw err('This slug is already in use', 409);
-
-  const previous = new Set((lib.previousSlugs || []).filter((s) => s !== slug));
-  if (lib.slug) previous.add(lib.slug);
-  const oldSlug = lib.slug || null;
-  lib.slug = slug;
-  lib.previousSlugs = [...previous];
-  lib.slugChangedAt = new Date();
-  await lib.save(); // E11000 on a race is mapped to 409 by the error handler
-
-  await logAudit('library_slug_changed', lib._id, userId, { from: oldSlug, to: slug }, ip);
-  return lib;
 };
 
 // Short-lived scoped token acting as the library owner. Every use is attributable via the impersonatedBy claim.
@@ -312,17 +346,14 @@ exports.impersonate = async (id, superAdmin, ip) => {
   if (!owner) throw err('Library owner account not found or disabled', 404);
 
   const expiresInSec = 30 * 60;
-  const token = jwt.sign(
-    { id: owner._id, type: 'admin', impersonatedBy: superAdmin._id },
-    config.jwt.secret,
-    { expiresIn: expiresInSec }
-  );
+  // A revocable support session (no refresh token): ends on expiry, or at once if revoked / the superadmin is disabled
+  const { token, sessionId } = await require('./session.service').createImpersonationSession({ owner, superAdminId: superAdmin._id, ttlSeconds: expiresInSec, ip });
   await logAudit('library_impersonation_started', lib._id, superAdmin._id,
-    { libraryName: lib.name, ownerId: owner._id, expiresInSeconds: expiresInSec }, ip);
+    { libraryName: lib.name, ownerId: owner._id, expiresInSeconds: expiresInSec, sessionId }, ip);
   return {
     token,
     expiresAt: new Date(Date.now() + expiresInSec * 1000),
-    library: { id: lib._id, name: lib.name, slug: lib.slug },
+    library: { id: lib._id, name: lib.name },
     user: { id: owner._id, name: owner.name, email: owner.email, userType: 'admin' },
     impersonatedBy: superAdmin._id,
   };

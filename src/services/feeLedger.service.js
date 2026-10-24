@@ -19,6 +19,7 @@ const ApiError = require('../utils/ApiError');
 const audit = require('../utils/audit');
 const couponService = require('./coupon.service');
 const { endOfDayIST, startOfDayIST, istDateKey, DAY_MS } = require('../utils/time');
+const { fiscalYearKey, computeGst } = require('../utils/feeMath');
 
 const OPEN_STATUSES = ['credit', 'partial', 'overdue'];
 const TERMINAL_STATUSES = ['cancelled', 'refunded'];
@@ -90,19 +91,32 @@ const isChargeOverdue = (charge, graceDays = 0, now = new Date()) => {
 };
 
 // ── receipt numbers ───────────────────────────────────────────────────────────
-const nextReceiptNo = async (libraryId, kind = 'receipt') => {
+/**
+ * Receipt numbers are sequential per library per Indian financial year (Apr-Mar IST): RCPT-2627-000001,
+ * refunds RCPT-R-2627-000001. The first financial year after this scheme went live continues the old
+ * single sequence (legacy `seq`), so numbering never restarts mid-year; later years restart at 1.
+ */
+const nextReceiptNo = async (libraryId, kind = 'receipt', when = new Date()) => {
     const lib = await Library.findById(libraryId).select('receipt').lean();
-    let c = await ReceiptCounter.findOneAndUpdate({ libraryId }, { $inc: { seq: 1 } }, { new: true });
+    const fy = fiscalYearKey(when);
+    const path = `fySeq.${fy}`;
+    let c = await ReceiptCounter.findOneAndUpdate({ libraryId, [path]: { $exists: true } }, { $inc: { [path]: 1 } }, { new: true });
     if (!c) {
+        // First receipt of this financial year: initialise its sequence (atomic; a concurrent initialiser wins harmlessly)
+        const doc = await ReceiptCounter.findOne({ libraryId }).lean();
+        const hasAnyFy = !!(doc && doc.fySeq && Object.keys(doc.fySeq).length);
+        const configured = Math.max(1, (lib && lib.receipt && lib.receipt.nextNumber) || 1);
+        const base = doc ? (hasAnyFy ? 0 : doc.seq || 0) : configured - 1;
         try {
-            c = await ReceiptCounter.create({ libraryId, seq: Math.max(1, (lib && lib.receipt && lib.receipt.nextNumber) || 1) });
+            await ReceiptCounter.updateOne({ libraryId, [path]: { $exists: false } }, { $set: { [path]: base } }, { upsert: true });
         } catch (e) {
             if (e.code !== 11000) throw e;
-            c = await ReceiptCounter.findOneAndUpdate({ libraryId }, { $inc: { seq: 1 } }, { new: true });
         }
+        c = await ReceiptCounter.findOneAndUpdate({ libraryId, [path]: { $exists: true } }, { $inc: { [path]: 1 } }, { new: true });
     }
+    const seq = c.fySeq[fy];
     const prefix = (lib && lib.receipt && lib.receipt.prefix) || 'RCPT';
-    return `${prefix}-${kind === 'refund' ? 'R-' : ''}${String(c.seq).padStart(6, '0')}`;
+    return `${prefix}-${kind === 'refund' ? 'R-' : ''}${fy}-${String(seq).padStart(6, '0')}`;
 };
 
 // ── outstanding ───────────────────────────────────────────────────────────────
@@ -223,11 +237,61 @@ const enforceCreditPolicy = async ({ libraryId, studentId, newDue, paidNow = 0, 
     }
 };
 
+// ── idempotency + student payment flag ────────────────────────────────────────
+const cleanRequestKey = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const k = String(v).trim();
+    if (!/^[A-Za-z0-9_.:-]{8,100}$/.test(k)) throw new ApiError(400, 'Idempotency key must be 8-100 characters (letters, digits, _ . : -)');
+    return k;
+};
+
+const totalDueOf = async (libraryId, studentId) => {
+    const [row] = await Payment.aggregate([
+        { $match: { libraryId: oid(libraryId), studentId: oid(studentId), paymentStatus: { $in: OPEN_STATUSES }, dueAmount: { $gt: 0 } } },
+        { $group: { _id: null, due: { $sum: '$dueAmount' } } }
+    ]);
+    return r2(row ? row.due : 0);
+};
+
+/** Recompute Student.paymentStatus from the live ledger (call after anything that changes dues). Returns the total due. */
+const refreshStudentPaymentStatus = async (libraryId, studentId) => {
+    const due = await totalDueOf(libraryId, studentId);
+    try {
+        await Student.updateOne({ _id: studentId, libraryId }, { $set: { paymentStatus: due <= EPS ? 'paid' : 'pending' } });
+    } catch (e) {
+        console.error('[feeLedger] could not refresh student paymentStatus:', e.message);
+    }
+    return due;
+};
+
+/** The collection already recorded for an idempotency key, or null. Throws 409 on key reuse / in-flight request. */
+const findCollectionByRequestId = async (libraryId, key) => {
+    const k = cleanRequestKey(key);
+    if (!k) return null;
+    return PaymentTransaction.findOne({ libraryId, type: 'collection', collectRequestId: k });
+};
+
+const replayCollection = async (libraryId, key, { studentId, amount } = {}) => {
+    const prev = await findCollectionByRequestId(libraryId, key);
+    if (!prev) return null;
+    if (studentId && String(prev.studentId) !== String(studentId)) throw new ApiError(409, 'This request id was already used for a different student');
+    if (amount !== undefined && amount !== null && Math.abs(r2(amount) - prev.amount) > EPS && prev.status === 'success') {
+        throw new ApiError(409, 'This request id was already used with a different amount');
+    }
+    if (prev.status !== 'success') {
+        throw new ApiError(409, 'This payment request is already being processed, please wait a moment');
+    }
+    return {
+        transaction: prev, receiptNumber: prev.receiptNumber, allocations: prev.allocations, replay: true,
+        outstandingAfter: await totalDueOf(libraryId, prev.studentId)
+    };
+};
+
 // ── createCharge ──────────────────────────────────────────────────────────────
 const createCharge = async ({
     libraryId, studentId, planId, amount, dueDate, description, createdBy, couponCode,
     joiningFee = 0, deposit = 0, paidNow = 0, paidAmount, referrerId, periodStart, periodEnd, paymentType, remarks, req,
-    skipCreditPolicy = false
+    skipCreditPolicy = false, extraDiscount = 0, extraDiscountReason
 }) => {
     if (!libraryId) throw new ApiError(400, 'libraryId is required');
     if (!isId(studentId)) throw new ApiError(400, 'Valid studentId is required');
@@ -269,6 +333,12 @@ const createCharge = async ({
         coupon = v.coupon;
     }
 
+    // Internal credit (e.g. unused period of the previous plan on a plan change), applied on top of the coupon
+    const extra = r2(Math.max(0, Number(extraDiscount) || 0));
+    if (extra > 0) {
+        if (r2(discountAmount + extra) > totalAmount + EPS) throw new ApiError(400, 'Discount cannot exceed the charge total');
+        discountAmount = r2(discountAmount + extra);
+    }
     const net = r2(totalAmount - discountAmount);
     const due = dueDate ? new Date(dueDate) : new Date(Date.now() + 7 * DAY_MS);
     if (Number.isNaN(due.getTime())) throw new ApiError(400, 'Invalid dueDate');
@@ -308,7 +378,8 @@ const createCharge = async ({
             periodEnd: end || undefined,
             paymentType: paymentType || 'new',
             remarks,
-            createdBy
+            createdBy,
+            adjustments: extra > 0 ? [{ type: 'discount', reason: extraDiscountReason || 'Credit applied', amount: extra, by: createdBy }] : []
         });
         await charge.save();
         auditEvent(req, libraryId, createdBy || studentId, 'payment.charge.create', 'Payment', charge._id, {
@@ -377,12 +448,18 @@ const rollbackApplied = async (applied, libraryId, txnId) => {
 
 const recordPayment = async ({
     libraryId, studentId, amount, method = 'cash', reference, receivedBy, allocations, paymentDate, note, req,
-    receivedByType, attempt, source = 'manual', razorpayPaymentId, razorpaySignature, trustedAllocation = false
+    receivedByType, attempt, source = 'manual', razorpayPaymentId, razorpaySignature, trustedAllocation = false,
+    collectRequestId
 }) => {
     if (!libraryId) throw new ApiError(400, 'libraryId is required');
     if (!isId(studentId)) throw new ApiError(400, 'Valid studentId is required');
     if (!['cash', 'upi', 'online', 'bank_transfer', 'other'].includes(method)) throw new ApiError(400, 'Invalid payment method');
     const amt = validAmount(amount);
+    const reqKey = cleanRequestKey(collectRequestId);
+    if (reqKey && !attempt) {
+        const replay = await replayCollection(libraryId, reqKey, { studentId, amount: amt });
+        if (replay) return replay;
+    }
     const when = paymentDate ? new Date(paymentDate) : new Date();
     if (Number.isNaN(when.getTime())) throw new ApiError(400, 'Invalid paymentDate');
     if (when.getTime() > Date.now() + DAY_MS) throw new ApiError(400, 'paymentDate cannot be in the future');
@@ -438,9 +515,19 @@ const recordPayment = async ({
     } else {
         txn = new PaymentTransaction({
             libraryId, branchId: student.branchId || null, studentId, type: 'collection', status: 'processing', amount: amt, method, reference, note,
-            paymentDate: when, receivedBy, receivedByType: receivedByType || (req && req.userType) || 'system', source
+            paymentDate: when, receivedBy, receivedByType: receivedByType || (req && req.userType) || 'system', source,
+            ...(reqKey ? { collectRequestId: reqKey } : {})
         });
-        await txn.save();
+        try {
+            await txn.save();
+        } catch (e) {
+            // A concurrent request with the same idempotency key won the unique index: answer from it
+            if (e && e.code === 11000 && reqKey) {
+                const replay = await replayCollection(libraryId, reqKey, { studentId, amount: amt });
+                if (replay) return replay;
+            }
+            throw e;
+        }
     }
 
     const applied = [];
@@ -481,9 +568,8 @@ const recordPayment = async ({
         throw e;
     }
 
-    // Side effects (never fail the payment)
-    const remainingDue = r2(totalDue - amt);
-    Student.updateOne({ _id: studentId, libraryId }, { $set: { paymentStatus: remainingDue <= EPS ? 'paid' : 'pending' } }).catch(() => {});
+    // Side effects (never fail the payment). Dues are re-read from the DB, not derived from the pre-write snapshot.
+    const remainingDue = await refreshStudentPaymentStatus(libraryId, studentId);
     auditEvent(req, libraryId, studentId, 'payment.collect', 'PaymentTransaction', txn._id, {
         studentId, amount: amt, method, receiptNumber: txn.receiptNumber, allocations: plan.map((p) => ({ paymentId: p.paymentId, amount: p.amount })), source
     });
@@ -635,8 +721,8 @@ const rollbackCharge = async (libraryId, chargeId, reason) => {
     } catch (e) { /* best effort */ }
 };
 
-const cancelCharge = async ({ libraryId, paymentId, reason, req, userId }) => {
-    assertPermission(req, PERM_KEYS.adjust);
+const cancelCharge = async ({ libraryId, paymentId, reason, req, userId, trusted = false }) => {
+    if (!trusted) assertPermission(req, PERM_KEYS.adjust);
     if (!reason || !String(reason).trim()) throw new ApiError(400, 'A reason is required to cancel a charge');
     const { charge } = await saveCharge((c) => {
         if (c.paymentStatus === 'cancelled') throw new ApiError(400, 'Charge is already cancelled');
@@ -649,6 +735,7 @@ const cancelCharge = async ({ libraryId, paymentId, reason, req, userId }) => {
         c.adjustments.push({ type: 'cancel', reason: c.cancelReason, amount: c.totalAmount, by: c.cancelledBy });
     }, libraryId, paymentId);
     if (charge.couponId) await couponService.releaseCouponUsage(charge.couponId, libraryId, charge._id).catch(() => {});
+    await refreshStudentPaymentStatus(libraryId, charge.studentId);
     auditEvent(req, libraryId, userId, 'payment.cancel', 'Payment', charge._id, { reason: charge.cancelReason, totalAmount: charge.totalAmount });
     notifyLater(() => require('./notification.service').notifyEvent('payment-adjusted', libraryId, {
         studentId: charge.studentId, variables: { amount: charge.totalAmount, action: 'cancelled', receiptSuffix: '' },
@@ -929,8 +1016,8 @@ const refundPayment = async ({
     return refundTxn;
 };
 
-const adjustCharge = async ({ libraryId, paymentId, reason, waiveAmount, lateFee, discountAmount, totalAmount, dueDate, req, userId }) => {
-    assertPermission(req, PERM_KEYS.adjust);
+const adjustCharge = async ({ libraryId, paymentId, reason, waiveAmount, lateFee, discountAmount, totalAmount, dueDate, req, userId, trusted = false }) => {
+    if (!trusted) assertPermission(req, PERM_KEYS.adjust);
     if (!reason || !String(reason).trim()) throw new ApiError(400, 'A reason is required for an adjustment');
     const cleanReason = String(reason).trim();
     const by = userId || (req && req.user && req.user._id);
@@ -978,6 +1065,7 @@ const adjustCharge = async ({ libraryId, paymentId, reason, waiveAmount, lateFee
         c.adjustments.push({ type: changes.waived ? 'waive' : 'adjust', reason: cleanReason, amount: changes.waived || 0, by });
     }, libraryId, paymentId);
 
+    await refreshStudentPaymentStatus(libraryId, charge.studentId);
     auditEvent(req, libraryId, by, changes.waived ? 'payment.waive' : 'payment.adjust', 'Payment', charge._id, { reason: cleanReason, changes });
     return charge;
 };
@@ -999,6 +1087,70 @@ const waiveCharge = async ({ libraryId, paymentId, amount, reason, req, userId }
         });
     });
     return result;
+};
+
+// ── plan change: credit for the unused part of the current membership ─────────
+/** Net amount the student owes on the membership part of a charge (membership items - discount - waiver). */
+const membershipNetOf = (c) => {
+    const items = c.items || [];
+    const membership = items.filter((i) => i.kind === 'membership').reduce((s, i) => s + i.amount, 0);
+    const base = items.length ? membership : c.totalAmount;
+    return Math.max(0, r2(base - (c.discountAmount || 0) - (c.waivedAmount || 0)));
+};
+
+/** The live membership charge of the student's current plan that covers asOf (or null). */
+const findMembershipCharge = async (libraryId, studentId, planId, asOf = new Date()) => {
+    if (!planId) return null;
+    return Payment.findOne({
+        libraryId, studentId, planId,
+        paymentStatus: { $nin: TERMINAL_STATUSES },
+        periodStart: { $lte: asOf }, periodEnd: { $gte: asOf },
+        $or: [{ 'items.kind': 'membership' }, { items: { $size: 0 } }]
+    }).sort({ createdAt: -1 });
+};
+
+/**
+ * Plan-change split of the credit (value of the unused period): first it reduces what the student still owes on
+ * the old charge (cancel it when nothing at all was used and nothing paid, else waive); any remainder is returned
+ * as a discount for the new charge. Pure arithmetic - does not touch the DB.
+ */
+const splitPlanChangeCredit = ({ credit, dueAmount, paidAmount, membershipNet }) => {
+    const c = r2(credit);
+    if (c <= EPS) return { cancelOld: false, waiveOld: 0, discountNew: 0 };
+    const waiveOld = r2(Math.min(c, Math.max(0, dueAmount)));
+    const cancelOld = (paidAmount || 0) <= EPS && c >= membershipNet - EPS && waiveOld >= dueAmount - EPS;
+    return { cancelOld, waiveOld: cancelOld ? 0 : waiveOld, discountNew: r2(c - waiveOld) };
+};
+
+/** Apply the old-charge side of a plan change (cancel or waive) as a trusted internal action. */
+const applyPlanChangeToOldCharge = async ({ libraryId, charge, split, reason, req, userId }) => {
+    if (split.cancelOld) {
+        await cancelCharge({ libraryId, paymentId: charge._id, reason, req, userId, trusted: true });
+    } else if (split.waiveOld > EPS) {
+        await adjustCharge({ libraryId, paymentId: charge._id, waiveAmount: split.waiveOld, reason, req, userId, trusted: true });
+    }
+};
+
+/**
+ * After cancelling / fully refunding a charge: say so when it was the membership fee of the student's live plan.
+ * The membership itself is deliberately NOT changed automatically (seat, attendance and history depend on it).
+ */
+const membershipWarning = async (libraryId, charge) => {
+    if (!charge || !TERMINAL_STATUSES.includes(charge.paymentStatus)) return null;
+    const idOf = (v) => (v && v._id ? v._id : v); // may be populated
+    const chargeStudentId = idOf(charge.studentId);
+    const chargePlanId = idOf(charge.planId);
+    const student = await Student.findOne({ _id: chargeStudentId, libraryId }).select('planId planStatus expiryDate').lean();
+    if (!student || !student.planId || !chargePlanId || String(student.planId) !== String(chargePlanId)) return null;
+    if (!['active', 'paused'].includes(student.planStatus)) return null;
+    if (!(charge.items || []).some((i) => i.kind === 'membership')) return null;
+    if (charge.periodEnd && new Date(charge.periodEnd).getTime() < Date.now()) return null;
+    const other = await Payment.findOne({
+        libraryId, studentId: chargeStudentId, planId: chargePlanId, _id: { $ne: charge._id },
+        paymentStatus: { $nin: TERMINAL_STATUSES }, periodEnd: { $gte: new Date() }, 'items.kind': 'membership'
+    }).select('_id').lean();
+    if (other) return null;
+    return "This was the membership fee of the student's current plan. The membership is still active and no fee now covers it - review the membership (pause, extend or change plan) if the student should not keep access.";
 };
 
 // ── queries ───────────────────────────────────────────────────────────────────
@@ -1026,17 +1178,19 @@ const buildPaymentFilter = async (libraryId, q = {}, scope = {}) => {
         filter.studentId = oid(q.studentId);
     }
     if (q.from || q.to) {
-        filter.createdAt = {};
+        // Effective date = date of the (last) payment; charges nothing was paid on yet fall back to the billing date
+        const range = {};
         if (q.from) {
             const d = new Date(q.from);
             if (Number.isNaN(d.getTime())) throw new ApiError(400, 'Invalid from date');
-            filter.createdAt.$gte = startOfDayIST(d);
+            range.$gte = startOfDayIST(d);
         }
         if (q.to) {
             const d = new Date(q.to);
             if (Number.isNaN(d.getTime())) throw new ApiError(400, 'Invalid to date');
-            filter.createdAt.$lte = endOfDayIST(d);
+            range.$lte = endOfDayIST(d);
         }
+        and.push({ $or: [{ paymentDate: range }, { paymentDate: null, createdAt: range }] });
     }
     if (q.search && String(q.search).trim()) {
         const rx = new RegExp(Escape(String(q.search).trim()), 'i');
@@ -1124,13 +1278,16 @@ const getStudentLedger = async (libraryId, studentId, { limit = 100 } = {}) => {
         Payment.find({ libraryId, studentId }).populate('planId', 'name').sort({ createdAt: -1 }).limit(limit).lean(),
         PaymentTransaction.find({ libraryId, studentId, status: 'success' }).sort({ createdAt: -1 }).limit(limit).lean()
     ]);
-    const totals = charges.reduce((t, c) => {
-        if (c.paymentStatus !== 'cancelled') {
-            t.billed += c.totalAmount + c.lateFee - c.discountAmount - c.waivedAmount;
-            t.paid += c.paidAmount - c.refundAmount;
-        }
-        return t;
-    }, { billed: 0, paid: 0 });
+    // Totals cover every charge, not just the (limited) rows returned above
+    const [agg] = await Payment.aggregate([
+        { $match: { libraryId: oid(libraryId), studentId: oid(studentId), paymentStatus: { $ne: 'cancelled' } } },
+        { $group: {
+            _id: null,
+            billed: { $sum: { $subtract: [{ $add: ['$totalAmount', '$lateFee'] }, { $add: ['$discountAmount', '$waivedAmount'] }] } },
+            paid: { $sum: { $subtract: ['$paidAmount', '$refundAmount'] } }
+        } }
+    ]);
+    const totals = agg || { billed: 0, paid: 0 };
     return {
         student, outstanding, charges, transactions,
         summary: { totalBilled: r2(totals.billed), totalPaid: r2(totals.paid), totalOutstanding: outstanding.totalOutstanding }
@@ -1138,6 +1295,38 @@ const getStudentLedger = async (libraryId, studentId, { limit = 100 } = {}) => {
 };
 
 // ── receipts ──────────────────────────────────────────────────────────────────
+const normState = (v) => String(v || '').trim().toLowerCase();
+
+/**
+ * GST breakdown of a collection receipt (null when the library has not enabled GST, or for refunds).
+ * Amounts are treated as GST-inclusive. Refundable security deposits are not taxable, so each allocation is
+ * reduced by the deposit share of its charge before the tax is extracted.
+ * Place of supply: student's state when known, else the library's. Same state as the library -> CGST+SGST, else IGST.
+ */
+const buildReceiptTax = ({ library, student, items, charges, txn }) => {
+    const cfg = library && library.feeTax;
+    if (!cfg || !cfg.gstEnabled || txn.type !== 'collection') return null;
+    let gross = 0;
+    items.forEach((i) => {
+        const c = charges.get(String(i.chargeId)) || {};
+        const total = Number(c.totalAmount) || 0;
+        const deposit = (c.items || []).filter((x) => x.kind === 'deposit').reduce((sum, x) => sum + x.amount, 0);
+        const share = total > 0 ? Math.max(0, (total - deposit) / total) : 1;
+        gross += (Number(i.allocated) || 0) * share;
+    });
+    gross = r2(gross);
+    const libState = normState(library.state);
+    const supplyState = (student && student.state) || library.state || '';
+    const intraState = !libState || !normState(supplyState) || normState(supplyState) === libState;
+    const rate = cfg.gstRate != null ? cfg.gstRate : 18;
+    const split = computeGst({ gross, rate, intraState });
+    return {
+        enabled: true, gstin: library.gstNumber || undefined, sacCode: cfg.sacCode || undefined, rate,
+        inclusive: true, intraState, placeOfSupply: supplyState || undefined,
+        taxableAmount: gross, ...split
+    };
+};
+
 const buildReceipt = async ({ libraryId, id, studentId }) => {
     if (!isId(id)) throw new ApiError(400, 'Invalid id');
     let txn = await PaymentTransaction.findOne({ _id: id, libraryId, status: 'success', ...(studentId ? { studentId } : {}) })
@@ -1153,8 +1342,8 @@ const buildReceipt = async ({ libraryId, id, studentId }) => {
     if (!txn) throw new ApiError(404, 'Receipt not found');
 
     const [library, student, charges, outstanding] = await Promise.all([
-        Library.findById(libraryId).select('name address city state pincode mobile email gstNumber logo').lean(),
-        Student.findOne({ _id: txn.studentId, libraryId }).select('name mobile email rollNumber').lean(),
+        Library.findById(libraryId).select('name address city state pincode mobile email gstNumber logo feeTax receipt').lean(),
+        Student.findOne({ _id: txn.studentId, libraryId }).select('name mobile email rollNumber state').lean(),
         Payment.find({ _id: { $in: txn.allocations.map((a) => a.paymentId) }, libraryId }).populate('planId', 'name').lean(),
         getOutstanding(libraryId, txn.studentId)
     ]);
@@ -1175,6 +1364,7 @@ const buildReceipt = async ({ libraryId, id, studentId }) => {
             period: c.periodStart ? { start: c.periodStart, end: c.periodEnd } : undefined
         };
     });
+    const tax = buildReceiptTax({ library, student, items, charges: byId, txn });
     return {
         receiptNo: txn.receiptNumber,
         type: txn.type,
@@ -1190,7 +1380,11 @@ const buildReceipt = async ({ libraryId, id, studentId }) => {
         reference: txn.reference,
         note: txn.note,
         receivedBy: txn.receivedBy ? txn.receivedBy.name : (txn.receivedByType === 'student' ? 'Online' : undefined),
+        tax,
+        footerNote: (library && library.receipt && library.receipt.footerNote) || undefined,
         totals: {
+            discount: r2(items.reduce((sum, i) => sum + (i.discount || 0), 0)),
+            lateFee: r2(items.reduce((sum, i) => sum + (i.lateFee || 0), 0)),
             amountReceived: txn.amount,
             refunded: r2(txn.allocations.reduce((s, a) => s + (a.refunded || 0), 0)),
             netReceived: r2(txn.amount - txn.allocations.reduce((s, a) => s + (a.refunded || 0), 0)),
@@ -1202,6 +1396,8 @@ const buildReceipt = async ({ libraryId, id, studentId }) => {
 
 // ── dashboard summary (cards + charts) ────────────────────────────────────────
 const SUMMARY_MONTHS = 6;
+const NET_AMOUNT = { $cond: [{ $eq: ['$type', 'refund'] }, { $multiply: ['$amount', -1] }, '$amount'] };
+const IS_COLLECTION = { $cond: [{ $eq: ['$type', 'refund'] }, 0, 1] };
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const getPaymentsSummary = async (libraryId, scope = {}) => {
@@ -1225,17 +1421,17 @@ const getPaymentsSummary = async (libraryId, scope = {}) => {
         PaymentTransaction.aggregate([
             { $match: txnMatch },
             { $facet: {
+                // Collections minus refunds (money actually kept); counts are receipts only
                 trend: [
-                    { $match: { type: 'collection' } },
-                    { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$paymentDate', timezone: '+05:30' } }, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+                    { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$paymentDate', timezone: '+05:30' } }, total: { $sum: NET_AMOUNT }, count: { $sum: IS_COLLECTION } } }
                 ],
                 today: [
-                    { $match: { type: 'collection', paymentDate: { $gte: today.start, $lte: today.end } } },
-                    { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }
+                    { $match: { paymentDate: { $gte: today.start, $lte: today.end } } },
+                    { $group: { _id: null, total: { $sum: NET_AMOUNT }, count: { $sum: IS_COLLECTION } } }
                 ],
                 methods: [
-                    { $match: { type: 'collection', paymentDate: { $gte: thisMonth.start, $lte: thisMonth.end } } },
-                    { $group: { _id: '$method', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+                    { $match: { paymentDate: { $gte: thisMonth.start, $lte: thisMonth.end } } },
+                    { $group: { _id: '$method', total: { $sum: NET_AMOUNT }, count: { $sum: IS_COLLECTION } } }
                 ],
                 refunds: [
                     { $match: { type: 'refund', paymentDate: { $gte: thisMonth.start, $lte: thisMonth.end } } },
@@ -1324,6 +1520,15 @@ module.exports = {
     buildReceipt,
     nextReceiptNo,
     getPolicy,
+    refreshStudentPaymentStatus,
+    findCollectionByRequestId,
+    replayCollection,
+    membershipNetOf,
+    findMembershipCharge,
+    splitPlanChangeCredit,
+    applyPlanChangeToOldCharge,
+    membershipWarning,
+    buildReceiptTax,
     isChargeOverdue,
     hasPermission,
     PERM_KEYS,

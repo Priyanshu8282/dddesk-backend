@@ -4,6 +4,7 @@ const razorpayController = require('../../controllers/razorpay.controller');
 const validate = require('../../middlewares/validate.middleware');
 const { requireStaff, requireStudent, requirePermission, allow } = require('../../middlewares/access.middleware');
 const { paymentValidation } = require('../../validations');
+const { paymentWriteLimiter, refundLimiter, exportLimiter } = require('../../middlewares/rateLimit.middleware');
 
 const router = express.Router();
 
@@ -13,6 +14,9 @@ const REFUND = ['fees.refund', 'FEES_REFUND', 'REFUND_PAYMENT'];
 const ADJUST = ['fees.adjust', 'fees.refund', 'FEES_ADJUST', 'ADJUST_PAYMENT'];
 const VIEW = ['fees.view', 'fees.collect', 'fees.refund'];  // financial visibility (spec 12)
 const COLLECT = ['fees.collect'];
+
+// Money-moving writes are limited per user (reads are not)
+router.use((req, res, next) => (req.method === 'GET' || req.method === 'HEAD' ? next() : paymentWriteLimiter(req, res, next)));
 
 // ── Student-facing (own data only) ────────────────────────────────────────────
 router.get('/my', requireStudent, paymentController.getMyLedger);
@@ -25,7 +29,7 @@ router.post('/razorpay/verify-payment', ...anyPayer, validate(paymentValidation.
 
 // ── Staff ─────────────────────────────────────────────────────────────────────
 router.get('/summary', requireStaff, requirePermission(...VIEW), paymentController.getSummary);
-router.get('/export', requireStaff, requirePermission(...VIEW), validate(paymentValidation.queryPayments), paymentController.exportPayments);
+router.get('/export', requireStaff, requirePermission(...VIEW), exportLimiter, validate(paymentValidation.queryPayments), paymentController.exportPayments);
 router.get('/outstanding', requireStaff, requirePermission(...VIEW), validate(paymentValidation.queryDues), paymentController.getOutstanding);
 router.get('/overdue', requireStaff, requirePermission(...VIEW), validate(paymentValidation.queryDues), paymentController.getOverdue);
 router.get('/student/:studentId/ledger', requireStaff, requirePermission(...VIEW), paymentController.getStudentLedger);
@@ -35,7 +39,7 @@ router.post('/', requireStaff, requirePermission(...COLLECT), validate(paymentVa
 router.get('/:paymentId', requireStaff, requirePermission(...VIEW), validate(paymentValidation.idOnly), paymentController.getPayment);
 router.get('/:paymentId/receipt', requireStaff, requirePermission(...VIEW), validate(paymentValidation.idOnly), paymentController.getReceipt);
 router.patch('/:paymentId/collect', requireStaff, requirePermission(...COLLECT), validate(paymentValidation.collectPartialPayment), paymentController.collectPartialPayment);
-router.post('/:paymentId/refund', requireStaff, requirePermission(...REFUND), validate(paymentValidation.refundPayment), paymentController.refundPayment);
+router.post('/:paymentId/refund', requireStaff, requirePermission(...REFUND), refundLimiter, validate(paymentValidation.refundPayment), paymentController.refundPayment);
 router.post('/:paymentId/adjust', requireStaff, requirePermission(...ADJUST), validate(paymentValidation.adjustPayment), paymentController.adjustPayment);
 router.post('/:paymentId/cancel', requireStaff, requirePermission(...ADJUST), validate(paymentValidation.cancelPayment), paymentController.cancelPayment);
 

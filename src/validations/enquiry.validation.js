@@ -29,7 +29,6 @@ const createEnquiry = z.object({
         sourceDetail: z.string().trim().max(200).optional(),
         followUpDate: isoDate.optional(),
         libraryId: objectId.optional(),
-        slug: z.string().trim().min(1).max(120).optional(),
         branchId: objectId.nullish(),
         hp: z.string().max(200).optional()
     }).strip()
@@ -78,8 +77,14 @@ const convertEnquiry = z.object({
         mobile: mobile.optional(),
         email: z.string().trim().email().max(150).optional().or(z.literal('')),
         // first sign-in password for a NEW student (ignored when the mobile already belongs to a student)
-        password: z.string().min(8, 'Password must be at least 8 characters').max(64).regex(/[A-Za-z]/, 'Password must contain a letter').regex(/d/, 'Password must contain a number').optional(),
-        confirmPassword: z.string().optional()
+        password: z.string().min(8, 'Password must be at least 8 characters').max(64).regex(/[A-Za-z]/, 'Password must contain a letter').regex(/\d/, 'Password must contain a number').optional(),
+        confirmPassword: z.string().optional(),
+        // DPDP: required when a NEW student is created (enforced by the student service); a minor also needs the guardian block
+        consentGiven: z.boolean().optional(),
+        dob: isoDate.optional(),
+        guardianName: z.string().trim().max(100).optional(),
+        guardianMobile: z.string().trim().max(20).optional(),
+        guardianConsentGiven: z.boolean().optional()
     }).strip().default({}).superRefine((b, ctx) => {
         if (b.password !== undefined && b.confirmPassword !== b.password) ctx.addIssue({ code: 'custom', path: ['confirmPassword'], message: 'Passwords do not match' });
     })

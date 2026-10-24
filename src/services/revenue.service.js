@@ -34,15 +34,38 @@ const oid = (v) => new mongoose.Types.ObjectId(String(v));
 const taxableExpr = { $ifNull: ['$taxableAmount', '$amount'] };
 const gstExpr = { $ifNull: ['$gstAmount', 0] };
 
-/** GST-inclusive monthly equivalent a library pays right now (annual plans / 12) */
+/** Monthly equivalent a library pays right now, before GST (annual plans / 12) */
 const monthlyEquivalent = (plan, cycle) => {
   if (!plan) return 0;
   const price = cycle === 'annual' ? planPrice(plan, 'annual') / 12 : planPrice(plan, 'monthly');
   return price;
 };
+/** MRR counts what the platform earns: plan prices exclude GST, so no GST is added */
+exports.mrrOf = (plan, cycle) => round2(monthlyEquivalent(plan, cycle));
 const withGst = (v, pct) => round2(v * (1 + (Number.isFinite(Number(pct)) ? Number(pct) : 18) / 100));
 
 exports.RANGES = ALLOWED_RANGES;
+
+/** Same MRR rule as the revenue overview: only running, paying (non-trial, non-expired) subscriptions, before GST */
+exports.getMrrSummary = async () => {
+  const now = new Date();
+  const [libs, plans] = await Promise.all([
+    Library.find({ isDeleted: false, status: 'active', subscriptionPlanId: { $ne: null } })
+      .select('subscriptionPlanId subscriptionExpiry trialEndsAt subscriptionIsTrial billingCycle').lean(),
+    PlatformPlan.find({ isDeleted: false }).select('monthlyPrice annualPrice graceDays').lean(),
+  ]);
+  const planById = new Map(plans.map((p) => [String(p._id), p]));
+  let mrr = 0, payingLibraries = 0;
+  for (const lib of libs) {
+    const plan = planById.get(String(lib.subscriptionPlanId));
+    if (!plan) continue;
+    const st = getSubscriptionState(lib, plan, now);
+    if (st.state === 'trial' || st.state === 'expired' || planPrice(plan, 'monthly') <= 0) continue;
+    mrr += exports.mrrOf(plan, lib.billingCycle || 'monthly');
+    payingLibraries++;
+  }
+  return { mrr: round2(mrr), payingLibraries };
+};
 
 exports.getOverview = async ({ months = 12 } = {}) => {
   const range = ALLOWED_RANGES.includes(Number(months)) ? Number(months) : 12;
@@ -57,11 +80,11 @@ exports.getOverview = async ({ months = 12 } = {}) => {
         monthly: [
           { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$paidAt', timezone: TZ } }, total: { $sum: '$amount' }, taxable: { $sum: taxableExpr }, gst: { $sum: gstExpr }, count: { $sum: 1 } } },
         ],
-        byPlan: [{ $group: { _id: '$platformPlanId', revenue: { $sum: '$amount' }, count: { $sum: 1 } } }],
-        byCycle: [{ $group: { _id: '$period', revenue: { $sum: '$amount' }, count: { $sum: 1 } } }],
-        byKind: [{ $group: { _id: '$kind', revenue: { $sum: '$amount' }, count: { $sum: 1 } } }],
+        byPlan: [{ $group: { _id: '$platformPlanId', revenue: { $sum: taxableExpr }, count: { $sum: 1 } } }],
+        byCycle: [{ $group: { _id: '$period', revenue: { $sum: taxableExpr }, count: { $sum: 1 } } }],
+        byKind: [{ $group: { _id: '$kind', revenue: { $sum: taxableExpr }, count: { $sum: 1 } } }],
         topLibraries: [
-          { $group: { _id: '$libraryId', paid: { $sum: '$amount' }, payments: { $sum: 1 }, last: { $max: '$paidAt' } } },
+          { $group: { _id: '$libraryId', paid: { $sum: taxableExpr }, payments: { $sum: 1 }, last: { $max: '$paidAt' } } },
           { $sort: { paid: -1 } }, { $limit: 5 },
         ],
       } },
@@ -88,8 +111,9 @@ exports.getOverview = async ({ months = 12 } = {}) => {
     const r = byMonth.get(key) || {};
     trend.push({ key, label: monthLabel(key), total: round2(r.total || 0), taxable: round2(r.taxable || 0), gst: round2(r.gst || 0), count: r.count || 0 });
   }
-  const thisMonth = trend[trend.length - 1]?.total || 0;
-  const lastMonth = trend[trend.length - 2]?.total || 0;
+  // month-on-month comparison uses revenue before GST
+  const thisMonth = trend[trend.length - 1]?.taxable || 0;
+  const lastMonth = trend[trend.length - 2]?.taxable || 0;
   const growthPct = lastMonth > 0 ? round2(((thisMonth - lastMonth) / lastMonth) * 100) : (thisMonth > 0 ? null : 0);
 
   // ---- libraries: subscription states, MRR, upcoming renewals, at risk ----
@@ -99,7 +123,7 @@ exports.getOverview = async ({ months = 12 } = {}) => {
   const atRisk = [];
   let mrr = 0, payingLibraries = 0;
   const horizon = new Date(now.getTime() + 30 * DAY_MS);
-  const forecastBuckets = new Map(); // YYYY-MM -> expected GST-inclusive revenue (next 3 calendar months)
+  const forecastBuckets = new Map(); // YYYY-MM -> expected revenue before GST (next 3 calendar months), before GST
   const forecastKeys = [1, 2, 3].map((n) => monthKey(monthStartIST(-n)));
   forecastKeys.forEach((k) => forecastBuckets.set(k, 0));
   const thisKey = monthKey(now);
@@ -132,7 +156,7 @@ exports.getOverview = async ({ months = 12 } = {}) => {
     const bucket = perPlan.get(String(plan._id)) || { libraries: 0, mrr: 0 };
     bucket.libraries++;
     if (!isTrial && st.state !== 'expired' && planPrice(plan, 'monthly') > 0) {
-      const eq = withGst(monthlyEquivalent(plan, cycle), plan.gstPercent);
+      const eq = exports.mrrOf(plan, cycle);
       mrr += eq; bucket.mrr += eq; payingLibraries++;
     }
     perPlan.set(String(plan._id), bucket);
@@ -157,9 +181,9 @@ exports.getOverview = async ({ months = 12 } = {}) => {
     if (!isTrial && st.state !== 'expired' && planPrice(plan, 'monthly') > 0) {
       for (const k of [thisKey, ...forecastKeys]) {
         if (cycle === 'annual') {
-          if (exp && monthKey(exp) === k) forecastBuckets.set(k, forecastBuckets.get(k) + withGst(planPrice(plan, 'annual'), plan.gstPercent));
+          if (exp && monthKey(exp) === k) forecastBuckets.set(k, forecastBuckets.get(k) + planPrice(plan, 'annual'));
         } else if (k !== thisKey || (exp && exp >= now && monthKey(exp) === thisKey)) {
-          forecastBuckets.set(k, forecastBuckets.get(k) + withGst(planPrice(plan, 'monthly'), plan.gstPercent));
+          forecastBuckets.set(k, forecastBuckets.get(k) + planPrice(plan, 'monthly'));
         }
       }
     }
@@ -187,6 +211,7 @@ exports.getOverview = async ({ months = 12 } = {}) => {
   return {
     range: { months: range, from, to: now },
     kpis: {
+      // total = money received incl. GST; taxable = revenue before GST (the headline figure)
       collected: { total: round2(totals.total), taxable: round2(totals.taxable), gst: round2(totals.gst), count: totals.count, avgInvoice: totals.count ? round2(totals.total / totals.count) : 0 },
       thisMonth, lastMonth, growthPct,
       mrr: round2(mrr), arr: round2(mrr * 12),

@@ -13,6 +13,17 @@ const guardSeat = async (req, id) => {
     if (seat) assertBranchAccess(req, seat.branchId);
 };
 
+// Same for the student a seat is assigned to / moved from
+const guardStudent = async (req, studentId) => {
+    if (req.userType !== 'staff' || !studentId) return;
+    const Student = require('../models/student.model');
+    const st = await Student.findOne({ _id: studentId, libraryId: lib(req) }).select('branchId seatId').lean();
+    if (st) {
+        assertBranchAccess(req, st.branchId);
+        if (st.seatId) await guardSeat(req, st.seatId);
+    }
+};
+
 const lib = (req) => {
     const id = tenantId(req);
     if (!id) throw new ApiError(400, 'Library context is required');
@@ -114,6 +125,7 @@ exports.setSeatStatus = catchAsync(async (req, res) => {
 
 exports.assignSeat = catchAsync(async (req, res) => {
     await guardSeat(req, req.params.id);
+    await guardStudent(req, req.body.studentId);
     const seat = await require('../utils/securityEvent').flagOnMiss(req, require('../models/student.model'), req.body.studentId, 'Student',
         () => seatService.assignSeat(req.params.id, req.body.studentId, lib(req), seatService.actorOf(req)));
     audit(req, 'seat.assign', 'Seat', seat._id, { studentId: req.body.studentId });
@@ -130,6 +142,7 @@ exports.releaseSeat = catchAsync(async (req, res) => {
 exports.transferSeat = catchAsync(async (req, res) => {
     const { studentId, toSeatId, reason } = req.body;
     await guardSeat(req, toSeatId);
+    await guardStudent(req, studentId);
     const result = await seatService.transferSeat(studentId, toSeatId, lib(req), seatService.actorOf(req), reason);
     audit(req, 'seat.transfer', 'Seat', result.to._id, { studentId, from: result.from, to: result.to.seatNumber, reason });
     res.status(200).json({ success: true, message: 'Seat transferred successfully', data: result.to, from: result.from });
@@ -137,6 +150,7 @@ exports.transferSeat = catchAsync(async (req, res) => {
 
 exports.reserveSeat = catchAsync(async (req, res) => {
     await guardSeat(req, req.params.id);
+    await guardStudent(req, req.body.studentId);
     const seat = await seatService.reserveSeat(req.params.id, lib(req), req.body, seatService.actorOf(req));
     audit(req, 'seat.reserve', 'Seat', seat._id, { studentId: req.body.studentId, until: req.body.until });
     res.status(200).json({ success: true, message: 'Seat reserved successfully', data: seat });

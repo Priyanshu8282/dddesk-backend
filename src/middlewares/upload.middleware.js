@@ -65,7 +65,7 @@ const getTargetDirectory = (req, file, cb) => {
         subDir += 'logos/';
     } else if (file.fieldname === 'photos') {
         subDir += 'photos/';
-    } else if (file.fieldname === 'aadhaarCardImage') {
+    } else if (file.fieldname === 'aadhaarCardImage' || file.fieldname === 'documents' || /^docFile_\d+$/.test(file.fieldname)) {
         subDir += 'documents/';
     } else if (['media', 'storyMedia', 'images', 'image'].includes(file.fieldname)) {
         if (url.includes('/notices')) subDir += 'notices/';
@@ -175,6 +175,15 @@ const base = multer({
     limits: { fileSize: SIZE_LIMITS.video, files: 10 } // hard ceiling; per-type limits enforced in storage
 });
 
+// Unauthenticated routes: images only, 5MB each, few files (stops storage-exhaustion uploads)
+const publicBase = multer({
+    storage: new SecureDiskStorage(),
+    fileFilter: (req, file, cb) => (/^image\/(jpeg|png|webp)$/i.test(String(file.mimetype))
+        ? fileFilter(req, file, cb)
+        : cb(new ApiError(400, 'Only JPG, PNG or WEBP images are allowed'), false)),
+    limits: { fileSize: SIZE_LIMITS.image, files: 7, fields: 60, parts: 80 }
+});
+
 // Convert multer's own errors into clean 400s for the shared error handler
 const wrap = (middleware) => (req, res, next) =>
     middleware(req, res, (err) => {
@@ -193,6 +202,14 @@ const upload = {
     single: (name) => wrap(base.single(name)),
     array: (name, max) => wrap(base.array(name, max)),
     fields: (fields) => wrap(base.fields(fields)),
+    // Same req.files shape as any() (a flat array) so services need no change
+    publicFields: (fields) => {
+        const mw = wrap(publicBase.fields(fields));
+        return (req, res, next) => mw(req, res, (err) => {
+            if (!err && req.files && !Array.isArray(req.files)) req.files = Object.values(req.files).flat();
+            next(err);
+        });
+    },
     any: () => wrap(base.any()),
     none: () => wrap(base.none())
 };

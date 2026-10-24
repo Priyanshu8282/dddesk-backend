@@ -8,16 +8,25 @@
  */
 const path = require('path');
 const GlobalSetting = require('../models/setting.model');
+const maintenanceRules = require('../utils/maintenance');
 
 const KEY = 'platform_settings';
 const TTL_MS = 30 * 1000;
+// Maintenance must react quickly on every server instance, so hot paths ask for a fresher copy than the default
+const MAINTENANCE_TTL_MS = Number(process.env.MAINTENANCE_CACHE_TTL_MS || 5000);
 
 const DEFAULTS = Object.freeze({
   general: { platformName: 'DDdesk.ai', tagline: 'Smart workspace for modern libraries', companyName: '', supportEmail: '', supportPhone: '', gstin: '', address: '' },
   branding: { logoPath: null, faviconPath: null, primaryColor: '#1063e0' },
   urls: { frontendUrl: '', backendUrl: '' },
   onboarding: { registrationEnabled: true, autoApproveNewLibraries: false, defaultTrialDays: 14, defaultGraceDays: 7 },
-  maintenance: { enabled: false, message: 'DDdesk is being upgraded. Please try again in a little while.' },
+  // See utils/maintenance.js for the meaning of every field. `enabled` is kept for older readers (true only for mode 'on').
+  maintenance: {
+    enabled: false, mode: 'off', message: maintenanceRules.DEFAULT_MESSAGE,
+    startsAt: null, endsAt: null, estimatedBackAt: null,
+    scope: 'all', libraryIds: [], allowUserIds: [], allowIps: [], pauseCrons: false,
+    reason: '', updatedAt: null, updatedBy: null, updatedByName: null,
+  },
   alerts: {
     superAdminEmails: [],
     events: { newRegistration: true, paymentFailed: true, subscriptionSuspended: true, securityAlert: true },
@@ -50,8 +59,8 @@ const load = async () => {
 };
 
 /** Cached copy, refreshed when older than the TTL. Never throws (a database hiccup keeps the last good copy). */
-const ensureFresh = async () => {
-  if (cache.loaded && Date.now() - cache.at < TTL_MS) return cache.value;
+const ensureFresh = async (maxAgeMs = TTL_MS) => {
+  if (cache.loaded && Date.now() - cache.at < maxAgeMs) return cache.value;
   try { return await load(); } catch (_) { cache.at = Date.now(); return cache.value; }
 };
 
@@ -62,6 +71,8 @@ const invalidate = () => { cache.at = 0; };
 exports.DEFAULTS = DEFAULTS;
 exports.load = load;
 exports.ensureFresh = ensureFresh;
+exports.invalidate = invalidate;
+exports.MAINTENANCE_TTL_MS = MAINTENANCE_TTL_MS;
 exports.current = current;
 
 exports.getAll = async () => { await load(); return cache.value; };
@@ -106,15 +117,22 @@ exports.publicBranding = async (req) => {
     faviconUrl: uploadUrl(s.branding.faviconPath, base),
     primaryColor: s.branding.primaryColor,
     registrationEnabled: s.onboarding.registrationEnabled,
-    maintenance: { enabled: s.maintenance.enabled, message: s.maintenance.enabled ? s.maintenance.message : null },
+    // `enabled`/`message` keep their old meaning (sign-in page notice); `status` adds scheduled windows and read-only mode
+    maintenance: (() => {
+      const v = maintenanceRules.publicView(s.maintenance);
+      const blocking = v.state === 'active' && v.global && !v.readOnly;
+      return { enabled: blocking, message: blocking ? v.message : null, status: v };
+    })(),
   };
 };
 
 // ---------------------------------------------------------------------------
 // Helpers other modules call (all tolerant of "not loaded yet")
 // ---------------------------------------------------------------------------
-exports.isMaintenance = () => !!current().maintenance.enabled;
-exports.maintenanceMessage = () => current().maintenance.message;
+exports.maintenanceConfig = () => maintenanceRules.normalize(current().maintenance);
+/** Is a maintenance window active right now (any scope)? Per-request decisions go through services/maintenance.service. */
+exports.isMaintenance = () => maintenanceRules.phase(current().maintenance) === 'active';
+exports.maintenanceMessage = () => maintenanceRules.normalize(current().maintenance).message;
 exports.registrationOpen = () => current().onboarding.registrationEnabled !== false;
 exports.autoApprove = () => !!current().onboarding.autoApproveNewLibraries;
 exports.defaultTrialDays = () => Number(current().onboarding.defaultTrialDays);

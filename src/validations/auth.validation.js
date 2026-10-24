@@ -7,7 +7,6 @@ const newPassword = z.string().min(8, 'Password must be at least 8 characters').
 // Optional tenant hint: the same student mobile can exist in several libraries
 const tenantHint = {
     libraryId: objectId.optional(),
-    slug: z.string().trim().toLowerCase().max(63).optional(),
 };
 
 const login = z.object({

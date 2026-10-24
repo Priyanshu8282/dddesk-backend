@@ -61,6 +61,9 @@ const adminSchema = new mongoose.Schema({
     otp: { type: String, select: false },
     otpExpires: { type: Date, select: false },
     otpAttempts: { type: Number, default: 0, select: false },
+    // Password-login lockout (see auth.service login)
+    failedLogins: { type: Number, default: 0, select: false },
+    lockUntil: { type: Date, select: false },
     fcmTokens: [{ type: String }],
     libraryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Library' }, // Links user to the library institution
     tenantId: { type: mongoose.Schema.Types.ObjectId }, // For future SaaS scalability

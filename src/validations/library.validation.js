@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const { normalizeMobile } = require('../utils/mobile');
+const { GSTIN_RE } = require('../utils/feeMath');
 
 // ---- helpers (multipart/form-data sends everything as strings) ----
 const json = (schema) => z.preprocess((v) => {
@@ -30,6 +31,8 @@ const stringList = z.preprocess((v) => {
 
 const timeStr = z.string().trim().min(1, 'Required').max(20);
 const emptyToUndef = (s) => z.preprocess((v) => (v === '' ? undefined : v), s);
+// GSTIN: 15 characters, state code + PAN + entity + Z + checksum ('' clears it)
+const gstin = z.string().trim().transform((v) => v.toUpperCase()).refine((v) => v === '' || GSTIN_RE.test(v), 'Enter a valid 15-character GSTIN (e.g. 08ABCDE1234F1Z5)');
 
 // ---- Public self registration (spec section 6) ----
 const register = z.object({
@@ -66,7 +69,7 @@ const register = z.object({
         facilities: stringList.optional(),
         alternativeMobileNumber: emptyToUndef(mobile.optional()),
         website: emptyToUndef(z.string().trim().max(200).optional()),
-        gstNumber: emptyToUndef(z.string().trim().max(20).optional()),
+        gstNumber: emptyToUndef(gstin.optional()),
         description: emptyToUndef(z.string().trim().max(1000).optional()),
     }))
 });
@@ -84,7 +87,7 @@ const profileBody = z.object({
     country: z.string().trim().max(60),
     pincode: z.string().trim().regex(/^\d{6}$/, 'Pincode must be 6 digits'),
     website: url,
-    gstNumber: z.string().trim().max(20),
+    gstNumber: gstin,
     facilities: stringList,
     seatCapacity: num.int().min(0).max(100000),
     mapLocation: json(z.object({
@@ -135,6 +138,12 @@ const profileBody = z.object({
         newEnquiry: bool.optional(), newComplaint: bool.optional(),
         attendanceAlerts: bool.optional(),
     })),
+    // GST on student fee receipts (amounts are GST-inclusive; applicability is the library's / its CA's call)
+    feeTax: json(z.object({
+        gstEnabled: bool.optional(),
+        gstRate: num.min(0).max(28).optional(),
+        sacCode: z.string().trim().regex(/^\d{4,8}$/, 'SAC code must be 4-8 digits').optional(),
+    })),
     receipt: json(z.object({
         prefix: z.string().trim().min(1).max(10).optional(),
         nextNumber: num.int().min(1).optional(),
@@ -184,6 +193,6 @@ const auditQuery = z.object({
 });
 
 const regSendOtp = z.object({ body: z.object({ mobile }) });
-const regVerifyOtp = z.object({ body: z.object({ mobile, otp: z.string().trim().regex(/^d{6}$/, 'OTP must be 6 digits') }) });
+const regVerifyOtp = z.object({ body: z.object({ mobile, otp: z.string().trim().regex(/^\d{6}$/, 'OTP must be 6 digits') }) });
 
 module.exports = { regSendOtp, regVerifyOtp, register, updateProfile, changePassword, auditQuery, objectId, json, bool, num, mobile, stringList };

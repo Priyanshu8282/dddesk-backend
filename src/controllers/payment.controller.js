@@ -2,6 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const Student = require('../models/student.model');
 const Payment = require('../models/payment.model');
+const PaymentTransaction = require('../models/paymentTransaction.model');
 const { tenantId } = require('../middlewares/access.middleware');
 const ledger = require('../services/feeLedger.service');
 const { branchFilter, assertBranchAccess, isValidId } = require('../utils/branchScope');
@@ -11,6 +12,15 @@ const guardPayment = async (req, paymentId) => {
     if (req.userType !== 'staff' || !isValidId(paymentId)) return;
     const p = await Payment.findOne({ _id: paymentId, libraryId: req.libraryId }).select('branchId').lean();
     if (p) assertBranchAccess(req, p.branchId);
+};
+// A receipt id may be a charge (Payment) id or a receipt/refund (PaymentTransaction) id: check both
+const guardReceipt = async (req, id) => {
+    if (req.userType !== 'staff' || !isValidId(id)) return;
+    await guardPayment(req, id);
+    const t = await PaymentTransaction.findOne({ _id: id, libraryId: req.libraryId }).select('branchId studentId').lean();
+    if (!t) return;
+    if (t.branchId) assertBranchAccess(req, t.branchId);
+    else await guardStudent(req, t.studentId);
 };
 const guardStudent = async (req, studentId) => {
     if (req.userType !== 'staff' || !isValidId(studentId)) return;
@@ -36,6 +46,20 @@ const createPayment = catchAsync(async (req, res) => {
     const hasCharge = !!(b.planId || chargeAmount !== undefined);
     const paid = Number(b.paidAmount) || 0;
 
+    // Idempotency: a retry / double click with the same key returns the original receipt, never a second charge
+    const requestId = b.requestId || req.get('Idempotency-Key') || undefined;
+    if (requestId && paid > 0) {
+        const replay = await ledger.replayCollection(libraryId, requestId, { studentId: b.studentId, amount: paid });
+        if (replay) {
+            const chargeId = replay.allocations && replay.allocations[0] && replay.allocations[0].paymentId;
+            const original = chargeId ? await ledger.getPaymentById(libraryId, chargeId) : null;
+            return ok(res, 'Payment already recorded', original || replay.transaction, {
+                receipt: { receiptNo: replay.receiptNumber, transactionId: replay.transaction._id, outstandingAfter: replay.outstandingAfter },
+                replay: true
+            }, 200);
+        }
+    }
+
     let charge = null;
     if (hasCharge) {
         charge = await ledger.createCharge({
@@ -54,7 +78,7 @@ const createPayment = catchAsync(async (req, res) => {
                 reference: b.reference, receivedBy: req.user._id, paymentDate: b.paymentDate,
                 note: b.note || b.remarks,
                 allocations: charge ? [{ paymentId: charge._id, amount: paid }] : b.allocations,
-                trustedAllocation: !!charge, req
+                trustedAllocation: !!charge, collectRequestId: requestId, req
             });
         } catch (e) {
             if (charge) await ledger.rollbackCharge(libraryId, charge._id, `Collection failed: ${e.message}`);
@@ -63,9 +87,10 @@ const createPayment = catchAsync(async (req, res) => {
     }
 
     const fresh = charge ? await ledger.getPaymentById(libraryId, charge._id) : null;
-    ok(res, receipt ? 'Payment recorded successfully' : 'Charge created successfully', fresh || (receipt && receipt.transaction), {
-        receipt: receipt ? { receiptNo: receipt.receiptNumber, transactionId: receipt.transaction._id, outstandingAfter: receipt.outstandingAfter } : undefined
-    }, 201);
+    ok(res, receipt ? (receipt.replay ? 'Payment already recorded' : 'Payment recorded successfully') : 'Charge created successfully', fresh || (receipt && receipt.transaction), {
+        receipt: receipt ? { receiptNo: receipt.receiptNumber, transactionId: receipt.transaction._id, outstandingAfter: receipt.outstandingAfter } : undefined,
+        replay: receipt ? !!receipt.replay : undefined
+    }, receipt && receipt.replay ? 200 : 201);
 });
 
 // PATCH /payments/:paymentId/collect
@@ -82,11 +107,13 @@ const collectPartialPayment = catchAsync(async (req, res) => {
         libraryId, studentId: charge.studentId, amount, method: req.body.paymentMethod,
         reference: req.body.reference, receivedBy: req.user._id, paymentDate: req.body.paymentDate,
         note: req.body.note || req.body.remarks,
-        allocations: [{ paymentId: charge._id, amount }], trustedAllocation: true, req
+        allocations: [{ paymentId: charge._id, amount }], trustedAllocation: true,
+        collectRequestId: req.body.requestId || req.get('Idempotency-Key') || undefined, req
     });
     const fresh = await ledger.getPaymentById(libraryId, charge._id);
-    ok(res, 'Payment collected successfully', fresh, {
-        receipt: { receiptNo: receipt.receiptNumber, transactionId: receipt.transaction._id, outstandingAfter: receipt.outstandingAfter }
+    ok(res, receipt.replay ? 'Payment already recorded' : 'Payment collected successfully', fresh, {
+        receipt: { receiptNo: receipt.receiptNumber, transactionId: receipt.transaction._id, outstandingAfter: receipt.outstandingAfter },
+        replay: !!receipt.replay
     });
 });
 
@@ -109,8 +136,13 @@ const refundPayment = catchAsync(async (req, res) => {
         amount: req.body.amount, reason: req.body.reason, method: req.body.method, req,
         requestId: req.body.requestId || req.get('Idempotency-Key'), refundToGateway: req.body.refundToGateway
     });
+    if (!(txn.$locals && txn.$locals.replay)) {
+        require('../utils/securityLog').record(req, { type: 'refund', outcome: 'success', userId: req.user?._id || null, userType: req.userType || null, libraryId: req.libraryId || null, identifier: req.user?.email || null, meta: { paymentId: String(req.params.paymentId), amount: txn.amount, gateway: txn.refundToGateway === true } });
+    }
     const fresh = await ledger.getPaymentById(lib(req), req.params.paymentId);
+    const warning = await ledger.membershipWarning(lib(req), fresh);
     ok(res, txn.$locals && txn.$locals.replay ? 'Refund already recorded' : 'Refund recorded successfully', fresh, {
+        warning: warning || undefined,
         refund: { transactionId: txn._id, reference: txn.receiptNumber, amount: txn.amount, razorpayRefundId: txn.razorpayRefundId, gateway: txn.refundToGateway === true, replay: !!(txn.$locals && txn.$locals.replay) }
     });
 });
@@ -124,11 +156,12 @@ const adjustPayment = catchAsync(async (req, res) => {
 const cancelPayment = catchAsync(async (req, res) => {
     await guardPayment(req, req.params.paymentId);
     const charge = await ledger.cancelCharge({ libraryId: lib(req), paymentId: req.params.paymentId, reason: req.body.reason, req });
-    ok(res, 'Payment cancelled successfully', charge);
+    const warning = await ledger.membershipWarning(lib(req), charge);
+    ok(res, 'Payment cancelled successfully', charge, { warning: warning || undefined });
 });
 
 const getReceipt = catchAsync(async (req, res) => {
-    await guardPayment(req, req.params.paymentId);
+    await guardReceipt(req, req.params.paymentId);
     const receipt = await ledger.buildReceipt({ libraryId: lib(req), id: req.params.paymentId });
     ok(res, 'Receipt retrieved successfully', receipt);
 });

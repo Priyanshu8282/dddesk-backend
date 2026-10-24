@@ -5,6 +5,8 @@ const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
 const money = z.coerce.number().positive('Amount must be greater than 0').max(10000000);
 const optDate = z.string().refine((v) => !Number.isNaN(new Date(v).getTime()), 'Invalid date');
 const idParam = z.object({ paymentId: objectId });
+// client-generated idempotency key (UUID) - a retry with the same key returns the original receipt
+const requestId = z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9_.:-]+$/);
 
 const allocationList = z.array(z.object({
     paymentId: objectId,
@@ -32,7 +34,8 @@ const createPayment = z.object({
         paymentDate: optDate.optional(),
         note: z.string().max(500).optional(),
         remarks: z.string().max(500).optional(),
-        allocations: allocationList.optional()
+        allocations: allocationList.optional(),
+        requestId: requestId.optional()
     }).refine((d) => d.planId || d.amount !== undefined || d.totalAmount !== undefined || (d.paidAmount && d.paidAmount > 0),
         { message: 'Provide planId/amount to create a charge, or paidAmount to collect on existing dues', path: ['amount'] })
 });
@@ -46,7 +49,8 @@ const collectPartialPayment = z.object({
         reference: z.string().max(100).optional(),
         paymentDate: optDate.optional(),
         note: z.string().max(500).optional(),
-        remarks: z.string().max(500).optional()
+        remarks: z.string().max(500).optional(),
+        requestId: requestId.optional()
     }).refine((d) => d.additionalAmount || d.amount, { message: 'amount must be positive', path: ['amount'] })
 });
 

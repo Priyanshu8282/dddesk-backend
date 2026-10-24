@@ -47,13 +47,27 @@ const scopeFilter = (req) => {
 };
 
 const loadTarget = async (req, id, { populate = false } = {}) => {
-  let q = Admin.findOne({ _id: id, ...scopeFilter(req) });
+  let q = Admin.findOne({ _id: id, isDeleted: { $ne: true }, ...scopeFilter(req) });
   if (populate) q = q.populate('roleId', 'name libraryId permissionIds').populate('libraryId');
   const target = await q;
   if (!target) throw err('User not found', 404);
   // Only a superadmin may ever touch superadmin accounts
   if (target.userType === 'superadmin' && req.userType !== 'superadmin') throw err('User not found', 404);
   return target;
+};
+
+// A staff caller (not owner / superadmin) may only manage accounts that are staff AND whose role grants nothing
+// the caller does not already hold, so peer staff can never be used to climb above their own level.
+const assertCanManageTarget = async (req, target) => {
+  if (req.userType !== 'staff') return;
+  if (idOf(target._id) === idOf(req.user._id)) return;
+  if (target.userType !== 'staff') throw err('You cannot modify this account', 403);
+  const roleId = target.roleId && target.roleId._id ? target.roleId._id : target.roleId;
+  const role = roleId ? await Role.findById(roleId).populate('permissionIds', 'key').lean() : null;
+  const mine = new Set(req.permissions || []);
+  if (role && !(role.permissionIds || []).every((p) => mine.has(p.key))) {
+    throw err('You cannot manage an account that has more permissions than you', 403);
+  }
 };
 
 // A role is assignable when it is a system role or belongs to the tenant, and is not an owner/platform role.
@@ -298,9 +312,19 @@ exports.updateAdmin = async (req, id) => {
   const { body, files } = req;
   const target = await loadTarget(req, id, { populate: true });
   const { isSelf } = rejectUnauthorizedEdit(req, target);
+  await assertCanManageTarget(req, target);
   const tenant = target.libraryId?._id || target.libraryId;
 
-  const update = pick(body, isSelf ? SELF_FIELDS : STAFF_FIELDS);
+  // Login identifiers (email / mobile) of ANOTHER person can only be changed by the owner or a superadmin,
+  // otherwise a peer could redirect that person's OTP / password reset to themselves.
+  const identifierLocked = !isSelf && req.userType === 'staff';
+  const allowed = (isSelf ? SELF_FIELDS : STAFF_FIELDS).filter((f) => !(identifierLocked && ['email', 'mobile'].includes(f)));
+  if (identifierLocked) {
+    const changesEmail = body.email !== undefined && String(body.email).toLowerCase() !== String(target.email || '').toLowerCase();
+    const changesMobile = body.mobile !== undefined && normalizeMobile(body.mobile) !== target.mobile;
+    if (changesEmail || changesMobile) throw err('Only the library owner can change a staff email or mobile number', 403);
+  }
+  const update = pick(body, allowed);
   if (update.mobile) update.mobile = normalizeMobile(update.mobile);
   if (update.alternativeMobileNumber) update.alternativeMobileNumber = normalizeMobile(update.alternativeMobileNumber);
   if (update.mobile && update.mobile !== target.mobile && tenant) await assertMobileFree(update.mobile, tenant, target._id);
@@ -353,6 +377,7 @@ exports.updateAdmin = async (req, id) => {
 exports.updateStatus = async (req, id, status) => {
   const target = await loadTarget(req, id);
   if (idOf(target._id) === idOf(req.user._id)) throw err('You cannot change your own status', 400);
+  await assertCanManageTarget(req, target);
   if (target.userType !== 'staff' && req.userType !== 'superadmin') throw err('You cannot modify this account', 403);
   if (req.userType === 'staff') {
     const mine = req.permissions || [];
@@ -363,6 +388,7 @@ exports.updateStatus = async (req, id, status) => {
   target.updatedBy = req.user._id;
   await target.save();
   await audit(req, 'staff.status', 'Admin', target._id, { status: target.status });
+  if (!target.status) await require('./session.service').revokeAllForUser(target._id, 'account_disabled');
   return Admin.findById(target._id).populate('roleId', 'name').populate('libraryId');
 };
 
@@ -371,6 +397,7 @@ exports.softDelete = async (req, id) => {
   if (idOf(target._id) === idOf(req.user._id)) throw err('Cannot delete your own account', 400);
   if (target.userType !== 'staff' && req.userType !== 'superadmin') throw err('You cannot delete this account', 403);
   if (target.userType === 'superadmin') throw err('Cannot delete a superadmin account', 403);
+  await assertCanManageTarget(req, target);
   if (req.userType === 'staff') {
     const mine = req.permissions || [];
     if (!['staff.delete', 'DELETE_ADMIN'].some((k) => mine.includes(k))) throw err('You do not have permission to perform this action', 403);
@@ -381,6 +408,7 @@ exports.softDelete = async (req, id) => {
   await target.save();
   // Free up branch manager slots held by this person
   await Branch.updateMany({ managerId: target._id }, { $set: { managerId: null } });
+  await require('./session.service').revokeAllForUser(target._id, 'account_deleted');
   await audit(req, 'staff.delete', 'Admin', target._id, { email: target.email, userType: target.userType });
 };
 
@@ -393,5 +421,6 @@ exports.resetPasswordByOwner = async (req, id, newPassword) => {
   target.tokensValidAfter = new Date(); // end the staff member's existing sessions
   target.updatedBy = req.user._id;
   await target.save();
+  await require('./session.service').revokeAllForUser(target._id, 'password_reset');
   await audit(req, 'staff.password_reset', 'Admin', target._id, { email: target.email });
 };

@@ -9,22 +9,25 @@ const Library = require('../models/library.model');
 const svc = require('../services/auth.service');
 const audit = require('../utils/audit');
 const securityLog = require('../utils/securityLog');
-const platformSettings = require('../services/platformSettings.service');
+const maintenance = require('../services/maintenance.service');
+const sessionService = require('../services/session.service');
 
-// During maintenance only super admins may sign in
-const maintenanceBlock = async (res, userType) => {
-  await platformSettings.ensureFresh();
-  if (platformSettings.isMaintenance() && userType !== 'superadmin') {
-    res.status(503).json({ success: false, code: 503, maintenance: true, message: platformSettings.maintenanceMessage() });
-    return true;
-  }
-  return false;
+// During maintenance only super admins may sign in ('all' scope), or everyone except the chosen libraries ('libraries' scope).
+// A read-only window still lets people sign in (they can look at their data), so the method is passed as GET here.
+const maintenanceBlock = async (req, res, userData = {}) => {
+  const body = await maintenance.check({
+    method: 'GET', userType: userData.userType, userId: String(userData.id || userData._id || ''),
+    libraryId: String((userData.libraryId && userData.libraryId._id) || userData.libraryId || ''), ip: req.ip,
+  });
+  if (!body) return false;
+  maintenance.sendBlocked(res, body);
+  return true;
 };
 
 // Why a sign-in failed, in words an investigator can filter on
 const reasonOf = (err) => {
   if (err.libraryStatus) return 'library_blocked';
-  if (err.status === 429) return 'otp_locked';
+  if (err.status === 429) return /sign-in attempts/i.test(err.message) ? 'account_locked' : 'otp_locked';
   if (err.status === 403) return 'account_disabled';
   if (err.status === 401) return 'invalid_credentials';
   if (err.status === 400) return 'invalid_otp';
@@ -51,8 +54,9 @@ const authSuccess = (res, message, { token, userData, role }) =>
 
 exports.login = async (req, res, next) => {
   try {
-    const result = await svc.login(req.body);
-    if (await maintenanceBlock(res, result.userData.userType)) return;
+    const verified = await svc.login(req.body);
+    if (await maintenanceBlock(req, res, verified.userData)) return;
+    const result = await sessionService.startLoginSession(req, res, verified);
     securityLog.record(req, { type: 'login', outcome: 'success', userId: result.userData.id, userType: result.userData.userType, libraryId: result.userData.libraryId?._id || result.userData.libraryId || null, meta: { method: 'password' } });
     return authSuccess(res, `Welcome back, ${result.userData.name}!`, result);
   } catch (err) {
@@ -87,8 +91,9 @@ exports.sendOTP = catchAsync(async (req, res) => {
 
 exports.verifyOTP = async (req, res, next) => {
   try {
-    const result = await svc.verifyOTP(req.body);
-    if (await maintenanceBlock(res, result.userData.userType)) return;
+    const verified = await svc.verifyOTP(req.body);
+    if (await maintenanceBlock(req, res, verified.userData)) return;
+    const result = await sessionService.startLoginSession(req, res, verified);
     securityLog.record(req, { type: 'login', outcome: 'success', userId: result.userData.id, userType: result.userData.userType, libraryId: result.userData.libraryId?._id || result.userData.libraryId || null, meta: { method: 'otp' } });
     return authSuccess(res, 'Login successful', result);
   } catch (err) {
@@ -120,6 +125,39 @@ exports.resetPassword = catchAsync(async (req, res) => {
   res.status(200).json({ success: true, message: 'Password reset successfully' });
 });
 
+// Public: trades the HttpOnly refresh cookie for a new short-lived access token (rotates the cookie)
+exports.refresh = async (req, res, next) => {
+  try {
+    const r = await sessionService.refresh(req, res);
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json({ success: true, token: r.token, expiresIn: r.expiresIn, data: { token: r.token, expiresIn: r.expiresIn } });
+  } catch (err) { return next(err); }
+};
+
+// Public: revokes the session named by the refresh cookie (works with an expired access token too)
+exports.logout = async (req, res, next) => {
+  try {
+    await sessionService.logout(req, res);
+    return res.status(200).json({ success: true, message: 'Logged out' });
+  } catch (err) { return next(err); }
+};
+
+// Private: sign this account out of every device (current one included)
+exports.logoutAll = catchAsync(async (req, res) => {
+  if (req.impersonatedBy) throw new ApiError(403, 'Not allowed while impersonating');
+  await sessionService.revokeAllForUser(req.user._id, 'logout_all');
+  securityLog.record(req, { type: 'session_revoked', outcome: 'success', reason: 'logout_all', userId: req.user._id, userType: req.userType, libraryId: req.libraryId || null });
+  await audit(req, 'auth.logout_all', req.userType === 'student' ? 'Student' : 'Admin', req.user._id);
+  res.status(200).json({ success: true, message: 'Signed out of all devices' });
+});
+
+// Private: the account's signed-in devices
+exports.listSessions = catchAsync(async (req, res) => {
+  const rows = await sessionService.listForUser(req.user._id, req.userType);
+  const data = rows.map((r) => ({ id: r._id, ip: r.ip, device: r.device, createdAt: r.createdAt, lastUsedAt: r.lastUsedAt, current: String(r._id) === String(req.sessionId) }));
+  res.status(200).json({ success: true, data });
+});
+
 exports.updateFcmToken = catchAsync(async (req, res) => {
   await svc.updateFcmToken(req.user._id, req.userType, req.body.fcmToken);
   res.status(200).json({ success: true, message: 'FCM Token updated successfully' });
@@ -140,7 +178,7 @@ exports.getMe = catchAsync(async (req, res) => {
     mobile: user.mobile,
     role: user.roleId?.name,
     libraryId: req.libraryId || null,
-    library: lib ? { id: lib._id, name: lib.name, slug: lib.slug || null, status: lib.status, statusReason: lib.statusReason || null, logo: lib.logo || null } : null,
+    library: lib ? { id: lib._id, name: lib.name, status: lib.status, statusReason: lib.statusReason || null, logo: lib.logo || null } : null,
     branchIds: user.branchIds || [],
     profileImage: user.profileImage,
     userType: req.userType,
@@ -218,6 +256,7 @@ exports.updateProfile = catchAsync(async (req, res) => {
     if (req.file && !(user.profileImage || '').endsWith(req.file.filename || '\0')) discardUpload(req.file);
     throw e;
   }
+  if (newPassword) await sessionService.revokeAllForUser(user._id, 'password_changed', { exceptSid: req.sessionId });
   if (newPassword) await audit(req, 'auth.password_change', isStudent ? 'Student' : 'Admin', user._id);
   else await audit(req, 'auth.profile_update', isStudent ? 'Student' : 'Admin', user._id, { fields: [name && 'name', mobile !== undefined && 'mobile', req.file && 'profileImage'].filter(Boolean) });
 
@@ -241,6 +280,8 @@ exports.updateProfile = catchAsync(async (req, res) => {
 exports.changePassword = catchAsync(async (req, res) => {
   if (req.impersonatedBy) throw new ApiError(403, 'Not allowed while impersonating');
   await svc.changePassword(req.user._id, req.userType, req.body.currentPassword, req.body.newPassword);
+  // a changed password ends every other device's session; this one keeps working
+  await sessionService.revokeAllForUser(req.user._id, 'password_changed', { exceptSid: req.sessionId });
   await audit(req, 'auth.password_change', req.userType === 'student' ? 'Student' : 'Admin', req.user._id);
   res.status(200).json({ success: true, message: 'Password updated successfully' });
 });

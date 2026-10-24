@@ -13,7 +13,7 @@ const FLAT_FIELDS = [
   'website', 'gstNumber', 'facilities', 'seatCapacity', 'weeklyHolidays', 'rules', 'terms', 'timezone', 'currency',
 ];
 const NESTED_FIELDS = [
-  'mapLocation', 'socialLinks', 'workingHours', 'feePolicy', 'membershipPolicy', 'attendanceRules', 'notificationPrefs', 'receipt', 'brand', 'settings',
+  'mapLocation', 'socialLinks', 'workingHours', 'feePolicy', 'feeTax', 'membershipPolicy', 'attendanceRules', 'notificationPrefs', 'receipt', 'brand', 'settings',
 ];
 const REMOVE_FLAGS = ['', 'null', 'REMOVE_IMAGE'];
 const MAX_PHOTOS = 20;
@@ -45,6 +45,12 @@ exports.updateProfile = async (req, libraryId) => {
   // Receipt numbering must never go backwards (duplicate receipt numbers)
   if ($set['receipt.nextNumber'] !== undefined && $set['receipt.nextNumber'] < (library.receipt?.nextNumber || 1)) {
     throw new ApiError(400, `Receipt number cannot be lower than the current counter (${library.receipt.nextNumber})`);
+  }
+
+  // GST on receipts needs the library's GSTIN
+  if ($set['feeTax.gstEnabled'] === true) {
+    const gstin = $set.gstNumber !== undefined ? $set.gstNumber : library.gstNumber;
+    if (!gstin) throw new ApiError(400, 'Add your GSTIN in the profile before turning on GST for fee receipts');
   }
 
   // Images

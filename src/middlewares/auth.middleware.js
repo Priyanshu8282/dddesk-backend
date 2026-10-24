@@ -3,15 +3,16 @@ const Admin = require('../models/admin.model');
 const Role = require('../models/role.model');
 const PlatformPlan = require('../models/platformPlan.model');
 const config = require('../config/config');
-const platformSettings = require('../services/platformSettings.service');
 const { expandPermissions } = require('../seed/permissionCatalog');
 const { getSubscriptionState } = require('../services/subscriptionState.service');
+const sessionService = require('../services/session.service');
+const maintenance = require('../services/maintenance.service');
 
 // Every call used to cost 3-4 sequential database round trips (user, role, permissions, library).
 // The resolved context is kept in memory for a short time; changes (disabled user, role edit, suspended
 // library) take effect within AUTH_CACHE_TTL_MS, and a password reset still ends sessions at once
 // because tokensValidAfter is checked against the cached user on every request.
-const AUTH_CACHE_TTL_MS = Number(process.env.AUTH_CACHE_TTL_MS ?? 30000);
+const AUTH_CACHE_TTL_MS = Number(process.env.AUTH_CACHE_TTL_MS ?? 5000);
 const AUTH_CACHE_MAX = 500;
 const authCache = new Map(); // key -> { at, user, graceDays }
 
@@ -32,6 +33,18 @@ const invalidateAuthCache = (userId) => {
     for (const k of authCache.keys()) if (k.endsWith(':' + String(userId))) authCache.delete(k);
 };
 
+/** Drop every cached user context (super admin "clear caches"). */
+const clearAuthCache = () => authCache.clear();
+
+/** Drop every cached user context of one library (call after its status / subscription changes). */
+const invalidateAuthCacheForLibrary = (libraryId) => {
+    const id = String(libraryId);
+    for (const [k, v] of authCache.entries()) {
+        const lib = v.user && v.user.libraryId;
+        if (lib && String(lib._id || lib) === id) authCache.delete(k);
+    }
+};
+
 const Authentication = async (req, res, next) => {
     try {
         const token = req.headers.authorization?.split(' ')[1];
@@ -39,7 +52,13 @@ const Authentication = async (req, res, next) => {
             return res.status(401).json({ success: false, code: 401, message: 'Authentication required' });
         }
 
-        const decoded = jwt.verify(token, config.jwt.secret);
+        const decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'] });
+        // Only session access tokens are accepted: they name a live, revocable session (sid). This also rejects other
+        // tokens signed with the same secret (registration token, old 30-day tokens issued before sessions existed).
+        if (!decoded.sid || !decoded.id || decoded.purpose
+            || !(await sessionService.isActive(decoded.sid, decoded.id))) {
+            return res.status(401).json({ success: false, code: 401, message: 'Session expired. Please log in again.' });
+        }
         let user;
         const cacheKey = (decoded.type === 'student' ? 'student:' : 'admin:') + decoded.id;
         const cached = cacheGet(cacheKey);
@@ -83,10 +102,14 @@ const Authentication = async (req, res, next) => {
             if (!issuer) return res.status(401).json({ success: false, code: 401, message: 'Support session is no longer valid' });
         }
 
-        // Maintenance mode: only super admins keep working (your own /me stays open so the app can show the notice)
-        await platformSettings.ensureFresh();
-        if (platformSettings.isMaintenance() && user.userType !== 'superadmin' && !(req.method === 'GET' && req.path === '/me')) {
-            return res.status(503).json({ success: false, code: 503, maintenance: true, message: platformSettings.maintenanceMessage() });
+        // Maintenance mode (utils/maintenance.js): super admins always keep working; scope 'all' blocks everyone else,
+        // 'readOnly' blocks changes only, 'libraries' blocks just the chosen libraries. Your own /me stays open so the app can show the notice.
+        if (!(req.method === 'GET' && req.path === '/me')) {
+            const blockedBody = await maintenance.check({
+                method: req.method, userType: user.userType, userId: String(user._id),
+                libraryId: String((user.libraryId && user.libraryId._id) || user.libraryId || ''), ip: req.ip,
+            });
+            if (blockedBody) return maintenance.sendBlocked(res, blockedBody);
         }
 
         // Tenant: expose a plain ObjectId and the library document separately.
@@ -141,7 +164,8 @@ const Authentication = async (req, res, next) => {
         req.libraryId = libraryId;
         req.library = library;
         req.userType = user.userType; // Use the type from the database
-        req.user.sub = decoded.id; 
+        req.user.sub = decoded.id;
+        req.sessionId = decoded.sid;
         // Set when a superadmin acts as the owner (support impersonation token)
         req.impersonatedBy = decoded.impersonatedBy || null;
         // A disabled role grants nothing. Legacy and dotted keys are aliased (see seed/permissionCatalog).
@@ -157,3 +181,5 @@ const Authentication = async (req, res, next) => {
 
 module.exports = Authentication;
 module.exports.invalidateAuthCache = invalidateAuthCache;
+module.exports.clearAuthCache = clearAuthCache;
+module.exports.invalidateAuthCacheForLibrary = invalidateAuthCacheForLibrary;

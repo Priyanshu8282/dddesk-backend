@@ -2,7 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const audit = require('../utils/audit');
 const { tenantId } = require('../middlewares/access.middleware');
-const { resolveTenantFromHost, resolveTenantBySlug, sendTenantError } = require('../middlewares/tenantHost.middleware');
+const { resolveTenantById, sendTenantError } = require('../middlewares/publicLibrary.middleware');
 const svc = require('../services/website.service');
 
 const ok = (res, data, message = 'Success', status = 200) =>
@@ -25,47 +25,11 @@ exports.updateSettings = catchAsync(async (req, res) => {
     ok(res, doc, 'Website settings saved successfully');
 });
 
-exports.requestCustomDomain = catchAsync(async (req, res) => {
-    const data = await svc.requestCustomDomain(libId(req), req.body.domain);
-    audit(req, 'website.customDomain.request', 'Library', libId(req), { domain: req.body.domain });
-    ok(res, data, 'Add the TXT record shown below to your DNS, then verify', 201);
-});
-
-exports.getCustomDomain = catchAsync(async (req, res) => {
-    ok(res, await svc.getCustomDomainStatus(libId(req)), 'Custom domain status retrieved');
-});
-
-exports.verifyCustomDomain = catchAsync(async (req, res) => {
-    const data = await svc.verifyCustomDomain(libId(req));
-    audit(req, 'website.customDomain.verify', 'Library', libId(req), { domain: data.domain });
-    ok(res, data, 'Custom domain verified');
-});
-
-exports.removeCustomDomain = catchAsync(async (req, res) => {
-    const data = await svc.removeCustomDomain(libId(req));
-    audit(req, 'website.customDomain.remove', 'Library', libId(req));
-    ok(res, data, 'Custom domain removed');
-});
-
-exports.changeSlug = catchAsync(async (req, res) => {
-    const data = await svc.changeSlug(libId(req), req.body.slug);
-    audit(req, 'website.slug.change', 'Library', libId(req), { from: data.oldSlug, to: data.slug });
-    ok(res, data, 'Website address updated. The old address will redirect.');
-});
-
 // ---------------- public ----------------
 const cacheable = (res, seconds = 60) => res.set('Cache-Control', `public, max-age=${seconds}, stale-while-revalidate=120`);
 
-exports.resolveTenant = catchAsync(async (req, res) => {
-    // ?host= is used by the frontend edge/middleware; otherwise the Host header / x-tenant-slug
-    const t = await resolveTenantFromHost(req, { host: req.query.host });
-    if (t.reason) return sendTenantError(res, t);
-    cacheable(res, 30);
-    ok(res, svc.getTenantSummary(t), 'Tenant resolved');
-});
-
 exports.getPublicProfile = catchAsync(async (req, res) => {
-    const tenant = await resolveTenantBySlug(req.params.slug);
+    const tenant = await resolveTenantById(req.params.libraryId);
     if (tenant.reason) return sendTenantError(res, tenant);
     cacheable(res);
     tenant.branchId = publicBranch(req);
@@ -103,10 +67,10 @@ exports.submitEnquiry = catchAsync(async (req, res) => {
     ok(res, { received: true, id: result.id }, THANKS, 201);
 });
 
-// Legacy: POST /public/website/enquiry with { slug | libraryId, ... }
-exports.submitEnquiryLegacy = catchAsync(async (req, res) => {
+// POST /public/website/enquiry with { libraryId, ... }
+exports.submitEnquiryByBody = catchAsync(async (req, res) => {
     if (req.body.website || req.body.hp) return ok(res, { received: true }, THANKS, 201);
-    const lib = await svc.findActiveLibraryForEnquiry({ slug: req.body.slug, libraryId: req.body.libraryId });
+    const lib = await svc.findActiveLibraryForEnquiry({ libraryId: req.body.libraryId });
     const result = await svc.createPublicEnquiry(lib, req.body, req.ip);
     ok(res, { received: true, id: result.id }, THANKS, 201);
 });

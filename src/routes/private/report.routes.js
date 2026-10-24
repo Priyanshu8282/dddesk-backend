@@ -1,18 +1,10 @@
 const express = require('express');
-const rateLimit = require('express-rate-limit');
+const { exportLimiter } = require('../../middlewares/rateLimit.middleware');
 const router = express.Router();
 const c = require('../../controllers/report.controller');
 const validate = require('../../middlewares/validate.middleware');
 const { requireStaff, requirePermission } = require('../../middlewares/access.middleware');
 const { reportValidation: v } = require('../../validations');
-
-// Export streams the whole dataset: keep it from being hammered
-const exportLimiter = rateLimit({
-    windowMs: 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false,
-    keyGenerator: (req) => String(req.libraryId || 'anon') + ':' + String(req.user?._id || ''),
-    validate: { keyGeneratorIpFallback: false },
-    message: { success: false, code: 429, message: 'Too many export requests. Please wait a minute.' }
-});
 
 // Students never reach reports; staff need reports.view (owners and superadmin pass)
 router.use(requireStaff, requirePermission('reports.view'));

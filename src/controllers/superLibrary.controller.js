@@ -58,15 +58,8 @@ exports.deleteLibrary = catchAsync(async (req, res) => {
   res.json({ success: true, message: 'Library deleted' });
 });
 
-exports.changeSlug = catchAsync(async (req, res) => {
-  const lib = await svc.changeSlug(req.params.id, req.body.slug, req.user._id, req.ip);
-  res.json({
-    success: true, message: 'Slug updated. The previous address will keep redirecting.',
-    data: { id: lib._id, slug: lib.slug, previousSlugs: lib.previousSlugs, subdomain: lib.subdomain, websiteUrl: lib.websiteUrl },
-  });
-});
-
 exports.impersonate = catchAsync(async (req, res) => {
   const data = await svc.impersonate(req.params.id, req.user, req.ip);
+  require('../utils/securityLog').record(req, { type: 'impersonation', outcome: 'success', reason: 'support_session_started', userId: req.user._id, userType: req.userType, libraryId: req.params.id, meta: { ownerId: String(data.user && data.user.id), expiresAt: data.expiresAt } });
   res.json({ success: true, message: 'Impersonation token issued (valid for 30 minutes)', data });
 });

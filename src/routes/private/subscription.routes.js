@@ -2,7 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const c = require('../../controllers/subscription.controller');
 const validate = require('../../middlewares/validate.middleware');
-const { requireOwner, requireSuperAdmin } = require('../../middlewares/access.middleware');
+const { requireOwner, requireSuperAdmin, blockImpersonation } = require('../../middlewares/access.middleware');
 
 const sv = require('../../validations/subscription.validation');
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
@@ -24,12 +24,12 @@ const libParam = z.object({ params: z.object({ libraryId: objectId }) });
 const owner = express.Router();
 owner.get('/', requireOwner, c.getSubscription);
 owner.get('/plans', requireOwner, c.availablePlans);
-owner.post('/change-plan', requireOwner, validate(sv.changePlan), c.changePlan);
-owner.post('/cancel', requireOwner, validate(sv.cancel), c.cancel);
-owner.post('/resume', requireOwner, c.resume);
+owner.post('/change-plan', requireOwner, blockImpersonation, validate(sv.changePlan), c.changePlan);
+owner.post('/cancel', requireOwner, blockImpersonation, validate(sv.cancel), c.cancel);
+owner.post('/resume', requireOwner, blockImpersonation, c.resume);
 owner.get('/payments', requireOwner, c.myPayments);
-owner.post('/order', requireOwner, validate(sv.order), c.createOrder);
-owner.post('/verify', requireOwner, validate(verifySchema), c.verify);
+owner.post('/order', requireOwner, blockImpersonation, validate(sv.order), c.createOrder);
+owner.post('/verify', requireOwner, blockImpersonation, validate(verifySchema), c.verify);
 
 // Super admin: mounted at /super/subscriptions
 const superAdmin = express.Router();

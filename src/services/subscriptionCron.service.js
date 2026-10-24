@@ -19,13 +19,26 @@ const systemAudit = require('../utils/systemAudit');
 const L = require('../utils/subscriptionLifecycle');
 const { istDateKey, DAY_MS } = require('../utils/time');
 const { getSubscriptionState } = require('./subscriptionState.service');
+const { invalidateAuthCacheForLibrary } = require('../middlewares/auth.middleware');
 
 const TZ = { timezone: 'Asia/Kolkata' };
 const MIN = 60 * 1000;
 const LAST_RUN_KEY = 'cron:subscription-lifecycle:lastRun';
 const BATCH = 200;
 
+/** True while a maintenance window with "pause scheduled jobs" is active: the job is skipped (and logged), not failed. */
+const pausedByMaintenance = async (name) => {
+    try {
+        if (await require('./maintenance.service').cronsPaused()) {
+            console.log(`[cron] skipped ${name}: maintenance window active (jobs paused)`);
+            return true;
+        }
+    } catch (_) { /* if the state cannot be read, run the job */ }
+    return false;
+};
+
 const withLock = async (key, ttlMs, fn) => {
+    if (await pausedByMaintenance(key.split(':')[0])) return;
     let got = false;
     try {
         got = await CronLock.acquire(key, ttlMs);
@@ -167,6 +180,7 @@ const processLapsed = async (now = new Date()) => {
             );
             if (r.modifiedCount) {
                 res.suspended++;
+                invalidateAuthCacheForLibrary(lib._id);
                 systemAudit(lib._id, 'subscription.suspended', 'Library', lib._id, { endedOn: st.expiresAt, graceEndedAt: st.graceEndsAt });
                 await notifyOwners('subscription-suspended', lib._id);
                 require('./platformAlerts.service').notify('subscriptionSuspended', {
@@ -211,10 +225,15 @@ const sendRenewalReminders = async (now = new Date()) => {
 
 
 const runSubscriptionLifecycle = async (now = new Date()) => {
+    // first: finish any payment that was captured but never applied to its library
+    const repairs = await require('./subscription.service').repairUnappliedPayments(now).catch((e) => {
+        console.error('[subscription-cron] repair failed:', e.message);
+        return { repaired: 0 };
+    });
     const scheduled = await applyScheduledChanges(now);
     const lapsed = await processLapsed(now);
     const reminders = await sendRenewalReminders(now);
-    const summary = { at: now, ...scheduled, ...lapsed, ...reminders };
+    const summary = { at: now, ...repairs, ...scheduled, ...lapsed, ...reminders };
     try {
         await GlobalSetting.findOneAndUpdate(
             { key: LAST_RUN_KEY },

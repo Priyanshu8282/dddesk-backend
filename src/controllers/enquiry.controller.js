@@ -6,13 +6,13 @@ const svc = require('../services/enquiry.service');
 const { enquiryLimiter } = require('../middlewares/rateLimit.middleware');
 const { branchFilter, branchForCreate, resolveBranch } = require('../utils/branchScope');
 
-// Public website submission (no auth). Library comes from slug or libraryId and must be active.
+// Public website submission (no auth). Library comes from libraryId and must be active.
 const submitPublic = catchAsync(async (req, res) => {
   // Honeypot: bots fill hidden fields. Pretend success, store nothing.
   if (req.body.hp) {
     return ApiResponse.created(res, null, 'Enquiry submitted successfully');
   }
-  const lib = await svc.resolvePublicLibrary({ slug: req.body.slug, libraryId: req.body.libraryId });
+  const lib = await svc.resolvePublicLibrary({ libraryId: req.body.libraryId });
   const branchId = await resolveBranch(lib._id, req.body.branchId);
   const { enquiry, duplicate } = await svc.createEnquiry(lib._id, req.body, { source: 'website', ip: req.ip, branchId });
   if (!duplicate) svc.notifyOwner(lib._id, enquiry);

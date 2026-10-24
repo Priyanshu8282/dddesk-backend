@@ -47,9 +47,9 @@ exports.createStudent = catchAsync(async (req, res) => {
 
 exports.importStudents = catchAsync(async (req, res) => {
     const libraryId = lib(req);
-    const { rows, dryRun, branchId } = req.body;
+    const { rows, dryRun, branchId, consentConfirmed } = req.body;
     const branch = await branchForCreate(req, libraryId, branchId);
-    const result = await studentService.importStudents(libraryId, rows, req, { dryRun: !!dryRun, branchId: branch });
+    const result = await studentService.importStudents(libraryId, rows, req, { dryRun: !!dryRun, branchId: branch, consentConfirmed: !!consentConfirmed });
     const { summary } = result;
     ok(res, dryRun
         ? `${summary.valid} of ${summary.total} rows are ready to import`
@@ -93,7 +93,7 @@ exports.updateStudent = catchAsync(async (req, res) => {
         ];
     }
     if (data.branchId) assertBranchAccess(req, data.branchId);
-    const student = await studentService.updateStudentById(req.params.id, libraryId, data);
+    const student = await studentService.updateStudentById(req.params.id, libraryId, data, req);
     audit(req, 'student.update', 'Student', req.params.id, { fields: Object.keys(req.body || {}) });
     ok(res, 'Student updated successfully', student);
 });
@@ -103,27 +103,52 @@ exports.deleteStudent = catchAsync(async (req, res) => {
     res.status(200).json({ success: true, message: 'Student archived successfully' });
 });
 
+// DPDP right to erasure (owner only): wipes personal data, keeps financial records
+exports.eraseStudent = catchAsync(async (req, res) => {
+    const result = await studentService.eraseStudent(req.params.id, lib(req), { reason: req.body.reason }, req);
+    ok(res, 'Student personal data erased. Payment records were kept.', result);
+});
+
+// DPDP right to access: everything held about the student, as a JSON download
+exports.exportStudentData = catchAsync(async (req, res) => {
+    const data = await studentService.exportStudentData(req.params.id, lib(req), req);
+    res.setHeader('Content-Disposition', `attachment; filename="student-data-${req.params.id}.json"`);
+    ok(res, 'Student data exported', data);
+});
+
+// Archived students whose retention period has passed (review, then erase)
+exports.retentionCandidates = catchAsync(async (req, res) => {
+    const data = await studentService.listRetentionCandidates(lib(req), { days: req.query.days });
+    ok(res, 'Retention candidates retrieved', data.students, { retentionDays: data.retentionDays, cutoff: data.cutoff, count: data.count });
+});
+
 exports.assignPlan = catchAsync(async (req, res) => {
     const result = await studentService.assignPlan(req.params.id, lib(req), req.body, req);
     ok(res, 'Plan assigned successfully', result.student, { pendingCharge: result.pendingCharge, charge: result.charge, amount: result.amount });
 });
 
 exports.markAsPaid = catchAsync(async (req, res) => {
-    const result = await studentService.markAsPaid(req.params.id, lib(req), req.body, req);
-    ok(res, 'Payment recorded and plan activated', result.student, {
-        membership: result.membership, payment: result.payment, paymentRecorded: result.paymentRecorded
+    const body = { ...req.body, requestId: req.body.requestId || req.get('Idempotency-Key') || undefined };
+    const result = await studentService.markAsPaid(req.params.id, lib(req), body, req);
+    ok(res, result.replay ? 'Payment already recorded' : 'Payment recorded and plan activated', result.student, {
+        membership: result.membership, payment: result.payment, paymentRecorded: result.paymentRecorded, replay: !!result.replay
     });
 });
 
 exports.changePlan = catchAsync(async (req, res) => {
-    const result = await studentService.changePlan(req.params.id, lib(req), req.body, req);
-    ok(res, 'Plan changed successfully', result.student, { membership: result.membership, pendingCharge: result.pendingCharge, charge: result.charge });
+    const body = { ...req.body, requestId: req.body.requestId || req.get('Idempotency-Key') || undefined };
+    const result = await studentService.changePlan(req.params.id, lib(req), body, req);
+    ok(res, 'Plan changed successfully', result.student, {
+        membership: result.membership, pendingCharge: result.pendingCharge, charge: result.charge,
+        payment: result.payment, proration: result.proration, warnings: result.warnings
+    });
 });
 
 exports.renew = catchAsync(async (req, res) => {
-    const result = await studentService.renewMembership(req.params.id, lib(req), req.body, req);
+    const body = { ...req.body, requestId: req.body.requestId || req.get('Idempotency-Key') || undefined };
+    const result = await studentService.renewMembership(req.params.id, lib(req), body, req);
     ok(res, 'Membership renewed successfully', result.student, {
-        membership: result.membership, pendingCharge: result.pendingCharge, charge: result.charge, seatNote: result.seatNote
+        membership: result.membership, pendingCharge: result.pendingCharge, charge: result.charge, payment: result.payment, seatNote: result.seatNote
     });
 });
 

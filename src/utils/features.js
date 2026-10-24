@@ -18,8 +18,7 @@ const FEATURE_KEYS = Object.freeze({
     onlinePayments: 'onlinePayments',
     sms: 'sms',
     whatsapp: 'whatsapp',
-    exports: 'exports',             // xlsx/csv exports
-    customDomain: 'customDomain'
+    exports: 'exports'              // xlsx/csv exports
 });
 const FEATURE_LIST = Object.freeze(Object.values(FEATURE_KEYS));
 

@@ -32,4 +32,13 @@ router.get('/cities', (req, res, next) => {
     res.json({ success: true, data: cities });
 });
 
+// GET /v1/public/locations/districts?state=Rajasthan  (official district list; 404 for states we do not hold one for)
+router.get('/districts', (req, res, next) => {
+    const state = String(req.query.state || '');
+    if (!state) return next(new ApiError(400, 'state is required'));
+    const districts = loc.districtsOf(state);
+    if (!districts) return next(new ApiError(404, 'No district list for this state'));
+    res.json({ success: true, data: districts });
+});
+
 module.exports = router;

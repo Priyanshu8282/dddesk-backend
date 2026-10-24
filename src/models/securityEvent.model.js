@@ -7,7 +7,7 @@ const RETENTION_DAYS = Number(process.env.SECURITY_LOG_RETENTION_DAYS || 365);
 const securityEventSchema = new mongoose.Schema({
     type: {
         type: String, required: true,
-        enum: ['login', 'otp_request', 'otp_verify', 'password_reset_request', 'password_reset', 'password_change', 'rate_limited', 'forbidden', 'tenant_mismatch', 'account_blocked'],
+        enum: ['login', 'otp_request', 'otp_verify', 'password_reset_request', 'password_reset', 'password_change', 'rate_limited', 'forbidden', 'tenant_mismatch', 'account_blocked', 'logout', 'session_refresh', 'session_revoked', 'impersonation', 'role_change', 'refund', 'maintenance'],
     },
     outcome: { type: String, required: true, enum: ['success', 'failure', 'blocked'] },
     reason: { type: String, default: null },       // invalid_credentials | invalid_otp | otp_locked | account_disabled | library_blocked | ...

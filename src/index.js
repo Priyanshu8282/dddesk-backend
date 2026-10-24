@@ -14,6 +14,7 @@ const { initCronJobs } = require('./services/cron.service');
 
 connectDB().then(async () => {
     await require('./services/platformSettings.service').ensureFresh();
+    require('./services/maintenance.service').logStartup();
     initCronJobs();
 
     server.listen(port, "0.0.0.0", () => {

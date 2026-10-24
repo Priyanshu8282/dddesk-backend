@@ -41,6 +41,7 @@ const GROUPS = [
   P('Edit Students', 'students.edit', 'STUDENTS', 'Edit student profile, notes and status'),
   P('Archive Students', 'students.archive', 'STUDENTS', 'Archive / deactivate students without losing history'),
   P('Export Students', 'students.export', 'STUDENTS', 'Export student data'),
+  P('Erase Student Data', 'students.erase', 'STUDENTS', 'Permanently erase personal data of a student (DPDP right to erasure). Owner-only unless explicitly granted'),
   // Seats: View, assign, transfer, block
   P('View Seats', 'seats.view', 'SEATS', 'View seat map and status'),
   P('Manage Seats', 'seats.manage', 'SEATS', 'Create / edit seats, floors and rooms'),

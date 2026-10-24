@@ -27,9 +27,6 @@ router.patch('/:id/reinstate', validate(v.idParam), ctrl.reinstateLibrary);
 router.get('/:id/plan', validate(v.idParam), ctrl.getLibraryPlan);
 router.patch('/:id/plan', validate(v.assignPlan), ctrl.assignPlan);
 
-// Subdomain: controlled change, old slug keeps redirecting
-router.patch('/:id/slug', validate(v.changeSlug), ctrl.changeSlug);
-
 // Audited support access: short-lived token as the library owner
 router.post('/:id/impersonate', validate(v.idParam), ctrl.impersonate);
 

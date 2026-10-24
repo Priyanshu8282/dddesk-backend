@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const { normalizeMobile } = require('../utils/mobile');
+const { GSTIN_RE } = require('../utils/feeMath');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
 const mobile = z.string().trim().transform(normalizeMobile).refine((v) => /^\+?\d{10,13}$/.test(v), 'Enter a valid mobile number');
@@ -59,7 +60,7 @@ const updateStaff = z.object({
         // owner self-edit may carry these; they are routed to the library by the service
         ownerName: z.string().trim().max(100).optional(),
         website: z.string().trim().max(200).optional(),
-        gstNumber: z.string().trim().max(20).optional(),
+        gstNumber: z.string().trim().transform((v) => v.toUpperCase()).refine((v) => v === '' || GSTIN_RE.test(v), 'Enter a valid 15-character GSTIN').optional(),
         existingPhotos: z.string().max(10000).optional(),
         profileImage: z.string().max(500).optional(),
     }).partial()

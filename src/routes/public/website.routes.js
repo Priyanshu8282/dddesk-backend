@@ -2,7 +2,7 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const ctrl = require('../../controllers/libraryWebsite.controller');
 const validate = require('../../middlewares/validate.middleware');
-const { tenantFromSlugParam } = require('../../middlewares/tenantHost.middleware');
+const { tenantFromIdParam } = require('../../middlewares/publicLibrary.middleware');
 const { websiteValidation } = require('../../validations');
 
 const router = express.Router();
@@ -13,24 +13,24 @@ const enquiryLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 5, standardHea
 
 router.use(readLimiter);
 
-// Legacy slug-less enquiry (slug or libraryId in body). Must stay above /:slug routes.
-router.post('/enquiry', enquiryLimiter, validate(websiteValidation.legacyPublicEnquiry), ctrl.submitEnquiryLegacy);
+// Enquiry with libraryId in the body. Must stay above /:libraryId routes.
+router.post('/enquiry', enquiryLimiter, validate(websiteValidation.bodyPublicEnquiry), ctrl.submitEnquiryByBody);
 
 // Full site payload (library must be active AND website published)
-router.get('/:slug', validate(websiteValidation.slugParam), ctrl.getPublicProfile);
+router.get('/:libraryId', validate(websiteValidation.libraryIdParam), ctrl.getPublicProfile);
 
 // Granular, lazy-loadable sections
-const t = tenantFromSlugParam();
-router.get('/:slug/plans', t, ctrl.getPlans);
-router.get('/:slug/seats', t, ctrl.getSeats);
-router.get('/:slug/stories', t, ctrl.getStories);
-router.get('/:slug/notices', t, ctrl.getNotices);
-router.get('/:slug/banners', t, ctrl.getBanners);
-router.get('/:slug/offers', t, ctrl.getOffers);
-router.get('/:slug/gallery', t, ctrl.getGallery);
-router.get('/:slug/reviews', t, ctrl.getReviews);
+const t = tenantFromIdParam();
+router.get('/:libraryId/plans', t, ctrl.getPlans);
+router.get('/:libraryId/seats', t, ctrl.getSeats);
+router.get('/:libraryId/stories', t, ctrl.getStories);
+router.get('/:libraryId/notices', t, ctrl.getNotices);
+router.get('/:libraryId/banners', t, ctrl.getBanners);
+router.get('/:libraryId/offers', t, ctrl.getOffers);
+router.get('/:libraryId/gallery', t, ctrl.getGallery);
+router.get('/:libraryId/reviews', t, ctrl.getReviews);
 
-// Slug-bound enquiry
-router.post('/:slug/enquiry', enquiryLimiter, validate(websiteValidation.publicEnquiry), t, ctrl.submitEnquiry);
+// Library-bound enquiry
+router.post('/:libraryId/enquiry', enquiryLimiter, validate(websiteValidation.publicEnquiry), t, ctrl.submitEnquiry);
 
 module.exports = router;

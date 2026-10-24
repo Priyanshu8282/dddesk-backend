@@ -6,66 +6,63 @@ const helmet = require("helmet");
 const publicRoutes = require('./routes/public');
 const privateRoutes = require('./routes/private');
 const errorHandler = require('./middlewares/error.middleware');
+const { sanitizeInput, parameterPollutionGuard, extraHeaders } = require('./middlewares/security.middleware');
+const { apiLimiter } = require('./middlewares/rateLimit.middleware');
 
 const app = express();
 
 // Behind Vercel/proxies: real client IP for rate limiting and audit logs
 app.set('trust proxy', 1);
 
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-    : ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173'];
-
-const corsOptions = {
-    origin: (origin, callback) => {
-        // Tenant websites live on {slug}.BASE_DOMAIN
-        const baseDomain = (process.env.BASE_DOMAIN || 'dddesk.ai').toLowerCase();
-        let tenantOrigin = false;
-        try {
-            const host = origin ? new URL(origin).hostname.toLowerCase() : '';
-            tenantOrigin = host === baseDomain || host.endsWith('.' + baseDomain);
-        } catch (e) { /* invalid origin */ }
-        const configured = require('./services/platformSettings.service').extraAllowedOrigins();
-        if (!origin || allowedOrigins.includes(origin) || tenantOrigin || configured.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-slug'],
-    maxAge: 86400, // browsers remember the preflight answer for a day instead of asking before every call
-};
-
+// Exact-origin CORS (config/cors.js): ALLOWED_ORIGINS + FRONTEND_URL + the frontend URL saved in Platform Settings
+const { corsOptions } = require('./config/cors');
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
-// Configure Helmet with custom CSP and CORS settings
+// Security headers. This server only returns JSON and files: nothing it sends may be framed or run as a page.
+app.disable('x-powered-by');
 app.use(
     helmet({
+        // images/files are loaded by the frontend from another origin
         crossOriginResourcePolicy: { policy: "cross-origin" },
         contentSecurityPolicy: {
+            useDefaults: false,
             directives: {
-                ...helmet.contentSecurityPolicy.getDefaultDirectives(),
-                "img-src": ["'self'", "data:", "*"],
-                "frame-ancestors": ["*"],
+                "default-src": ["'none'"],
+                "frame-ancestors": ["'none'"],
+                "base-uri": ["'none'"],
+                "form-action": ["'none'"],
             },
         },
+        frameguard: { action: "deny" },
+        referrerPolicy: { policy: "no-referrer" },
+        hsts: { maxAge: 31536000, includeSubDomains: true },
     })
 );
+app.use(extraHeaders);
 
 // Uploaded files: never let the browser sniff or execute them
+const INLINE_OK = /[.](png|jpe?g|gif|webp)$/i;
 app.use('/uploads', (req, res, next) => {
+    // Personal documents (Aadhaar, ID proofs) are served only through the authenticated /v1/private/files route
+    if (/^[/]documents([/]|$)/i.test(req.path)) return res.status(404).json({ success: false, code: 404, message: 'File not found' });
     res.set('X-Content-Type-Options', 'nosniff');
     res.set('Content-Security-Policy', "default-src 'none'; img-src 'self'; media-src 'self'; sandbox");
     next();
-}, express.static('uploads', { dotfiles: 'deny', index: false }));
+}, express.static('uploads', {
+    dotfiles: 'deny', index: false,
+    // anything that is not a plain image is downloaded, never rendered in the browser
+    setHeaders: (res, filePath) => { if (!INLINE_OK.test(filePath)) res.set('Content-Disposition', 'attachment'); },
+}));
 
-//parse json request body (keep the raw bytes for payment webhook signature checks)
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
-//parse urlencoded request body
-app.use(express.urlencoded({ extended: true }));
+// Request bodies: small by default (keep the raw bytes for payment webhook signature checks)
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb', verify: (req, res, buf) => { req.rawBody = buf; } }));
+app.use(express.urlencoded({ extended: true, limit: '200kb', parameterLimit: 200 }));
+// Strip Mongo operators ($gt, a.b) and prototype keys from body/query; cap repeated query params
+app.use(sanitizeInput);
+app.use(parameterPollutionGuard);
+// Whole-API flood guard per client IP (the webhook below is mounted at the root and is not counted)
+app.use('/v1', apiLimiter);
 
 
 // Root open route
@@ -80,6 +77,9 @@ app.get("/", (req, res) => {
 // Razorpay webhook endpoint (root level)
 const razorpayController = require('./controllers/razorpay.controller');
 app.post('/webhook/razorpay', razorpayController.webhookHandler);
+
+// Maintenance gate for public routes (private routes are decided after sign-in; the webhook above is never blocked)
+app.use('/v1', require('./middlewares/maintenance.middleware'));
 
 //Api routes
 // Scheduled jobs for serverless hosting (secured with CRON_SECRET)

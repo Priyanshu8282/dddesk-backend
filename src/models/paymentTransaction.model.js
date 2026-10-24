@@ -40,6 +40,8 @@ const transactionSchema = new mongoose.Schema({
     razorpayRefundId: { type: String },
     // refund idempotency / gateway state
     refundRequestId: { type: String },
+    // collection idempotency key (client-generated per submit): a replay returns the original receipt
+    collectRequestId: { type: String },
     refundToGateway: { type: Boolean },
     gatewayUnknown: { type: Boolean, default: false }, // gateway call outcome unknown (timeout / 5xx): verify before retrying
     processingAt: { type: Date },
@@ -53,6 +55,7 @@ transactionSchema.index({ razorpayOrderId: 1 }, { unique: true, partialFilterExp
 transactionSchema.index({ razorpayPaymentId: 1, type: 1 }, { unique: true, partialFilterExpression: { razorpayPaymentId: { $type: 'string' } } });
 transactionSchema.index({ razorpayRefundId: 1 }, { unique: true, partialFilterExpression: { razorpayRefundId: { $type: 'string' } } });
 transactionSchema.index({ libraryId: 1, refundRequestId: 1 }, { unique: true, partialFilterExpression: { refundRequestId: { $type: 'string' } } });
+transactionSchema.index({ libraryId: 1, collectRequestId: 1 }, { unique: true, partialFilterExpression: { collectRequestId: { $type: 'string' } } });
 transactionSchema.index({ libraryId: 1, studentId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('PaymentTransaction', transactionSchema);

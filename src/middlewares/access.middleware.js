@@ -23,7 +23,16 @@ const requireStudent = allow('student');
 const requirePermission = (...keys) => (req, res, next) => {
     if (req.userType === 'admin' || req.userType === 'superadmin') return next();
     if (req.userType === 'staff' && keys.some((k) => (req.permissions || []).includes(k))) return next();
+    securityLog.record(req, { type: 'forbidden', outcome: 'blocked', reason: 'missing_permission', userId: req.user?._id || null, userType: req.userType || null, libraryId: req.libraryId || null, identifier: req.user?.email || null, meta: { needed: keys.slice(0, 5) } });
     return next(deny('You do not have permission to perform this action'));
+};
+
+// A superadmin acting as the owner (support session) may look around and do day-to-day work,
+// but must not change credentials, staff, roles or billing: those would outlive the 30-minute session.
+const blockImpersonation = (req, res, next) => {
+    if (!req.impersonatedBy) return next();
+    securityLog.record(req, { type: 'forbidden', outcome: 'blocked', reason: 'impersonation_blocked', userId: req.user?._id || null, userType: req.userType || null, libraryId: req.libraryId || null, meta: { impersonatedBy: String(req.impersonatedBy) } });
+    return next(deny('Not allowed during a support session'));
 };
 
 // Tenant for a request. Only superadmin may target another tenant via ?libraryId=.
@@ -34,4 +43,4 @@ const tenantId = (req) => {
     return req.libraryId;
 };
 
-module.exports = { allow, requireSuperAdmin, requireOwner, requireStaff, requireStudent, requirePermission, tenantId };
+module.exports = { blockImpersonation, allow, requireSuperAdmin, requireOwner, requireStaff, requireStudent, requirePermission, tenantId };

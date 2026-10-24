@@ -66,13 +66,6 @@ const libraryWebsiteSchema = new Schema({
 
   isPublished: { type: Boolean, default: false },
 
-  // Custom domain verification (verified domain itself lives on Library.customDomain)
-  pendingDomain:           { type: String, default: '' },
-  domainVerificationToken: { type: String, default: '' },
-  domainRequestedAt:       { type: Date, default: null },
-
-  // Slug change throttle
-  slugChangedAt: { type: Date, default: null },
 }, { timestamps: true });
 
 module.exports = mongoose.model('LibraryWebsite', libraryWebsiteSchema);

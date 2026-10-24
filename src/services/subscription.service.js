@@ -123,7 +123,7 @@ exports.listSubscriptions = async (query = {}) => {
     const { page, limit } = clampPaging(query);
     const filter = { isDeleted: false };
     if (query.search) filter.name = new RegExp(require('../utils/escapeRegex')(String(query.search)), 'i');
-    const libs = await Library.find(filter).select('name subscriptionPlan subscriptionPlanId subscriptionExpiry status')
+    const libs = await Library.find(filter).select('name subscriptionPlan subscriptionPlanId subscriptionExpiry trialEndsAt subscriptionIsTrial status')
         .sort({ createdAt: -1 }).lean();
     const plans = await PlatformPlan.find({}).lean();
     const planMap = new Map(plans.map((p) => [String(p._id), p]));
@@ -134,7 +134,11 @@ exports.listSubscriptions = async (query = {}) => {
     const lastMap = new Map(last.map((l) => [String(l._id), l]));
     let rows = libs.map((l) => {
         const lp = lastMap.get(String(l._id));
-        const st = subscriptionState(l, l.subscriptionPlanId ? planMap.get(String(l.subscriptionPlanId)) : null, lp && lp.status === 'failed');
+        // trial libraries only have trialEndsAt: getSubscriptionState understands both
+        const s = getSubscriptionState(l, l.subscriptionPlanId ? planMap.get(String(l.subscriptionPlanId)) : null);
+        const st = s.expiresAt
+            ? { state: s.state, expiry: s.expiresAt, graceUntil: s.graceEndsAt, inGrace: s.state === 'grace', paymentFailed: !!(lp && lp.status === 'failed') }
+            : { state: 'none', expiry: null, graceUntil: null, inGrace: false };
         return {
             libraryId: l._id, name: l.name, libraryStatus: l.status, plan: l.subscriptionPlan,
             ...st, lastPayment: lp ? { status: lp.status, amount: lp.amount, at: lp.at } : null
@@ -182,7 +186,9 @@ exports.createOrder = async ({ libraryId, platformPlanId, period, userId, kind =
     if (!library) throw new ApiError(404, 'Library not found');
     const planId = platformPlanId || library.subscriptionPlanId;
     if (!planId || !mongoose.isValidObjectId(planId)) throw new ApiError(400, 'platformPlanId is required');
-    const plan = await PlatformPlan.findOne({ _id: planId, isActive: true, isDeleted: false });
+    // A plan that was deactivated for new sign-ups can still be renewed by libraries that are already on it
+    const onThisPlan = !!library.subscriptionPlanId && String(library.subscriptionPlanId) === String(planId);
+    const plan = await PlatformPlan.findOne({ _id: planId, isDeleted: false, ...(onThisPlan && kind === 'renewal' ? {} : { isActive: true }) });
     if (!plan) throw new ApiError(404, 'Platform plan not found');
     const cycle = period || library.billingCycle || 'monthly';
     if (!['monthly', 'annual'].includes(cycle)) throw new ApiError(400, 'period must be monthly or annual');
@@ -228,7 +234,7 @@ exports.createOrder = async ({ libraryId, platformPlanId, period, userId, kind =
     };
 };
 
-const markFailed = async (record, reason) => {
+const markFailed = async (record, reason, { needsReview = false } = {}) => {
     const plan = await PlatformPlan.findById(record.platformPlanId).lean();
     const lib = await Library.findById(record.libraryId).select('subscriptionExpiry').lean();
     const base = lib && lib.subscriptionExpiry && new Date(lib.subscriptionExpiry) > new Date() ? new Date(lib.subscriptionExpiry) : new Date();
@@ -239,7 +245,7 @@ const markFailed = async (record, reason) => {
     });
     return PlatformPayment.findOneAndUpdate(
         { _id: record._id, status: { $ne: 'paid' } },
-        { $set: { status: 'failed', failureReason: reason, graceUntil, inGrace: graceUntil.getTime() > Date.now() } },
+        { $set: { status: 'failed', failureReason: reason, graceUntil, inGrace: graceUntil.getTime() > Date.now(), ...(needsReview ? { needsReview: true } : {}) } },
         { new: true }
     );
 };
@@ -274,29 +280,14 @@ const reinstateIfSuspendedForNonPayment = async (libraryId, paymentId) => {
     return !!r.modifiedCount;
 };
 
-const finalize = async (record, paymentId, signature) => {
-    const claimed = await PlatformPayment.findOneAndUpdate(
-        { _id: record._id, status: { $in: ['pending', 'failed'] } },
-        { $set: { status: 'paid', razorpayPaymentId: paymentId, razorpaySignature: signature, paidAt: new Date(), inGrace: false, failureReason: undefined } },
-        { new: true }
-    );
-    if (!claimed) return PlatformPayment.findById(record._id); // already settled (idempotent)
-
+/**
+ * Apply a paid payment to the library. Idempotent: it only writes values stored on the payment record
+ * (periodEnd, plan, cycle) so a crashed run can be repeated safely; applyPending is cleared at the very end.
+ */
+const applyPaymentToLibrary = async (claimed) => {
     const plan = await PlatformPlan.findById(claimed.platformPlanId).lean();
-    const lib = await Library.findById(claimed.libraryId).select('subscriptionExpiry');
-    const now = new Date();
-    // renewal extends the current period; an upgrade starts a fresh period now (unused time was credited in the price)
-    const startFrom = claimed.kind !== 'upgrade' && lib && lib.subscriptionExpiry && new Date(lib.subscriptionExpiry) > now
-        ? new Date(lib.subscriptionExpiry) : now;
-    const periodEnd = addPeriod(startFrom, claimed.period);
-    claimed.periodStart = startFrom;
-    claimed.periodEnd = periodEnd;
-    claimed.invoiceNo = await nextInvoiceNo();
-    claimed.graceUntil = undefined;
-    await claimed.save();
-
     const set = {
-        subscriptionExpiry: periodEnd, subscriptionPlanId: claimed.platformPlanId, subscriptionIsTrial: false,
+        subscriptionExpiry: claimed.periodEnd, subscriptionPlanId: claimed.platformPlanId, subscriptionIsTrial: false,
         billingCycle: claimed.period, subscriptionStatus: 'active', cancelAtPeriodEnd: false
     };
     if (plan) Object.assign(set, planSet(plan, claimed.period));
@@ -311,7 +302,67 @@ const finalize = async (record, paymentId, signature) => {
         );
     }
     await reinstateIfSuspendedForNonPayment(claimed.libraryId, claimed._id);
-    return claimed;
+    require('../middlewares/auth.middleware').invalidateAuthCacheForLibrary(claimed.libraryId);
+    await PlatformPayment.updateOne({ _id: claimed._id }, { $unset: { applyPending: '' } });
+};
+
+/** Re-run the library update for a payment that was marked paid but never fully applied (crash between the writes) */
+const repairPayment = async (record) => {
+    if (!record || record.status !== 'paid' || !record.applyPending) return record;
+    let claimed = record;
+    if (!claimed.periodEnd) {
+        // crashed before the period/invoice were stored; only repair once the original run cannot still be going
+        if (claimed.paidAt && Date.now() - new Date(claimed.paidAt).getTime() < 2 * 60 * 1000) return record;
+        const lib = await Library.findById(claimed.libraryId).select('subscriptionExpiry');
+        const now = new Date();
+        const startFrom = claimed.kind !== 'upgrade' && lib && lib.subscriptionExpiry && new Date(lib.subscriptionExpiry) > now
+            ? new Date(lib.subscriptionExpiry) : now;
+        const periodEnd = addPeriod(startFrom, claimed.period);
+        const invoiceNo = claimed.invoiceNo || await nextInvoiceNo();
+        claimed = await PlatformPayment.findOneAndUpdate(
+            { _id: claimed._id, periodEnd: { $exists: false } },
+            { $set: { periodStart: startFrom, periodEnd, invoiceNo } },
+            { new: true }
+        ) || await PlatformPayment.findById(claimed._id);
+        if (!claimed.periodEnd) return claimed;
+    }
+    await applyPaymentToLibrary(claimed);
+    systemAudit(claimed.libraryId, 'subscription.payment.repaired', 'PlatformPayment', claimed._id, { invoiceNo: claimed.invoiceNo });
+    return PlatformPayment.findById(claimed._id);
+};
+exports.repairPayment = repairPayment;
+
+/** Cron safety net: apply every paid payment that never reached the library */
+exports.repairUnappliedPayments = async (now = new Date()) => {
+    const stale = await PlatformPayment.find({ status: 'paid', applyPending: true, paidAt: { $lt: new Date(now.getTime() - 2 * 60 * 1000) } }).limit(200);
+    let repaired = 0;
+    for (const rec of stale) {
+        try { await repairPayment(rec); repaired++; } catch (e) { console.error('[subscription] repair failed for', String(rec._id), e.message); }
+    }
+    return { repaired };
+};
+
+const finalize = async (record, paymentId, signature) => {
+    const claimed = await PlatformPayment.findOneAndUpdate(
+        { _id: record._id, status: { $in: ['pending', 'failed'] } },
+        { $set: { status: 'paid', razorpayPaymentId: paymentId, razorpaySignature: signature, paidAt: new Date(), inGrace: false, applyPending: true }, $unset: { failureReason: '' } },
+        { new: true }
+    );
+    if (!claimed) return repairPayment(await PlatformPayment.findById(record._id)); // already settled; finish it if a crash left it half-applied
+
+    const lib = await Library.findById(claimed.libraryId).select('subscriptionExpiry');
+    const now = new Date();
+    // renewal extends the current period; an upgrade starts a fresh period now (unused time was credited in the price)
+    const startFrom = claimed.kind !== 'upgrade' && lib && lib.subscriptionExpiry && new Date(lib.subscriptionExpiry) > now
+        ? new Date(lib.subscriptionExpiry) : now;
+    claimed.periodStart = startFrom;
+    claimed.periodEnd = addPeriod(startFrom, claimed.period);
+    claimed.invoiceNo = await nextInvoiceNo();
+    claimed.graceUntil = undefined;
+    await claimed.save();
+
+    await applyPaymentToLibrary(claimed);
+    return PlatformPayment.findById(claimed._id);
 };
 
 exports.verifyPayment = async ({ libraryId, orderId, paymentId, signature, req }) => {
@@ -320,11 +371,12 @@ exports.verifyPayment = async ({ libraryId, orderId, paymentId, signature, req }
     if (!record) throw new ApiError(404, 'Subscription order not found');
     if (record.status === 'paid') {
         if (record.razorpayPaymentId && record.razorpayPaymentId !== paymentId) throw new ApiError(409, 'Order already paid with a different payment');
-        return { payment: record, alreadyProcessed: true };
+        return { payment: await repairPayment(record), alreadyProcessed: true };
     }
     const expected = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${orderId}|${paymentId}`).digest('hex');
     if (!safeEqual(expected, signature)) {
-        await markFailed(record, 'Invalid payment signature');
+        // Not recorded as a failed payment: a bad signature from the browser must not fail a real order
+        // (the gateway webhook can still settle it) or raise a platform alert.
         if (req) audit(req, 'subscription.payment.failed', 'PlatformPayment', record._id, { reason: 'signature' });
         throw new ApiError(400, 'Payment verification failed - invalid signature');
     }
@@ -337,9 +389,9 @@ exports.verifyPayment = async ({ libraryId, orderId, paymentId, signature, req }
 exports.handleCaptured = async (pay) => {
     const record = await PlatformPayment.findOne({ razorpayOrderId: pay.order_id });
     if (!record) return;
-    if (record.status === 'paid') return;
+    if (record.status === 'paid') { await repairPayment(record); return; }
     if (pay.amount !== Math.round(record.amount * 100)) {
-        await markFailed(record, 'Captured amount does not match the order');
+        await markFailed(record, 'Captured amount does not match the order', { needsReview: true });
         return;
     }
     await finalize(record, pay.id, undefined);

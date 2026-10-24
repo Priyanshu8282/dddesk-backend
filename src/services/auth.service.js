@@ -9,6 +9,8 @@ const { normalizeMobile } = require('../utils/mobile');
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
+const LOGIN_MAX_FAILURES = 10;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
 // Used to spend comparable time when the account does not exist
 const DUMMY_HASH = bcrypt.hashSync('dddesk-dummy-password', 10);
 
@@ -40,7 +42,7 @@ const buildUserData = (user, role) => {
     data.branchIds = user.branchIds || [];
     if (user.libraryId?._id) {
       data.library = {
-        id: user.libraryId._id, name: user.libraryId.name, slug: user.libraryId.slug || null,
+        id: user.libraryId._id, name: user.libraryId.name,
         status: user.libraryId.status, logo: user.libraryId.logo || null,
       };
     }
@@ -60,15 +62,8 @@ const appendFcmToken = async (user, fcmToken) => {
   }
 };
 
-// Resolves slug -> libraryId for the optional tenant hint
-const resolveTenantHint = async ({ libraryId, slug }) => {
-  if (libraryId) return libraryId;
-  if (slug) {
-    const { library } = await Library.findBySlugOrPrevious(slug);
-    return library?._id || null;
-  }
-  return null;
-};
+// Optional tenant hint (libraryId) for accounts that can exist in several libraries
+const resolveTenantHint = async ({ libraryId }) => libraryId || null;
 
 // Throws a 403 carrying libraryStatus when the library cannot be used
 const assertLibraryUsable = (user) => {
@@ -101,7 +96,7 @@ const findCandidates = async (role, { email, mobile, libraryId }, { withSecrets 
   return q;
 };
 
-exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken, libraryId, slug }) => {
+exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken, libraryId }) => {
   const role = isStudentRole(userRole) ? 'STUDENT' : 'ADMIN';
 
   const rawEmail  = email  || (identifier && identifier.includes('@') ? identifier : '');
@@ -110,12 +105,20 @@ exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken
   const loginMobile = rawMobile ? normalizeMobile(rawMobile) : '';
   if (!loginEmail && !loginMobile) throw fail(400, 'Email or Mobile is required');
 
-  const tenant = await resolveTenantHint({ libraryId, slug });
+  const tenant = await resolveTenantHint({ libraryId });
   const candidates = await findCandidates(
     role,
     { email: loginEmail, mobile: loginEmail ? '' : loginMobile, libraryId: tenant },
-    { withSecrets: ['password'] }
+    { withSecrets: ['password', 'failedLogins', 'lockUntil'] }
   );
+  const AccountModel = role === 'STUDENT' ? Student : Admin;
+
+  // Per-account lockout: stops password guessing spread across many IPs
+  const locked = candidates.find((c) => c.lockUntil && c.lockUntil.getTime() > Date.now());
+  if (locked) {
+    const minutes = Math.max(1, Math.ceil((locked.lockUntil.getTime() - Date.now()) / 60000));
+    throw fail(429, `Too many failed sign-in attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}, or sign in with an OTP.`);
+  }
 
   // Compare against every candidate (a student mobile can exist in several libraries); constant-ish work when none
   let user = null;
@@ -125,7 +128,16 @@ exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken
   for (const c of candidates) {
     if (c.password && await bcrypt.compare(password, c.password)) { user = c; break; }
   }
-  if (!user) throw fail(401, 'Invalid credentials');
+  if (!user) {
+    // Count the failure atomically; the 10th one starts the lock
+    for (const c of candidates) {
+      const upd = await AccountModel.findOneAndUpdate({ _id: c._id }, { $inc: { failedLogins: 1 } }, { new: true, projection: { failedLogins: 1 } });
+      if (upd && upd.failedLogins >= LOGIN_MAX_FAILURES) {
+        await AccountModel.updateOne({ _id: c._id }, { $set: { failedLogins: 0, lockUntil: new Date(Date.now() + LOGIN_LOCK_MS) } });
+      }
+    }
+    throw fail(401, 'Invalid credentials');
+  }
 
   if (role === 'ADMIN') {
     if (!user.status) throw fail(403, 'Your account has been disabled. Contact your library owner.');
@@ -138,9 +150,9 @@ exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken
   // Targeted update (not save()): older accounts may lack fields the schema now requires (e.g. mobile),
   // and a successful login must never fail on unrelated validation.
   const now = new Date();
-  const loginUpdate = { $set: { lastLogin: now } };
+  const loginUpdate = { $set: { lastLogin: now, failedLogins: 0 }, $unset: { lockUntil: '' } };
   if (fcmToken && !(user.fcmTokens || []).includes(fcmToken)) loginUpdate.$addToSet = { fcmTokens: fcmToken };
-  await (role === 'STUDENT' ? Student : Admin).updateOne({ _id: user._id }, loginUpdate);
+  await AccountModel.updateOne({ _id: user._id }, loginUpdate);
   user.lastLogin = now;
 
   const token    = buildToken(user, role);
@@ -152,14 +164,10 @@ exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken
 // OTP (login + password reset) - one implementation for super admin, library owner, staff and student
 // ---------------------------------------------------------------------------
 
-// OTP in the API response: there is no SMS/e-mail provider by default, so the UI shows the code.
-// ON unless NODE_ENV=production; in production set OTP_IN_RESPONSE=true to keep it (not recommended).
-const otpInResponse = () => {
-  const flag = String(process.env.OTP_IN_RESPONSE || '').toLowerCase();
-  if (flag === 'true') return true;
-  if (flag === 'false') return false;
-  return process.env.NODE_ENV !== 'production';
-};
+// OTP in the API response is OFF by default. It is exposed only when OTP_IN_RESPONSE=true is set explicitly
+// (testing without an SMS/e-mail provider) and never when NODE_ENV=production.
+const otpInResponse = () =>
+  String(process.env.OTP_IN_RESPONSE || '').toLowerCase() === 'true' && process.env.NODE_ENV !== 'production';
 
 // "a@b.com" -> email, anything else -> mobile
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -207,24 +215,27 @@ const checkOtp = async (user, otp) => {
   if (!user.otp || !user.otpExpires || user.otpExpires.getTime() < Date.now()) {
     throw fail(400, 'OTP expired or not requested. Please request a new one.');
   }
-  if ((user.otpAttempts || 0) >= OTP_MAX_ATTEMPTS) {
+  // Reserve the attempt atomically first so parallel guesses cannot exceed OTP_MAX_ATTEMPTS
+  const reserved = await modelOf(user).findOneAndUpdate(
+    { _id: user._id, otp: user.otp, otpExpires: { $gt: new Date() }, otpAttempts: { $lt: OTP_MAX_ATTEMPTS } },
+    { $inc: { otpAttempts: 1 } },
+    { new: true, projection: { otpAttempts: 1 } }
+  );
+  if (!reserved) {
     await setOtpFields(user, { otp: null, otpExpires: null, otpAttempts: 0 });
     throw fail(429, 'Too many incorrect attempts. Please request a new OTP.');
   }
   const a = Buffer.from(hashOtp(String(otp)), 'hex');
   const b = Buffer.from(user.otp, 'hex');
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-  if (!ok) {
-    await modelOf(user).updateOne({ _id: user._id }, { $inc: { otpAttempts: 1 } });
-    throw fail(400, 'Invalid OTP');
-  }
+  if (!ok) throw fail(400, 'Invalid OTP');
 };
 
 const clearOtp = (user) => setOtpFields(user, { otp: null, otpExpires: null, otpAttempts: 0 });
 
 // Single account for an OTP flow; ambiguity (same student mobile in many libraries) must be resolved by the caller
-const findOtpAccount = async ({ email, mobile, userRole, libraryId, slug }) => {
-  const tenant = await resolveTenantHint({ libraryId, slug });
+const findOtpAccount = async ({ email, mobile, userRole, libraryId }) => {
+  const tenant = await resolveTenantHint({ libraryId });
   const normMobile = mobile ? normalizeMobile(mobile) : '';
   const lookups = userRole === undefined
     ? [['ADMIN'], ['STUDENT']]               // forgot-password: admin first (unique e-mail), then student
@@ -240,19 +251,19 @@ const findOtpAccount = async ({ email, mobile, userRole, libraryId, slug }) => {
 
 // Login OTP: works for super admin, library owner and staff (and students with userRole=STUDENT),
 // using an email OR a mobile number. Super admin / owner / staff all live in the Admin collection.
-exports.sendOTP = async ({ identifier, email, mobile, userRole, libraryId, slug }) => {
+exports.sendOTP = async ({ identifier, email, mobile, userRole, libraryId }) => {
   const target = resolveTarget({ identifier, email, mobile });
   if (!target.email && !target.mobile) throw fail(400, 'Enter a valid email or mobile number');
   const channel = target.email ? 'email' : 'sms';
-  const { user } = await findOtpAccount({ ...target, userRole: userRole || 'ADMIN', libraryId, slug });
+  const { user } = await findOtpAccount({ ...target, userRole: userRole || 'ADMIN', libraryId });
   if (!user || (user.status === false) || (user.status === 'inactive')) return noAccountOtp(channel, target);
   return issueOtp(user, { channel, purpose: 'login', target });
 };
 
-exports.verifyOTP = async ({ identifier, email, mobile, otp, userRole, fcmToken, libraryId, slug }) => {
+exports.verifyOTP = async ({ identifier, email, mobile, otp, userRole, fcmToken, libraryId }) => {
   const role = isStudentRole(userRole) ? 'STUDENT' : 'ADMIN';
   const target = resolveTarget({ identifier, email, mobile });
-  const { user } = await findOtpAccount({ ...target, userRole: role, libraryId, slug });
+  const { user } = await findOtpAccount({ ...target, userRole: role, libraryId });
   if (!user) throw fail(400, 'Invalid OTP');
   await checkOtp(user, otp);
 
@@ -272,30 +283,31 @@ exports.verifyOTP = async ({ identifier, email, mobile, otp, userRole, fcmToken,
   return { token, userData: buildUserData(user, role), role: role.toLowerCase() };
 };
 
-exports.forgotPassword = async ({ email, mobile, libraryId, slug }) => {
+exports.forgotPassword = async ({ email, mobile, libraryId }) => {
   const target = resolveTarget({ email, mobile });
   const channel = target.email ? 'email' : 'sms';
-  const { user } = await findOtpAccount({ ...target, libraryId, slug });
+  const { user } = await findOtpAccount({ ...target, libraryId });
   if (!user || user.status === false || user.status === 'inactive') return noAccountOtp(channel, target);
   return issueOtp(user, { channel, purpose: 'password reset', target });
 };
 
-exports.verifyResetOTP = async ({ email, mobile, otp, libraryId, slug }) => {
+exports.verifyResetOTP = async ({ email, mobile, otp, libraryId }) => {
   const target = resolveTarget({ email, mobile });
-  const { user } = await findOtpAccount({ ...target, libraryId, slug });
+  const { user } = await findOtpAccount({ ...target, libraryId });
   if (!user) throw fail(400, 'Invalid OTP');
   await checkOtp(user, otp);
 };
 
-exports.resetPassword = async ({ email, mobile, otp, newPassword, libraryId, slug }) => {
+exports.resetPassword = async ({ email, mobile, otp, newPassword, libraryId }) => {
   const target = resolveTarget({ email, mobile });
-  const { user } = await findOtpAccount({ ...target, libraryId, slug });
+  const { user } = await findOtpAccount({ ...target, libraryId });
   if (!user) throw fail(400, 'Invalid or expired OTP');
   await checkOtp(user, otp);
   user.password = newPassword; // hashed by the model pre-save hook
   user.tokensValidAfter = new Date(); // a forgotten/stolen password must also end existing sessions
   user.otp = null; user.otpExpires = null; user.otpAttempts = 0;
   await user.save({ validateBeforeSave: false }); // pre-save hook still hashes; skips unrelated legacy-field validation
+  await require('./session.service').revokeAllForUser(user._id, 'password_reset');
 };
 
 /**

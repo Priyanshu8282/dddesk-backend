@@ -4,11 +4,22 @@
 
 const { COUNTRIES } = require('./countries');
 
+// Rajasthan has 41 districts (7 divisions): the 33 districts that existed before 2023, plus 8 of the 17 districts created in
+// the 2023 reorganisation that the state kept when it abolished the other 9 in Dec 2024. Re-check this list against the
+// state's notification if districts change again.
+const RAJASTHAN_ORIGINAL_DISTRICTS = [
+  'Ajmer', 'Alwar', 'Banswara', 'Baran', 'Barmer', 'Bharatpur', 'Bhilwara', 'Bikaner', 'Bundi', 'Chittorgarh', 'Churu', 'Dausa',
+  'Dholpur', 'Dungarpur', 'Hanumangarh', 'Jaipur', 'Jaisalmer', 'Jalore', 'Jhalawar', 'Jhunjhunu', 'Jodhpur', 'Karauli', 'Kota',
+  'Nagaur', 'Pali', 'Pratapgarh', 'Rajsamand', 'Sawai Madhopur', 'Sikar', 'Sirohi', 'Sri Ganganagar', 'Tonk', 'Udaipur',
+];
+const RAJASTHAN_NEW_DISTRICTS = ['Balotra', 'Beawar', 'Deeg', 'Didwana-Kuchaman', 'Khairthal-Tijara', 'Kotputli-Behror', 'Phalodi', 'Salumbar'];
+const RAJASTHAN_DISTRICTS = [...RAJASTHAN_ORIGINAL_DISTRICTS, ...RAJASTHAN_NEW_DISTRICTS].sort((a, b) => a.localeCompare(b));
+
 const STATES = {
   'Andhra Pradesh': ['Visakhapatnam', 'Vijayawada', 'Guntur', 'Nellore', 'Tirupati', 'Kurnool', 'Rajahmundry', 'Kakinada', 'Anantapur', 'Kadapa'],
   'Arunachal Pradesh': ['Itanagar', 'Naharlagun', 'Pasighat', 'Tawang', 'Ziro'],
   'Assam': ['Guwahati', 'Silchar', 'Dibrugarh', 'Jorhat', 'Nagaon', 'Tinsukia', 'Tezpur'],
-  'Bihar': ['Patna', 'Gaya', 'Bhagalpur', 'Muzaffarpur', 'Darbhanga', 'Purnia', 'Arrah', 'Begusarai', 'Ara', 'Katihar'],
+  'Bihar': ['Patna', 'Gaya', 'Bhagalpur', 'Muzaffarpur', 'Darbhanga', 'Purnia', 'Arrah', 'Begusarai', 'Katihar'],
   'Chhattisgarh': ['Raipur', 'Bhilai', 'Bilaspur', 'Korba', 'Durg', 'Rajnandgaon', 'Jagdalpur'],
   'Goa': ['Panaji', 'Margao', 'Vasco da Gama', 'Mapusa', 'Ponda'],
   'Gujarat': ['Ahmedabad', 'Surat', 'Vadodara', 'Rajkot', 'Bhavnagar', 'Jamnagar', 'Gandhinagar', 'Junagadh', 'Anand', 'Nadiad', 'Morbi'],
@@ -25,11 +36,8 @@ const STATES = {
   'Nagaland': ['Kohima', 'Dimapur', 'Mokokchung', 'Tuensang'],
   'Odisha': ['Bhubaneswar', 'Cuttack', 'Rourkela', 'Berhampur', 'Sambalpur', 'Puri', 'Balasore'],
   'Punjab': ['Ludhiana', 'Amritsar', 'Jalandhar', 'Patiala', 'Bathinda', 'Mohali', 'Pathankot', 'Hoshiarpur'],
-  'Rajasthan': [
-    'Jaipur', 'Jodhpur', 'Kota', 'Bikaner', 'Udaipur', 'Ajmer', 'Bhilwara', 'Alwar', 'Sikar', 'Sri Ganganagar',
-    'Pali', 'Bharatpur', 'Chittorgarh', 'Jhunjhunu', 'Tonk', 'Hanumangarh', 'Barmer', 'Nagaur', 'Churu', 'Dausa',
-    'Banswara', 'Dungarpur', 'Rajsamand', 'Sawai Madhopur', 'Jaisalmer', 'Beawar', 'Kishangarh', 'Sirohi', 'Bundi', 'Baran', 'Jhalawar', 'Karauli', 'Dholpur', 'Pratapgarh', 'Jalore',
-  ],
+  // Districts (RAJASTHAN_DISTRICTS) plus well-known towns that are not district headquarters
+  'Rajasthan': [...RAJASTHAN_DISTRICTS, 'Bhiwadi', 'Kishangarh', 'Mount Abu', 'Pushkar'],
   'Sikkim': ['Gangtok', 'Namchi', 'Gyalshing', 'Mangan'],
   'Tamil Nadu': ['Chennai', 'Coimbatore', 'Madurai', 'Tiruchirappalli', 'Salem', 'Tirunelveli', 'Erode', 'Vellore', 'Thoothukudi', 'Thanjavur', 'Tiruppur'],
   'Telangana': ['Hyderabad', 'Warangal', 'Nizamabad', 'Karimnagar', 'Khammam', 'Secunderabad', 'Mahbubnagar'],
@@ -57,8 +65,10 @@ const citiesOf = (state) => {
   const s = findState(state);
   return s ? [...STATES[s]].sort((a, b) => a.localeCompare(b)) : null;
 };
+/** District list for states where we hold the official one (currently Rajasthan); null otherwise */
+const districtsOf = (state) => (findState(state) === 'Rajasthan' ? [...RAJASTHAN_DISTRICTS] : null);
 const findCountry = (v) => COUNTRIES.find((c) => norm(c.code) === norm(v) || norm(c.name) === norm(v)) || null;
 
 const isIndia = (v) => !v || (findCountry(v) || {}).code === 'IN';
 
-module.exports = { isIndia, COUNTRIES, STATES, stateNames, findState, citiesOf, findCountry };
+module.exports = { RAJASTHAN_DISTRICTS, districtsOf, isIndia, COUNTRIES, STATES, stateNames, findState, citiesOf, findCountry };

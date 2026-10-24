@@ -15,7 +15,7 @@ const errorHandler = (err, req, res, next) => {
     // Handle Mongoose CastError (e.g. invalid ObjectId)
     if (err.name === 'CastError') {
         statusCode = 400;
-        message = `Invalid ${err.path}: ${err.value}`;
+        message = `Invalid ${err.path}`; // the offending value is not echoed back
     }
 
     // Handle Mongoose ValidationError
@@ -36,17 +36,21 @@ const errorHandler = (err, req, res, next) => {
         statusCode = 500;
     }
 
+    // Server faults never leak internals (driver messages, paths, query details) outside development
+    const isProd = process.env.NODE_ENV === 'production';
+    if (statusCode >= 500) {
+        console.error(`[${req.id || '-'}] ${req.method} ${(req.originalUrl || '').split('?')[0]} ->`, err && err.stack ? err.stack : err);
+        if (isProd) message = 'Internal Server Error';
+    }
+
     const response = {
         success: false,
         code: statusCode,
         message: message || 'Internal Server Error',
+        ...(req.id && statusCode >= 500 && { requestId: req.id }),
         ...(err.errors && { errors: err.errors }),
         ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
     };
-
-    if (process.env.NODE_ENV === 'development') {
-        console.error('Error Handler Caught:', err);
-    }
 
     res.status(statusCode).json(response);
 };

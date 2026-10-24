@@ -221,6 +221,8 @@ exports.getSuperAdminDashboardData = async () => {
   const live = { isDeleted: false };
 
   // Library counts, student counts and payment counts each come from one $group (14 queries became 5)
+  const taxable = { $ifNull: ['$taxableAmount', '$amount'] };
+  const subEnd = { $ifNull: ['$subscriptionExpiry', '$trialEndsAt'] };
   const subOn = (extra) => ({ $and: [{ $eq: ['$status', 'active'] }, ...extra] });
   const [
     libraryAgg, studentAgg, paymentCountAgg, occupiedSeatsAgg,
@@ -235,9 +237,10 @@ exports.getSuperAdminDashboardData = async () => {
       pending: cnt({ $eq: ['$status', 'pending'] }),
       suspended: cnt({ $eq: ['$status', 'suspended'] }),
       rejected: cnt({ $eq: ['$status', 'rejected'] }),
-      expiringSoon: cnt(subOn([{ $gte: ['$subscriptionExpiry', now] }, { $lte: ['$subscriptionExpiry', in7] }])),
-      // a missing expiry is not "expired": compare only when a date exists
-      expiredSubs: cnt(subOn([{ $gt: ['$subscriptionExpiry', null] }, { $lt: ['$subscriptionExpiry', now] }])),
+      // trial libraries have no subscriptionExpiry, only trialEndsAt: use whichever applies
+      expiringSoon: cnt(subOn([{ $gte: [subEnd, now] }, { $lte: [subEnd, in7] }])),
+      // a missing end date is not "expired": compare only when a date exists
+      expiredSubs: cnt(subOn([{ $gt: [subEnd, null] }, { $lt: [subEnd, now] }])),
     } }]),
     Student.aggregate([{ $match: { isDeleted: false } }, { $group: {
       _id: null,
@@ -259,21 +262,17 @@ exports.getSuperAdminDashboardData = async () => {
       { $sort: { '_id.year': 1, '_id.month': 1 } },
     ]),
     Library.find(live).sort({ createdAt: -1 }).limit(10)
-      .select('name ownerName status city state createdAt subscriptionPlan createdBy slug').lean(),
+      .select('name ownerName status city state createdAt subscriptionPlan createdBy').lean(),
     Library.find({ ...live, status: 'pending' }).sort({ createdAt: 1 }).limit(10)
       .select('name ownerName mobile email city state createdAt').lean(),
-    // Estimated monthly recurring revenue: monthly price of the plan of every active library
-    Library.aggregate([
-      { $match: { isDeleted: false, status: 'active', subscriptionPlanId: { $ne: null } } },
-      { $lookup: { from: 'platformplans', localField: 'subscriptionPlanId', foreignField: '_id', as: 'plan' } },
-      { $unwind: '$plan' },
-      { $group: { _id: null, mrr: { $sum: '$plan.monthlyPrice' }, libraries: { $sum: 1 } } },
-    ]),
-    PlatformPayment.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } }]),
-    PlatformPayment.aggregate([{ $match: { status: 'paid', paidAt: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    // MRR: same rule as the Revenue page (running paying subscriptions, before GST)
+    require('./revenue.service').getMrrSummary(),
+    // Subscription revenue is reported before GST (GST is passed on to the government, it is not income)
+    PlatformPayment.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: null, total: { $sum: taxable }, gross: { $sum: '$amount' }, count: { $sum: 1 } } }]),
+    PlatformPayment.aggregate([{ $match: { status: 'paid', paidAt: { $gte: monthStart } } }, { $group: { _id: null, total: { $sum: taxable } } }]),
     PlatformPayment.aggregate([
       { $match: { status: 'paid', paidAt: { $gte: sixMonthsAgo } } },
-      { $group: { _id: { $dateToParts: { date: '$paidAt', timezone: TZ } }, total: { $sum: '$amount' } } },
+      { $group: { _id: { $dateToParts: { date: '$paidAt', timezone: TZ } }, total: { $sum: taxable } } },
       { $group: { _id: { year: '$_id.year', month: '$_id.month' }, total: { $sum: '$total' } } },
       { $sort: { '_id.year': 1, '_id.month': 1 } },
     ]),
@@ -291,6 +290,7 @@ exports.getSuperAdminDashboardData = async () => {
   if (pendingLibraries > 0) alerts.push({ type: 'pending_approvals', severity: 'warning', message: `${pendingLibraries} library registration(s) awaiting approval`, count: pendingLibraries });
   if (failedPayments > 0) alerts.push({ type: 'failed_payments', severity: 'danger', message: `${failedPayments} failed subscription payment(s) in the last 30 days`, count: failedPayments });
   if (expiredSubs > 0) alerts.push({ type: 'expired_subscriptions', severity: 'danger', message: `${expiredSubs} active librar${expiredSubs > 1 ? 'ies have' : 'y has'} an expired subscription`, count: expiredSubs });
+  if (graceCount > 0) alerts.push({ type: 'in_grace', severity: 'warning', message: `${graceCount} librar${graceCount > 1 ? 'ies are' : 'y is'} in a payment grace period`, count: graceCount });
   if (expiringSoon > 0) alerts.push({ type: 'expiring_subscriptions', severity: 'warning', message: `${expiringSoon} subscription(s) expire within 7 days`, count: expiringSoon });
 
   return {
@@ -302,9 +302,10 @@ exports.getSuperAdminDashboardData = async () => {
     totalRevenue: tenantCollections,
     occupiedSeats: occupiedSeatsAgg[0]?.total || 0,
     subscriptions: {
-      estimatedMRR: mrrAgg[0]?.mrr || 0,
-      payingLibraries: mrrAgg[0]?.libraries || 0,
+      estimatedMRR: mrrAgg.mrr || 0,
+      payingLibraries: mrrAgg.payingLibraries || 0,
       revenueTotal: subRevenueAgg[0]?.total || 0,
+      grossReceivedTotal: subRevenueAgg[0]?.gross || 0,
       paymentsCount: subRevenueAgg[0]?.count || 0,
       revenueThisMonth: subRevenueMonth[0]?.total || 0,
       failedPayments30d: failedPayments,

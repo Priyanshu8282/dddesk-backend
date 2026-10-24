@@ -30,23 +30,26 @@ const sendOtp = async (rawMobile) => {
     try {
         await require('./notification.service').deliverOtp({ channel: 'sms', to: mobile, otp, purpose: 'registration' });
     } catch (_) { /* delivery failure is not surfaced */ }
-    return { otp, isDev: process.env.NODE_ENV === 'development' };
+    return { otp, isDev: String(process.env.OTP_IN_RESPONSE || '').toLowerCase() === 'true' && process.env.NODE_ENV !== 'production' };
 };
 
 const verifyOtp = async (rawMobile, otp) => {
     const mobile = normalizeMobile(rawMobile);
     const rec = await RegistrationOtp.findOne({ mobile });
     if (!rec || rec.expiresAt.getTime() < Date.now()) throw new ApiError(400, 'OTP expired or not requested. Please request a new one.');
-    if (rec.attempts >= MAX_ATTEMPTS) {
+    // Reserve the attempt atomically so parallel guesses cannot exceed MAX_ATTEMPTS
+    const reserved = await RegistrationOtp.findOneAndUpdate(
+        { _id: rec._id, attempts: { $lt: MAX_ATTEMPTS } },
+        { $inc: { attempts: 1 } },
+        { new: true }
+    );
+    if (!reserved) {
         await RegistrationOtp.deleteOne({ _id: rec._id });
         throw new ApiError(429, 'Too many incorrect attempts. Please request a new OTP.');
     }
     const a = Buffer.from(hash(mobile, String(otp)), 'hex');
     const b = Buffer.from(rec.otpHash, 'hex');
-    if (!(a.length === b.length && crypto.timingSafeEqual(a, b))) {
-        await RegistrationOtp.updateOne({ _id: rec._id }, { $inc: { attempts: 1 } });
-        throw new ApiError(400, 'Invalid OTP');
-    }
+    if (!(a.length === b.length && crypto.timingSafeEqual(a, b))) throw new ApiError(400, 'Invalid OTP');
     await RegistrationOtp.deleteOne({ _id: rec._id });
     const registrationToken = jwt.sign({ purpose: 'register', mobile }, config.jwt.secret, { expiresIn: TOKEN_TTL });
     return { registrationToken };

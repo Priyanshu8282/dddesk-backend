@@ -14,7 +14,7 @@ router.post('/scan-qr', requireStudent, validate(v.scanQR), attendanceController
 // ── Staff-only (everything below) ────────────────────────────────────────────
 router.use(requireStaff);
 
-router.get('/generate-qr', attendanceController.generateQR);
+router.get('/generate-qr', requirePermission('attendance.checkin', 'attendance.correct'), attendanceController.generateQR);
 
 // Live views
 router.get('/today', requirePermission('attendance.view'), attendanceController.getToday);

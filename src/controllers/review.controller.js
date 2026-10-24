@@ -52,18 +52,3 @@ exports.getStats = catchAsync(async (req, res) => {
     ApiResponse.ok(res, stats, 'Review statistics retrieved successfully');
 });
 
-/**
- * Public website endpoint: approved public reviews by library slug or ID (active libraries only)
- */
-exports.getPublicWebsiteReviews = catchAsync(async (req, res) => {
-    const { slug } = req.params;
-    const filter = { status: 'active', isDeleted: { $ne: true } };
-    if (slug && /^[0-9a-fA-F]{24}$/.test(slug)) filter._id = slug;
-    else filter.slug = String(slug || '').toLowerCase();
-
-    const library = await Library.findOne(filter).select('_id');
-    if (!library) throw new ApiError(404, 'Library not found');
-
-    const data = await reviewService.getPublicReviews(library._id);
-    ApiResponse.ok(res, data, 'Public reviews retrieved successfully');
-});

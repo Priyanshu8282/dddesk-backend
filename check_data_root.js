@@ -5,7 +5,7 @@ require('dotenv').config();
 
 const checkDB = async () => {
     try {
-        const url = 'mongodb+srv://mgi_basket:76IcLMwawjgs89la@cluster0.iww448g.mongodb.net/lms?retryWrites=true&w=majority';
+        const url = process.env.MONGODB_URL;
         await mongoose.connect(url);
         console.log('Connected to MongoDB');
 

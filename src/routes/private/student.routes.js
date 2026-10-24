@@ -16,6 +16,7 @@ const CREATE = ['CREATE_STUDENT', 'students.create'];
 const EDIT = ['UPDATE_STUDENT', 'students.edit'];
 const FEES_VIEW = ['fees.view', 'fees.collect']; // financial visibility is restricted (spec 12)
 const ARCHIVE = ['DELETE_STUDENT', 'students.archive'];
+const ERASE = 'students.erase'; // not in any default role template, so only the owner can erase unless it is granted explicitly
 
 // Student login is a public auth route (see auth routes); it is intentionally not mounted here.
 
@@ -74,6 +75,11 @@ router.put(
 );
 
 router.delete('/delete-student/:id', requirePermission(...ARCHIVE), studentController.deleteStudent);
+
+// DPDP Act 2023 - owner by default (students.erase): erase personal data, list archived students past their retention period, access request export
+router.get('/retention/candidates', requirePermission(ERASE), validate(studentValidation.retentionQuery), studentController.retentionCandidates);
+router.post('/:id/erase', requirePermission(ERASE), validate(studentValidation.eraseStudent), studentController.eraseStudent);
+router.get('/:id/data-export', requirePermission('students.export'), studentController.exportStudentData);
 
 // Plan assignment & payments
 router.post('/assign-plan/:id', requirePermission(...EDIT), validate(studentValidation.assignPlan), studentController.assignPlan);

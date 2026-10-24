@@ -101,7 +101,7 @@ exports.list = async (q = {}) => {
 
 exports.get = async (id, type) => {
   if (type === 'student') {
-    const s = await Student.findOne({ _id: id, isDeleted: { $ne: true } }).populate('libraryId', 'name libraryCode status slug').populate('planId', 'name').lean();
+    const s = await Student.findOne({ _id: id, isDeleted: { $ne: true } }).populate('libraryId', 'name libraryCode status').populate('planId', 'name').lean();
     if (!s) throw err('User not found', 404);
     const logs = await AuditLog.find({ userId: s._id }).sort({ createdAt: -1 }).limit(10).select('action createdAt ipAddress').lean();
     return { ...shapeStudent(s), details: { plan: s.planId?.name || null, planStatus: s.planStatus || null, expiryDate: s.expiryDate || null, seatNumber: s.seatNumber || null, registrationNumber: s.registrationNumber || null, address: s.address || null }, activity: logs };
@@ -174,6 +174,7 @@ exports.setStatus = async (req, id, { type, active }) => {
     const s = await Student.findOneAndUpdate({ _id: id, isDeleted: { $ne: true } }, { $set: { status: active ? 'active' : 'inactive', ...(active ? {} : { tokensValidAfter: new Date() }) } }, { new: true });
     if (!s) throw err('User not found', 404);
     invalidateAuthCache(s._id);
+    if (!active) await require('./session.service').revokeAllForUser(s._id, 'account_disabled');
     await audit(req, active ? 'platform_user.enable' : 'platform_user.disable', 'Student', s._id, {});
     return { _id: s._id, status: active ? 'active' : 'disabled' };
   }
@@ -184,6 +185,7 @@ exports.setStatus = async (req, id, { type, active }) => {
   }
   await Admin.updateOne({ _id: a._id }, { $set: { status: !!active, updatedBy: req.user._id, ...(active ? {} : { tokensValidAfter: new Date() }) } });
   invalidateAuthCache(a._id);
+  if (!active) await require('./session.service').revokeAllForUser(a._id, 'account_disabled');
   await audit(req, active ? 'platform_user.enable' : 'platform_user.disable', 'Admin', a._id, { userType: a.userType });
   return { _id: a._id, status: active ? 'active' : 'disabled' };
 };
@@ -196,6 +198,7 @@ exports.resetPassword = async (req, id, newPassword) => {
   a.otp = undefined; a.otpExpires = undefined; a.otpAttempts = 0;
   await a.save({ validateModifiedOnly: true });
   invalidateAuthCache(a._id);
+  await require('./session.service').revokeAllForUser(a._id, 'password_reset');
   await audit(req, 'platform_user.password_reset', 'Admin', a._id, { userType: a.userType });
 };
 
@@ -206,6 +209,7 @@ exports.archive = async (req, id) => {
   if (a.userType === 'superadmin' && (await activeSuperAdmins(a._id)) === 0) throw err('This is the last active super admin and cannot be deleted', 400);
   await Admin.updateOne({ _id: a._id }, { $set: { isDeleted: true, status: false, tokensValidAfter: new Date(), updatedBy: req.user._id } });
   invalidateAuthCache(a._id);
+  await require('./session.service').revokeAllForUser(a._id, 'account_deleted');
   await audit(req, 'platform_user.delete', 'Admin', a._id, { userType: a.userType, email: a.email });
 };
 

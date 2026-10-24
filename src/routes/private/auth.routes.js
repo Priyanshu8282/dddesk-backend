@@ -8,6 +8,8 @@ const router = express.Router();
 
 // Any authenticated account (owner, staff, superadmin, student)
 router.get('/me', authController.getMe);
+router.get('/sessions', authController.listSessions);
+router.post('/logout-all', authController.logoutAll);
 router.put('/update-profile', upload.single('profileImage'), validate(authValidation.updateProfile), authController.updateProfile);
 router.post('/change-password', validate(authValidation.changePassword), authController.changePassword);
 router.put('/fcm-token', validate(authValidation.fcmToken), authController.updateFcmToken);

@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { GSTIN_RE } = require('../utils/feeMath');
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
 const idParam = z.object({ params: z.object({ id: objectId }) });
@@ -115,10 +116,6 @@ const assignPlan = z.object({
         isTrial: z.boolean().optional(),
     })
 });
-const changeSlug = z.object({
-    params: z.object({ id: objectId }),
-    body: z.object({ slug: z.string().trim().toLowerCase().min(3).max(63) })
-});
 const superCreateLibrary = z.object({
     body: z.object({
         name: z.string().trim().min(2).max(120),
@@ -167,7 +164,7 @@ const superUpdateLibrary = z.object({
         country: z.string().trim().max(60),
         pincode: z.string().trim().max(10),
         website: z.string().trim().max(200),
-        gstNumber: z.string().trim().max(20),
+        gstNumber: z.string().trim().transform((v) => v.toUpperCase()).refine((v) => v === '' || GSTIN_RE.test(v), 'Enter a valid 15-character GSTIN'),
         removeOwnerImage: z.enum(['true', 'false']),
     }).partial()
 });
@@ -196,6 +193,6 @@ const updateBranch = z.object({
 module.exports = {
     objectId, idParam,
     createRole, setRoleStatus, updateRole, createPermission, updatePermission, createMenu, updateMenu, upsertSetting,
-    createPlatformPlan, updatePlatformPlan, rejectOrSuspend, assignPlan, changeSlug,
+    createPlatformPlan, updatePlatformPlan, rejectOrSuspend, assignPlan,
     superCreateLibrary, superUpdateLibrary, updateBranch,
 };

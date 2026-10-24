@@ -15,6 +15,7 @@ const isSA = (req) => req.userType === 'superadmin';
 
 // Roles non-superadmins must never see or assign
 const HIDDEN_FOR_TENANTS = ['Super Admin', 'Admin'];
+const isHiddenName = (n) => HIDDEN_FOR_TENANTS.some((h) => h.toLowerCase() === String(n || '').trim().toLowerCase());
 
 const populateRole = (q) => q.populate('permissionIds').populate('sidebarMenuIds');
 
@@ -22,7 +23,7 @@ const populateRole = (q) => q.populate('permissionIds').populate('sidebarMenuIds
 // Platform templates (libraryId = null) are for the super admin only.
 const visibleFilter = (req) => {
   if (isSA(req)) return {};
-  return { libraryId: req.libraryId, name: { $nin: HIDDEN_FOR_TENANTS } };
+  return { libraryId: req.libraryId, name: { $not: /^\s*(super admin|admin)\s*$/i } };
 };
 
 // Validates permission ids exist; tenants may not grant platform-only permissions
@@ -78,7 +79,7 @@ exports.createRole = async (req) => {
   // Tenant roles belong to the caller's library; only superadmin may create system roles (no libraryId) or target a tenant
   let libraryId = req.libraryId;
   if (isSA(req)) libraryId = req.body.libraryId || null;
-  if (!isSA(req) && HIDDEN_FOR_TENANTS.includes(body.name)) throw err('This role name is reserved', 400);
+  if (!isSA(req) && isHiddenName(body.name)) throw err('This role name is reserved', 400);
 
   await assertNameFree(body.name, libraryId);
   const role = await Role.create({
@@ -188,7 +189,7 @@ const loadModifiable = async (req, id) => {
   if (!isSA(req)) {
     if (!role.libraryId || idOf(role.libraryId) !== idOf(req.libraryId)) {
       // system roles are visible but read-only; other tenants' roles do not exist for us
-      if (!role.libraryId && !HIDDEN_FOR_TENANTS.includes(role.name)) throw err('System roles can only be modified by a super admin', 403);
+      if (!role.libraryId && !isHiddenName(role.name)) throw err('System roles can only be modified by a super admin', 403);
       throw err('Role not found', 404);
     }
     if (role.isDefault) throw err('Cannot modify default system roles', 403);
@@ -199,7 +200,7 @@ const loadModifiable = async (req, id) => {
 exports.updateRole = async (req, id) => {
   const role = await loadModifiable(req, id);
   const body = pick(req.body, ['name', 'description', 'permissionIds', 'sidebarMenuIds', 'status']);
-  if (!isSA(req) && body.name && HIDDEN_FOR_TENANTS.includes(body.name)) throw err('This role name is reserved', 400);
+  if (!isSA(req) && body.name && isHiddenName(body.name)) throw err('This role name is reserved', 400);
   const before = role.permissionIds.map(String).sort();
   if (body.name !== undefined && body.name.toLowerCase() !== String(role.name).toLowerCase()) await assertNameFree(body.name, role.libraryId, role._id);
   if (body.status === false && role.status !== false) {
@@ -219,6 +220,10 @@ exports.updateRole = async (req, id) => {
     name: role.name, fields: Object.keys(body),
     permissionsChanged: JSON.stringify(before) !== JSON.stringify(after),
   });
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    // permission changes are security events too (visible next to sign-in failures in the security log)
+    require('../utils/securityLog').record(req, { type: 'role_change', outcome: 'success', userId: req.user?._id || null, userType: req.userType || null, libraryId: req.libraryId || null, identifier: req.user?.email || null, meta: { roleId: String(role._id), name: role.name, permissionsBefore: before.length, permissionsAfter: after.length } });
+  }
   return exports.getRoleById(req, role._id);
 };
 

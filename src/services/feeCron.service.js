@@ -120,6 +120,7 @@ const initFeeCronJobs = () => {
     // 09:30 IST daily
     cron.schedule('30 9 * * *', async () => {
         try {
+            if (await require('./maintenance.service').cronsPaused()) { console.log('[cron] skipped fee-jobs: maintenance window active (jobs paused)'); return; }
             const s = await runFeeJobs();
             console.log('[feeCron] done', JSON.stringify(s));
         } catch (e) {

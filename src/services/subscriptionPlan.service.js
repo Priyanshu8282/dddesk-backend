@@ -142,6 +142,9 @@ exports.changePlan = async ({ req, libraryId, platformPlanId, billingCycle, prev
     }
 
     // immediate
+    // Free switch: a free target plan, or the proration credit covers the price. A remainder below the gateway
+    // minimum (INR 1) cannot be charged, so it is waived; the library keeps its current expiry (the credit is not lost)
+    // and the waived amount is recorded in the audit entry.
     const freeSwitch = r.listPrice <= 0 || r.amountDue < 1;
     if (freeSwitch) {
         const set = subscription.planSet(r.target, billingCycle);
@@ -152,7 +155,7 @@ exports.changePlan = async ({ req, libraryId, platformPlanId, billingCycle, prev
         }
         await Library.updateOne({ _id: libraryId }, { $set: set, $unset: unset });
         audit(req, 'subscription.plan.changed', 'Library', libraryId,
-            { from: r.current && r.current.name, to: r.target.name, billingCycle, charged: 0, credit: r.proration.credit });
+            { from: r.current && r.current.name, to: r.target.name, billingCycle, charged: 0, credit: r.proration.credit, waivedAmount: Math.max(0, r.amountDue || 0) });
         return { applied: true, ...publicPlan(r), message: 'Plan changed' };
     }
     const order = await subscription.createOrder({

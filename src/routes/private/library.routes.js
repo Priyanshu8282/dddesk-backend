@@ -2,7 +2,7 @@ const express = require('express');
 const ctrl = require('../../controllers/library.controller');
 const multerUpload = require('../../middlewares/upload.middleware');
 const validate = require('../../middlewares/validate.middleware');
-const { requireStaff, requireOwner, requireSuperAdmin, requirePermission } = require('../../middlewares/access.middleware');
+const { requireStaff, requireOwner, requireSuperAdmin, requirePermission, blockImpersonation } = require('../../middlewares/access.middleware');
 const libraryValidation = require('../../validations/library.validation');
 const v = require('../../validations/platform.validation');
 
@@ -16,7 +16,7 @@ router.put('/profile', requireStaff, requirePermission('settings.manage', 'UPDAT
     multerUpload.any(), validate(libraryValidation.updateProfile), ctrl.updateProfile);
 
 // Own account password (current password required)
-router.patch('/change-password', requireStaff, validate(libraryValidation.changePassword), ctrl.changePassword);
+router.patch('/change-password', requireStaff, blockImpersonation, validate(libraryValidation.changePassword), ctrl.changePassword);
 
 // Subscription state (trial / active / grace / expired) and usage vs plan limits
 router.get('/my-plan', requireStaff, ctrl.getMyPlan);

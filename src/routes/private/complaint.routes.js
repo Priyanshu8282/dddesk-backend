@@ -23,7 +23,7 @@ router.get('/my', requireStudent, validate(v.getComplaintsQuery), complaintContr
 router.get('/', requireStaff, requirePermission('complaints.view'), validate(v.getComplaintsQuery), complaintController.getComplaints);
 
 // ── Staff or student (students are limited to their own tickets in the service) ──
-router.post('/', upload.array('images', 5), validate(v.createComplaint), complaintController.createComplaint);
+router.post('/', staffPerm('complaints.view', 'complaints.resolve'), upload.array('images', 5), validate(v.createComplaint), complaintController.createComplaint);
 router.get('/:id', staffPerm('complaints.view'), validate(v.idParam), complaintController.getComplaintById);
 router.post('/:id/notes', staffPerm('complaints.view'), validate(v.addNote), complaintController.addNote);
 router.put('/:id', staffPerm('complaints.resolve'), upload.array('images', 5), validate(v.updateComplaint), complaintController.updateComplaint);

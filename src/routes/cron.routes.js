@@ -18,7 +18,18 @@ const authorize = (req, res, next) => {
     next();
 };
 
-router.get('/subscription-lifecycle', authorize, async (req, res, next) => {
+// While a maintenance window pauses jobs, answer 200 so the scheduler does not retry; the skip is logged
+const paused = async (req, res, next) => {
+    try {
+        if (await require('../services/maintenance.service').cronsPaused()) {
+            console.log(`[cron] skipped ${req.path}: maintenance window active (jobs paused)`);
+            return res.json({ success: true, skipped: true, reason: 'maintenance' });
+        }
+        next();
+    } catch (e) { next(e); }
+};
+
+router.get('/subscription-lifecycle', authorize, paused, async (req, res, next) => {
     try {
         const summary = await require('../services/subscriptionCron.service').runSubscriptionLifecycle();
         res.json({ success: true, data: summary });
@@ -26,7 +37,7 @@ router.get('/subscription-lifecycle', authorize, async (req, res, next) => {
 });
 
 // Everything that runs once a day: subscription lifecycle, membership expiry, fee overdue + reminders
-router.get('/daily', authorize, async (req, res, next) => {
+router.get('/daily', authorize, paused, async (req, res, next) => {
     const out = {};
     const run = async (name, fn) => {
         try { out[name] = { ok: true, result: await fn() }; } catch (e) { out[name] = { ok: false, error: e.message }; }
