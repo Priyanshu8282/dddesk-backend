@@ -255,10 +255,16 @@ exports.cancelSchedule = async (rawType) => {
 // ---------------------------------------------------------------------------
 // Public (no login): published text only
 // ---------------------------------------------------------------------------
-const toPublic = (v) => ({
+// the closest older version that was ever public (version numbers have gaps: deleted drafts keep their number)
+const previousOf = async (v) => {
+    const prev = await Version.findOne({ type: v.type, version: { $lt: v.version }, status: { $in: ['published', 'archived'] }, effectiveFrom: { $lte: new Date() } }).sort({ version: -1 }).select('version').lean();
+    return prev ? prev.version : null;
+};
+const toPublic = async (v) => ({
     type: v.type, slug: SLUGS[v.type], title: v.title, version: v.version, label: `v${v.version}`,
     effectiveFrom: v.effectiveFrom, updatedAt: v.publishedAt || v.effectiveFrom,
     description: (v.contentText || '').slice(0, 200), contentHtml: v.contentHtml, checksum: v.checksum,
+    previousVersion: await previousOf(v),
 });
 
 exports.getPublic = async (rawType) => {
@@ -267,7 +273,7 @@ exports.getPublic = async (rawType) => {
     await promoteDue(type);
     const v = await Version.findOne({ type, status: 'published' }).lean();
     if (!v) throw new ApiError(404, 'This document is not published yet');
-    return toPublic(v);
+    return await toPublic(v);
 };
 
 exports.getPublicVersion = async (rawType, version) => {
@@ -276,7 +282,7 @@ exports.getPublicVersion = async (rawType, version) => {
     await promoteDue(type);
     const v = await Version.findOne({ type, version, status: { $in: ['published', 'archived'] }, effectiveFrom: { $lte: new Date() } }).lean();
     if (!v) throw new ApiError(404, 'Version not found');
-    return toPublic(v);
+    return await toPublic(v);
 };
 
 exports.listPublic = async () => {

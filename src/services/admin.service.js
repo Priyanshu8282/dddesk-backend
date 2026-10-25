@@ -241,7 +241,7 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
 
   // Alert the platform owners (in-app + the e-mails set in Platform Settings; honours the on/off switch)
   require('./platformAlerts.service').notify('newRegistration', {
-    message: `${library.name}${library.city ? ' (' + library.city + ')' : ''} has requested approval. Owner: ${admin.name}, ${admin.email}.`,
+    message: `${library.name}${library.city ? ' (' + library.city + ')' : ''} has requested approval. Owner: ${admin.name}, ${admin.emailIsPlaceholder ? `+91 ${admin.mobile}` : admin.email}.`,
     libraryId: library._id, dedupeKey: String(library._id), data: { libraryId: library._id },
   });
 
