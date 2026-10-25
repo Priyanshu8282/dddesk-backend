@@ -138,3 +138,16 @@ Owner/staff of a library only (superadmin gets `403`). Counts are scoped to the 
 
 ## 5. Environment
 `HUMAN_CHECK_PROVIDER=turnstile|hcaptcha|none|off` (default `none` ⇒ proof-of-work), `HUMAN_CHECK_SITE_KEY`, `HUMAN_CHECK_SECRET_KEY`, `HUMAN_CHECK_POW_BITS` (default 18, 12–24), `HUMAN_CHECK_LOGIN_THRESHOLD` (default 3), `HUMAN_CHECK_ENFORCE_LEGACY` (default false). Production startup: provider `turnstile|hcaptcha` without a secret ⇒ refuse to start; provider `none`/`off` in production ⇒ warning in the log (PoW still protects), `off` is refused in production.
+
+## 6. Additions for the seven-step wizard and the contact form (see docs/WEBSITE_REDESIGN_BRIEF.md)
+**Wizard steps** (the `step` field of the draft is 1–6, saved by the client): 1 Mobile, 2 Plan, 3 Owner, 4 Library, 5 Quick setup, 6 Confirmation. Step 7 is the first dashboard (setup checklist + guided tour). There are no subdomain or website-address fields anywhere in the journey.
+
+**Draft `data` — new optional keys** (all optional; `PATCH /v1/public/register/draft` stays strict about unknown keys):
+- `libraryType`: `""|library|study_room|reading_room|self_study|coaching|other` → stored on `Library.libraryType`.
+- `quickSetup`: `{ shiftName, shiftStart, shiftEnd, planName, planFee (number ≥ 0 or null), planDuration (daily|weekly|monthly|quarterly|half-yearly|yearly) }`. On `POST /register/complete`, when `planName` is set and `planFee > 0` a default membership **Plan** is created for the new library (shift name/times copied onto it). A failure to create it never blocks sign-up. The `201` result gains `data.setup.defaultPlanCreated: boolean`.
+- `facilities` (already existed) is now sent by the wizard; `seatCapacity` stays required at completion.
+- `step` may now be `1–6` (was `1–4`).
+- Not stored: logo and photos. The wizard does not upload files; the owner adds them later from Settings (the draft never holds files).
+
+**Contact form — `POST /v1/public/contact`** (rate limit 5/hour/IP, human check required like `send-otp`)
+Body `{ name (2–100), mobile?, email?, subject?, message (10–2000), humanToken, hp_website?, fillMs? }`; at least one of `mobile` / `email`. `201 { success:true, message }`. The message is stored in `ContactMessage` (auto-deleted after one year) and the platform owners get an in-app alert plus e-mail through `platformAlerts` (event `contactMessage`, which respects Platform Settings → alerts). Errors use the same `HUMAN_CHECK_*` codes as §2.

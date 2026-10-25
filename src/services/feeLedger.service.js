@@ -399,9 +399,13 @@ const createCharge = async ({
     }
 };
 
+// Optimistic-concurrency retries: many staff/devices can hit one charge at once; wait a random, growing moment before re-reading
+const OCC_TRIES = 15;
+const occPause = (i) => new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 12 * (i + 1))));
+
 // ── recordPayment (allocation engine) ─────────────────────────────────────────
 const applyToCharge = async ({ libraryId, studentId, paymentId, amount, txnId, method, receivedBy, paymentDate, razorpayPaymentId }) => {
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < OCC_TRIES; i += 1) {
         const charge = await Payment.findOne({ _id: paymentId, libraryId, studentId });
         if (!charge) throw new ApiError(404, 'Charge not found for this student');
         if (TERMINAL_STATUSES.includes(charge.paymentStatus) || charge.paymentStatus === 'waived') {
@@ -427,7 +431,7 @@ const applyToCharge = async ({ libraryId, studentId, paymentId, amount, txnId, m
             await charge.save();
             return { charge, dueBefore };
         } catch (e) {
-            if (e.name === 'VersionError') continue;
+            if (e.name === 'VersionError') { await occPause(i); continue; }
             throw e;
         }
     }
@@ -436,12 +440,12 @@ const applyToCharge = async ({ libraryId, studentId, paymentId, amount, txnId, m
 
 const rollbackApplied = async (applied, libraryId, txnId) => {
     for (const a of applied) {
-        for (let i = 0; i < 6; i += 1) {
+        for (let i = 0; i < OCC_TRIES; i += 1) {
             const charge = await Payment.findOne({ _id: a.paymentId, libraryId });
             if (!charge) break;
             charge.paidAmount = r2(Math.max(0, charge.paidAmount - a.amount));
             charge.allocations = charge.allocations.filter((x) => String(x.transactionId) !== String(txnId));
-            try { await charge.save(); break; } catch (e) { if (e.name !== 'VersionError') break; }
+            try { await charge.save(); break; } catch (e) { if (e.name !== 'VersionError') break; await occPause(i); }
         }
     }
 };
@@ -695,14 +699,14 @@ const loadChargeForWrite = async (libraryId, paymentId) => {
 };
 
 const saveCharge = async (mutate, libraryId, paymentId) => {
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < OCC_TRIES; i += 1) {
         const charge = await loadChargeForWrite(libraryId, paymentId);
         const result = await mutate(charge);
         try {
             await charge.save();
             return { charge, result };
         } catch (e) {
-            if (e.name === 'VersionError') continue;
+            if (e.name === 'VersionError') { await occPause(i); continue; }
             throw e;
         }
     }
