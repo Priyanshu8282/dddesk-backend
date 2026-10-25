@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const config = require('../config/config');
 const HumanCheckState = require('../models/humanCheckState.model');
 
-// Human verification: Cloudflare Turnstile / hCaptcha when configured, otherwise a stateless HMAC-signed
+// Human verification: Google reCAPTCHA v2 checkbox / Cloudflare Turnstile / hCaptcha when configured, otherwise a stateless HMAC-signed
 // proof-of-work challenge. See backend/doc/onboarding-contract.md section 2.
 
 const POW_TTL_MS = 5 * 60 * 1000;
@@ -14,15 +14,16 @@ const MIN_FILL_MS = 1500;
 const PROVIDERS = {
     turnstile: 'https://challenges.cloudflare.com/turnstile/v0/siteverify',
     hcaptcha: 'https://api.hcaptcha.com/siteverify',
+    recaptcha: 'https://www.google.com/recaptcha/api/siteverify', // reCAPTCHA v2 "I'm not a robot" checkbox
 };
 
 const env = () => process.env;
 const isProd = () => env().NODE_ENV === 'production';
 
-/** 'turnstile' | 'hcaptcha' | 'pow' | 'off'. 'off' is honoured outside production only. */
+/** 'recaptcha' | 'turnstile' | 'hcaptcha' | 'pow' | 'off'. 'off' is honoured outside production only. */
 const provider = () => {
     const p = String(env().HUMAN_CHECK_PROVIDER || '').trim().toLowerCase();
-    if (p === 'turnstile' || p === 'hcaptcha') return p;
+    if (p === 'recaptcha' || p === 'turnstile' || p === 'hcaptcha') return p;
     if (p === 'off' && !isProd()) return 'off';
     return 'pow'; // 'none', unset, or 'off' in production
 };
@@ -38,8 +39,9 @@ const loginThreshold = () => {
 };
 
 const publicConfig = () => ({
-    provider: provider(),
-    siteKey: provider() === 'turnstile' || provider() === 'hcaptcha' ? (env().HUMAN_CHECK_SITE_KEY || null) : null,
+    // the API contract names the "checks skipped" mode 'none' (the server-side value is 'off')
+    provider: provider() === 'off' ? 'none' : provider(),
+    siteKey: ['recaptcha', 'turnstile', 'hcaptcha'].includes(provider()) ? (env().HUMAN_CHECK_SITE_KEY || null) : null,
     challengeUrl: '/v1/public/human-challenge',
     loginThreshold: loginThreshold(),
 });
@@ -124,15 +126,37 @@ const verifyWithProvider = async (name, token, ip, fetchImpl = globalThis.fetch)
     }
 };
 
+// A widget token may be used once. The providers reject replays themselves, but a short in-memory cache stops a replay
+// even when the provider is slow or unreachable. Tokens expire at the provider after about 2 minutes, so the cache stays small.
+const USED_TTL_MS = 3 * 60 * 1000;
+const usedTokens = new Map();
+const tokenKey = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+const markUsed = (t, now = Date.now()) => {
+    if (usedTokens.size > 5000) for (const [k, exp] of usedTokens) if (exp < now) usedTokens.delete(k);
+    const k = tokenKey(t);
+    if (usedTokens.has(k) && usedTokens.get(k) > now) return false;
+    usedTokens.set(k, now + USED_TTL_MS);
+    return true;
+};
+
 /**
  * Verify a human token. Returns { ok, reason?, unavailable? }.
  * Honeypot and fill-time are checked separately via softSignals (they apply to every provider).
  */
-const verifyToken = async (token, { ip, fetchImpl, now } = {}) => {
+const verifyToken = async (token, { ip, fetchImpl, now, silent = false } = {}) => {
     const p = provider();
     if (p === 'off') return { ok: true, skipped: true };
     if (!token || typeof token !== 'string' || token.length > 4000) return { ok: false, reason: 'missing' };
-    if (p === 'turnstile' || p === 'hcaptcha') return verifyWithProvider(p, token, ip, fetchImpl);
+    // `silent` = forms without a visible checkbox (forgot password, contact): they send the automatic proof-of-work token
+    // even when a widget provider is configured, because a checkbox widget cannot run invisibly
+    const widgetProvider = !silent;
+    if (p === 'recaptcha' && widgetProvider) {
+        if (!markUsed(token, now)) return { ok: false, reason: 'replayed' };
+        const r = await verifyWithProvider(p, token, ip, fetchImpl);
+        if (!r.ok) usedTokens.delete(tokenKey(token)); // a rejected or unreachable check does not burn the token
+        return r;
+    }
+    if ((p === 'turnstile' || p === 'hcaptcha') && widgetProvider) return verifyWithProvider(p, token, ip, fetchImpl);
     const r = checkPow(token, now);
     if (!r.ok) return r;
     const fresh = await consumePowId(r.id, r.expiresAt);
@@ -180,7 +204,7 @@ const loginNeedsChallenge = async (identifier, ip) => {
 module.exports = {
     provider, publicConfig, loginThreshold, powBits,
     issueChallenge, checkPow, leadingZeroBits, consumePowId,
-    verifyWithProvider, verifyToken, softSignals,
+    verifyWithProvider, verifyToken, softSignals, PROVIDERS, _resetUsedTokens: () => usedTokens.clear(),
     recordLoginFailure, clearLoginFailures, loginNeedsChallenge,
     POW_MIN_AGE_MS, MIN_FILL_MS,
 };

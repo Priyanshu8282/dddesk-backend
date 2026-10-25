@@ -64,6 +64,7 @@ router.use('/libraries', libraryRoutes);
 router.use('/super/libraries', superLibraryRoutes);
 router.use('/super/platform-plans', platformPlanRoutes);
 router.use('/super/audit', auditRoutes);
+router.use('/super/legal', require('./legal.routes'));
 // Platform support & tooling (spec 5)
 router.use('/support', require('./support.routes').library);
 router.use('/super/support', require('./support.routes').superAdmin);

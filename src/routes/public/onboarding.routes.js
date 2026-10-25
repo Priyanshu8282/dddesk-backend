@@ -1,7 +1,7 @@
 const express = require('express');
 const ctrl = require('../../controllers/onboarding.controller');
 const validate = require('../../middlewares/validate.middleware');
-const { requireHuman } = require('../../middlewares/humanCheck.middleware');
+const { requireHuman, requireHumanSilent } = require('../../middlewares/humanCheck.middleware');
 const { limiter, otpVerifyLimiter } = require('../../middlewares/rateLimit.middleware');
 const v = require('../../validations/onboarding.validation');
 
@@ -15,7 +15,7 @@ const draftLimiter = limiter({ name: 'reg-draft', windowMs: 10 * 60 * 1000, limi
 const contactLimiter = limiter({ name: 'contact', windowMs: 60 * 60 * 1000, limit: 5, message: 'Too many messages sent. Please try again later.' });
 
 // Website contact form (human-checked, stored, owners alerted)
-router.post('/contact', contactLimiter, requireHuman, validate(v.contact), ctrl.contact);
+router.post('/contact', contactLimiter, requireHumanSilent, validate(v.contact), ctrl.contact);
 
 // Public plan catalogue for the pricing page and the signup wizard
 router.get('/plans', plansLimiter, ctrl.plans);

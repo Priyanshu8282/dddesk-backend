@@ -7,7 +7,8 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "seed": "node src/seed/masterSeed.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test tests/razorpayRefund.test.js tests/xlsxWriter.test.js",
+    "test:integration": "node --test --test-concurrency=1 tests/integration/integration.test.js"
   },
   "keywords": [],
   "author": "",
@@ -29,12 +30,15 @@
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "razorpay": "^2.9.6",
+    "sanitize-html": "2.18.1",
     "soap": "^1.8.0",
     "socket.io": "^4.8.3",
     "web-push": "^3.6.7",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "nodemon": "^3.1.13"
+    "mongodb-memory-server": "^11.3.0",
+    "nodemon": "^3.1.13",
+    "socket.io-client": "^4.8.4"
   }
 }

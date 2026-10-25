@@ -13,6 +13,9 @@ router.use('/', authRoutes);
 // Mount public website dynamic profile routes (e.g. /v1/public/website/:libraryId)
 router.use('/website', websiteRoutes);
 
+// Privacy / terms / refund text managed by the super admin: /v1/public/legal[/:type[/versions/:n]]
+router.use('/legal', require('./legal.routes'));
+
 // Health check: /v1/public/health
 router.use('/health', require('./health.routes'));
 

@@ -55,8 +55,8 @@ const productionProblems = (env = process.env) => {
     if (!String(env.MONGODB_URL || env.MONGODB_URI || '').trim()) problems.push('MONGODB_URL is not set');
     // Human verification (signup wizard, forgot-password, login after failures)
     const hp = String(env.HUMAN_CHECK_PROVIDER || '').trim().toLowerCase();
-    if ((hp === 'turnstile' || hp === 'hcaptcha') && !String(env.HUMAN_CHECK_SECRET_KEY || '').trim()) problems.push('HUMAN_CHECK_SECRET_KEY is not set while HUMAN_CHECK_PROVIDER=' + hp);
-    if ((hp === 'turnstile' || hp === 'hcaptcha') && !String(env.HUMAN_CHECK_SITE_KEY || '').trim()) problems.push('HUMAN_CHECK_SITE_KEY is not set while HUMAN_CHECK_PROVIDER=' + hp);
+    if ((hp === 'recaptcha' || hp === 'turnstile' || hp === 'hcaptcha') && !String(env.HUMAN_CHECK_SECRET_KEY || '').trim()) problems.push('HUMAN_CHECK_SECRET_KEY is not set while HUMAN_CHECK_PROVIDER=' + hp);
+    if ((hp === 'recaptcha' || hp === 'turnstile' || hp === 'hcaptcha') && !String(env.HUMAN_CHECK_SITE_KEY || '').trim()) problems.push('HUMAN_CHECK_SITE_KEY is not set while HUMAN_CHECK_PROVIDER=' + hp);
     if (hp === 'off') problems.push('HUMAN_CHECK_PROVIDER=off is not allowed in production');
     if (!String(env.RAZORPAY_WEBHOOK_SECRET || '').trim() && String(env.RAZORPAY_KEY_ID || '').trim()) {
         problems.push('RAZORPAY_WEBHOOK_SECRET is not set while Razorpay keys are configured');
@@ -69,7 +69,7 @@ const productionProblems = (env = process.env) => {
 const productionWarnings = (env = process.env) => {
     const w = [];
     const hp = String(env.HUMAN_CHECK_PROVIDER || '').trim().toLowerCase();
-    if (hp !== 'turnstile' && hp !== 'hcaptcha') w.push('HUMAN_CHECK_PROVIDER is not turnstile/hcaptcha: the built-in proof-of-work check is used. Set a provider for stronger bot protection.');
+    if (hp !== 'recaptcha' && hp !== 'turnstile' && hp !== 'hcaptcha') w.push('HUMAN_CHECK_PROVIDER is not recaptcha/turnstile/hcaptcha: the built-in proof-of-work check is used. Set HUMAN_CHECK_PROVIDER=recaptcha (Google reCAPTCHA v2 checkbox) for stronger bot protection.');
     return w;
 };
 

@@ -60,7 +60,8 @@ PaymentTransaction.updateOne = async (q, upd, opts) => {
     return { matchedCount: 1 };
 };
 let seq = 0;
-ReceiptCounter.findOneAndUpdate = async () => ({ seq: ++seq });
+// receipt numbers are per financial year now: fySeq[<yyyy>] holds the last number used
+ReceiptCounter.findOneAndUpdate = async () => { seq += 1; return { seq, fySeq: new Proxy({}, { get: () => seq }) }; };
 Library.findById = () => ({ select: () => ({ lean: async () => ({ receipt: { prefix: 'RCPT' } }) }) });
 WebhookEvent.create = async () => ({});
 WebhookEvent.deleteOne = async () => ({});
@@ -122,7 +123,7 @@ const test = async (name, fn) => { await fn(); results.push(name); console.log('
         assert.strictEqual(calls[0].body.speed, 'normal');
         assert.strictEqual(calls[0].body.notes.refundRequestId, 'req-00000001');
         assert.strictEqual(t.status, 'success');
-        assert(/-R-\d+$/.test(t.receiptNumber), t.receiptNumber);
+        assert(/-R-\d{4}-\d{6}$/.test(t.receiptNumber), t.receiptNumber); // RCPT-R-<financial year>-<sequence>
         assert.strictEqual(t.razorpayRefundId, 'rfnd_1');
         assert.strictEqual(t.method, 'online');
         assert.strictEqual(charge.refundAmount, 400.5);

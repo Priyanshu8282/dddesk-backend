@@ -27,7 +27,7 @@ Cached 60 s server side, rate limit 60/min/IP. Only active, non-deleted plans, s
 ## 2. Human verification
 ### 2.1 Config — `GET /v1/public/human-check/config`
 ```json
-{ "success": true, "data": { "provider": "turnstile|hcaptcha|pow|none", "siteKey": "0x4AAA…|null",
+{ "success": true, "data": { "provider": "recaptcha|turnstile|hcaptcha|pow|none", "siteKey": "0x4AAA…|null",
   "challengeUrl": "/v1/public/human-challenge", "loginThreshold": 3 } }
 ```
 `provider` is `pow` when `HUMAN_CHECK_PROVIDER` is `none`/unset (proof-of-work fallback is then active), and `none` only in non-production when `HUMAN_CHECK_PROVIDER=off` (checks skipped, dev only). The site key is public by design (`HUMAN_CHECK_SITE_KEY`).
@@ -47,7 +47,7 @@ Cached 60 s server side, rate limit 60/min/IP. Only active, non-deleted plans, s
 | `POST /v1/public/register/send-otp` | always |
 | `POST /v1/public/register/complete` | always (fresh token) |
 | `POST /v1/public/forgot-password` | always |
-| `POST /v1/public/login` | only after `loginThreshold` (3) failed attempts for that identifier **or** that IP in 15 min |
+| `POST /v1/public/login` | **always** (the sign-in page shows a visible "I am not a robot" checkbox). With `HUMAN_CHECK_PROVIDER=off` (non-production only) no token is needed. `requiresHumanCheck` / `human-check/status` are still returned but are now informational |
 `verify-otp` and `register/draft` are protected by the registration token and rate limits, not by a challenge.
 
 ### 2.4 Login hint
@@ -151,3 +151,11 @@ Owner/staff of a library only (superadmin gets `403`). Counts are scoped to the 
 
 **Contact form — `POST /v1/public/contact`** (rate limit 5/hour/IP, human check required like `send-otp`)
 Body `{ name (2–100), mobile?, email?, subject?, message (10–2000), humanToken, hp_website?, fillMs? }`; at least one of `mobile` / `email`. `201 { success:true, message }`. The message is stored in `ContactMessage` (auto-deleted after one year) and the platform owners get an in-app alert plus e-mail through `platformAlerts` (event `contactMessage`, which respects Platform Settings → alerts). Errors use the same `HUMAN_CHECK_*` codes as §2.
+
+## 7. Visible "I am not a robot" checkbox (frontend)
+Shown only on **Sign In** and on the **Register** wizard (mobile/OTP step and the final Create step). It runs the same checks as §2: Turnstile/hCaptcha when `HUMAN_CHECK_PROVIDER` is set, otherwise the proof-of-work puzzle (spinner, then a green tick). Tokens are single use, so the box un-ticks after every attempt and the submit button stays disabled until it is ticked again. Forgot-password and the contact form keep **no visible checkbox**: they send the honeypot, fill time and a silently solved token (with Turnstile/hCaptcha configured, the widget appears only when the provider needs an interaction).
+
+## 8. Google reCAPTCHA v2 provider
+`HUMAN_CHECK_PROVIDER=recaptcha` (documented production default) with `HUMAN_CHECK_SITE_KEY` + `HUMAN_CHECK_SECRET_KEY`. The widget response string is sent as `humanToken`. The server calls `POST https://www.google.com/recaptcha/api/siteverify` (`secret`, `response`, `remoteip`) with a 5 s timeout and requires `success === true`; a token can be used once (in-memory replay cache of 3 minutes on top of Google's own duplicate check); an unreachable provider fails closed in production (`503 HUMAN_CHECK_UNAVAILABLE`). In production the server refuses to start with `recaptcha` and a missing site or secret key. Frontend CSP (only when `NEXT_PUBLIC_HUMAN_CHECK_PROVIDER=recaptcha`): script `https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/`, frame `https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/`, connect `https://www.google.com/recaptcha/`, img `https://www.gstatic.com`. Google's public test keys (site `6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI`, secret `6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe`) always pass and show a warning banner: development only.
+
+**Silent forms.** Forgot-password and the contact form have no visible checkbox. They send the honeypot, fill time and an automatically solved proof-of-work token (`GET /v1/public/human-challenge`), and the server accepts that PoW token on these two routes whatever `HUMAN_CHECK_PROVIDER` is (`requireHumanSilent`). Sign-in, `register/send-otp` and `register/complete` need the visible checkbox token of the configured provider.

@@ -16,7 +16,7 @@ const TTL_MS = 30 * 1000;
 const MAINTENANCE_TTL_MS = Number(process.env.MAINTENANCE_CACHE_TTL_MS || 5000);
 
 const DEFAULTS = Object.freeze({
-  general: { platformName: 'DDdesk.ai', tagline: 'Smart workspace for modern libraries', companyName: '', supportEmail: '', supportPhone: '', gstin: '', address: '' },
+  general: { platformName: 'DDdesk', tagline: 'Smart workspace for modern libraries', companyName: '', supportEmail: '', supportPhone: '', gstin: '', address: '' },
   branding: { logoPath: null, faviconPath: null, primaryColor: '#1063e0' },
   urls: { frontendUrl: '', backendUrl: '' },
   onboarding: { registrationEnabled: true, autoApproveNewLibraries: false, defaultTrialDays: 14, defaultGraceDays: 7 },
@@ -49,6 +49,8 @@ const merge = (storedValue) => {
       else out[section][k] = s[k];
     }
   }
+  // the product is now just "DDdesk": a value saved under the old name follows the rename
+  if (out.general.platformName === 'DDdesk.ai') out.general.platformName = 'DDdesk';
   return out;
 };
 

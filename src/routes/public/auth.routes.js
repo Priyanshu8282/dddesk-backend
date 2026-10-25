@@ -6,18 +6,18 @@ const validate = require('../../middlewares/validate.middleware');
 const { authValidation } = require('../../validations');
 const libraryValidation = require('../../validations/library.validation');
 const upload = require('../../middlewares/upload.middleware');
-const { requireHuman, requireHumanAfterFailures, requireHumanLegacy } = require('../../middlewares/humanCheck.middleware');
+const { requireHuman, requireHumanSilent, requireHumanLegacy } = require('../../middlewares/humanCheck.middleware');
 
 const router = express.Router();
 
 // Authentication endpoints
-router.post('/login', loginLimiter, accountLoginLimiter, requireHumanAfterFailures, validate(authValidation.login), authController.login);
+router.post('/login', loginLimiter, accountLoginLimiter, requireHuman, validate(authValidation.login), authController.login);
 // Session cookie endpoints (CSRF-checked inside the service: custom header + allowed Origin)
 router.post('/refresh', refreshLimiter, authController.refresh);
 router.post('/logout', refreshLimiter, authController.logout);
 router.post('/send-otp', otpLimiter, accountOtpLimiter, validate(authValidation.sendOTP), authController.sendOTP);
 router.post('/verify-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(authValidation.verifyOTP), authController.verifyOTP);
-router.post('/forgot-password', otpLimiter, accountOtpLimiter, requireHuman, validate(authValidation.forgotPassword), authController.forgotPassword);
+router.post('/forgot-password', otpLimiter, accountOtpLimiter, requireHumanSilent, validate(authValidation.forgotPassword), authController.forgotPassword);
 router.post('/verify-reset-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(authValidation.verifyResetOTP), authController.verifyResetOTP);
 router.post('/reset-password', loginLimiter, accountOtpVerifyLimiter, validate(authValidation.resetPassword), authController.resetPassword);
 

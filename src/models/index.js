@@ -24,6 +24,8 @@ const Student = require('./student.model');
 const Complaint = require('./complaint.model');
 const Coupon = require('./coupon.model');
 const Review = require('./review.model');
+const LegalDocument = require('./legalDocument.model');
+const LegalDocumentVersion = require('./legalDocumentVersion.model');
 const AiChat = require('./aiChat.model');
 
 module.exports = {
@@ -54,6 +56,8 @@ module.exports = {
     Complaint,
     Coupon,
     Review,
+    LegalDocument,
+    LegalDocumentVersion,
     AiChat,
 
     // Aliases for backward compatibility

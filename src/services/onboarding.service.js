@@ -130,7 +130,7 @@ const patchDraft = async (token, body, ip) => {
     }
     if (body.consent) {
         for (const k of ['terms', 'privacy', 'marketing']) if (typeof body.consent[k] === 'boolean') set[`consent.${k}`] = body.consent[k];
-        set['consent.version'] = PRIVACY_POLICY_VERSION;
+        set['consent.version'] = await require('./legal.service').consentVersion(PRIVACY_POLICY_VERSION);
         set['consent.at'] = new Date();
         set['consent.ip'] = ip || null;
     }
@@ -198,7 +198,7 @@ const completeRegistration = async ({ token, body, ip, issueSession }) => {
         const plan = await PlatformPlan.findOne({ _id: claimed.planId, isActive: true, isDeleted: false });
         if (!plan) throw coded(409, 'PLAN_UNAVAILABLE', 'The selected plan is no longer available. Please choose another plan.');
 
-        const consent = { terms: true, privacy: true, marketing: !!body.consent.marketing, version: PRIVACY_POLICY_VERSION, at: new Date(), ip: ip || null };
+        const consent = { terms: true, privacy: true, marketing: !!body.consent.marketing, version: await require('./legal.service').consentVersion(PRIVACY_POLICY_VERSION), at: new Date(), ip: ip || null };
         let created;
         try {
             created = await require('./admin.service').createLibraryWithAdmin({

@@ -11,7 +11,7 @@ const denyRequired = (res) =>
         message: 'Please confirm you are human to continue.', humanCheck: humanCheck.publicConfig(),
     });
 
-const run = async (req, res, next) => {
+const run = async (req, res, next, opts = {}) => {
     const log = (outcome, reason) => securityLog.record(req, {
         type: 'human_check', outcome, reason,
         meta: { provider: humanCheck.provider(), path: (req.originalUrl || '').split('?')[0].slice(0, 80) },
@@ -24,7 +24,7 @@ const run = async (req, res, next) => {
         }
         const token = tokenOf(req);
         if (!token && humanCheck.provider() !== 'off') return denyRequired(res);
-        const r = await humanCheck.verifyToken(token, { ip: req.ip });
+        const r = await humanCheck.verifyToken(token, { ip: req.ip, silent: !!opts.silent });
         if (r.ok) {
             // the token fields are not business data: keep them out of downstream validation/storage
             if (req.body && typeof req.body === 'object') { delete req.body.humanToken; delete req.body.hp_website; delete req.body.fillMs; }
@@ -44,7 +44,10 @@ const run = async (req, res, next) => {
 };
 
 /** Always required. */
-const requireHuman = run;
+const requireHuman = (req, res, next) => run(req, res, next);
+
+/** Always required, but for forms without a visible checkbox: the automatic proof-of-work token is accepted whatever the provider. */
+const requireHumanSilent = (req, res, next) => run(req, res, next, { silent: true });
 
 /** Required only after N failed attempts for the typed identifier or the caller IP (login). */
 const requireHumanAfterFailures = async (req, res, next) => {
@@ -65,4 +68,4 @@ const requireHumanAfterFailures = async (req, res, next) => {
 const requireHumanLegacy = (req, res, next) =>
     (String(process.env.HUMAN_CHECK_ENFORCE_LEGACY || '').toLowerCase() === 'true' ? run(req, res, next) : next());
 
-module.exports = { requireHuman, requireHumanAfterFailures, requireHumanLegacy };
+module.exports = { requireHuman, requireHumanSilent, requireHumanAfterFailures, requireHumanLegacy };

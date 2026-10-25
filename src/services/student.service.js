@@ -301,10 +301,11 @@ const applyAadhaar = async (data, libraryId, { excludeId } = {}) => {
 };
 
 /** DPDP: consent record built from the admission request (who captured it, when, which notice version, from where). */
-const buildConsent = (req) => ({
+const buildConsent = async (req) => ({
     given: true,
     givenAt: new Date(),
-    version: dpdp.PRIVACY_POLICY_VERSION,
+    // the privacy policy version published at this moment (falls back to the fixed constant if the documents are unavailable)
+    version: await require('./legal.service').privacyVersionLabel(dpdp.PRIVACY_POLICY_VERSION),
     purpose: dpdp.CONSENT_PURPOSE,
     capturedBy: req?.user?._id,
     ip: req ? describeRequest(req).ip : undefined
@@ -350,7 +351,7 @@ const registerStudent = async (libraryId, body, req) => {
     if (!dpdp.toBool(body.consentGiven)) throw new ApiError(400, "The student's consent to data processing is required");
     const guardianConsentGiven = dpdp.toBool(body.guardianConsentGiven);
     assertMinorRules(data.dob, { guardianName: data.guardianName, guardianMobile: data.guardianMobile, guardianConsentGiven });
-    data.consent = buildConsent(req);
+    data.consent = await buildConsent(req);
     if (guardianConsentGiven) data.guardianConsent = { given: true, givenAt: new Date() };
     await applyAadhaar(data, libraryId);
 
@@ -1066,7 +1067,7 @@ const updateStudentById = async (id, libraryId, body, req) => {
     await applyAadhaar(data, libraryId, { excludeId: student._id });
 
     // DPDP: consent can be recorded later for older records; guardian consent can be given or withdrawn
-    if (dpdp.toBool(body.consentGiven) && !student.consent?.given) data.consent = buildConsent(req);
+    if (dpdp.toBool(body.consentGiven) && !student.consent?.given) data.consent = await buildConsent(req);
     const guardianConsentTouched = body.guardianConsentGiven !== undefined;
     if (guardianConsentTouched) data.guardianConsent = dpdp.toBool(body.guardianConsentGiven) ? { given: true, givenAt: new Date() } : { given: false };
 
@@ -1221,7 +1222,7 @@ const exportStudentData = async (id, libraryId, req) => {
     if (req) audit(req, 'student.data_export', 'Student', _id, {});
     return {
         exportedAt: new Date(),
-        privacyPolicyVersion: dpdp.PRIVACY_POLICY_VERSION,
+        privacyPolicyVersion: await require('./legal.service').privacyVersionLabel(dpdp.PRIVACY_POLICY_VERSION),
         note: 'Aadhaar is held only as its last 4 digits; the full number is not stored.',
         profile, memberships, charges, transactions
     };
