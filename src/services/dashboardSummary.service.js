@@ -341,9 +341,11 @@ const buildLibrary = async (libId, scope, flags, range, now = new Date()) => {
   let attendanceToday = null;
   if (flags.attendance) {
     const presentCount = present.length;
+    // someone without an active plan can still be marked present (trial/manual): never show more present than the total
+    const attTotal = Math.max(activeStudents, presentCount);
     attendanceToday = {
-      present: presentCount, absent: Math.max(activeStudents - presentCount, 0), total: activeStudents,
-      presentPercent: M.percentOf(Math.min(presentCount, activeStudents || presentCount), activeStudents), insideNow,
+      present: presentCount, absent: Math.max(attTotal - presentCount, 0), total: attTotal,
+      presentPercent: M.percentOf(presentCount, attTotal), insideNow,
     };
   }
 

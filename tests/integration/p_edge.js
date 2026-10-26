@@ -84,6 +84,7 @@ module.exports = (H) => {
       const v = await api('POST', U('/register/verify-otp'), { body: { mobile: M, otp: data(s).otp } }); ok(v, 'verify');
       const RT = { 'x-registration-token': data(v).registrationToken };
       const d0 = await api('GET', U('/register/draft'), { headers: RT }); ok(d0, 'draft'); assert.equal(data(d0).mobile, M);
+      assert.equal(await col('libraries').countDocuments({ mobile: M }) + await col('admins').countDocuments({ mobile: M }), 0, 'a verified mobile with an open draft has no Library or Admin row yet');
       const planR = await api('GET', U('/plans')); const planId = (data(planR).plans || data(planR))[0].id || (data(planR).plans || data(planR))[0]._id;
       const bad = await api('PATCH', U('/register/draft'), { headers: RT, body: { planId: '000000000000000000000001' } });
       assert.equal(bad.status, 409, 'unknown plan: ' + msg(bad));
@@ -92,6 +93,7 @@ module.exports = (H) => {
       ok(await api('PATCH', U('/register/draft'), { headers: RT, body: { step: 3, planId, billingCycle: 'monthly', consent: { terms: true, privacy: true },
         data: { name: 'Wizard Library', ownerName: 'Wiz Owner', email: 'wiz@lib.test', address: '5 Civil Lines', city: 'Jodhpur', state: 'Rajasthan', district: 'Jodhpur', pincode: '342001', seatCapacity: 30, workingHours: { openingTime: '06:00', closingTime: '22:00' },
           quickSetup: { shiftName: 'Morning', shiftStart: '06:00', shiftEnd: '12:00', planName: 'Wizard Monthly', planFee: 800, planDuration: 'monthly' } } } }), 'save draft');
+      assert.equal(await col('libraries').countDocuments({ mobile: M }) + await col('admins').countDocuments({ mobile: M }), 0, 'a fully filled draft is still not in the main tables');
       const noConsent = await api('POST', U('/register/complete'), { headers: RT, body: { completeKey: crypto.randomUUID(), password: 'Wizard#12345', consent: { terms: true, privacy: false }, humanToken: await solve() } });
       assert.equal(noConsent.status, 400, 'privacy consent required: ' + msg(noConsent));
       const key = crypto.randomUUID();
@@ -126,6 +128,26 @@ module.exports = (H) => {
       ctx.ids.wizLib = String(lib._id);
       const quick = await col('plans').findOne({ libraryId: lib._id });
       console.log('quick-setup default plan created at completion?', !!quick, quick && quick.name);
+    });
+  });
+
+  test('52b many visitors arrive at once: each gets only a temporary draft, nothing reaches the main tables', async () => {
+    await withPow(async () => {
+      const mobiles = Array.from({ length: 6 }, (_, i) => '98765002' + String(30 + i));
+      const beforeLibs = await col('libraries').countDocuments({});
+      const beforeAdmins = await col('admins').countDocuments({});
+      await Promise.all(mobiles.map(async (m) => {
+        const s1 = await api('POST', U('/register/send-otp'), { body: { mobile: m, humanToken: await solve(), fillMs: 8000 } }); ok(s1, 'send-otp ' + m);
+        const v1 = await api('POST', U('/register/verify-otp'), { body: { mobile: m, otp: data(s1).otp } }); ok(v1, 'verify ' + m);
+        ok(await api('GET', U('/register/draft'), { headers: { 'x-registration-token': data(v1).registrationToken } }), 'draft ' + m);
+      }));
+      assert.equal(await col('registrationdrafts').countDocuments({ mobile: { $in: mobiles } }), 6, 'one separate draft per visitor');
+      assert.equal(await col('libraries').countDocuments({}), beforeLibs, 'no Library row was created');
+      assert.equal(await col('admins').countDocuments({}), beforeAdmins, 'no Admin row was created');
+      // a visitor who only types a mobile and never verifies leaves no draft at all
+      const lone = '9876500299';
+      await api('POST', U('/register/send-otp'), { body: { mobile: lone, humanToken: await solve(), fillMs: 8000 } });
+      assert.equal(await col('registrationdrafts').countDocuments({ mobile: lone }), 0, 'sending an OTP alone creates no draft');
     });
   });
 
