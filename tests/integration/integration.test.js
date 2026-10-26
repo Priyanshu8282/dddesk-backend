@@ -249,4 +249,4 @@ test('14 branch isolation negatives (student/seat/ledger/receipt)', async () => 
 
 // ---- parts (each registers more tests, in order)
 const H = { ctx, ok, expectStatus, data, msg, T, id, staffBody, mkStaff, stu, AAD1, AAD2, aadhaarWithCheck };
-for (const f of (process.env.DD_PARTS || 'p_fees,p_members,p_security,p_sub,p_edge,p_adv,p_receipts,p_smoke,p_ops,p_realtime,p_legal').split(',').filter(Boolean)) require('./' + f)(H);
+for (const f of (process.env.DD_PARTS || 'p_fees,p_members,p_security,p_sub,p_edge,p_adv,p_receipts,p_smoke,p_ops,p_realtime,p_legal,p_modules').split(',').filter(Boolean)) require('./' + f)(H);

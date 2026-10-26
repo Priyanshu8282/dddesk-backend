@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "seed": "node src/seed/masterSeed.js",
-    "test": "node --test tests/razorpayRefund.test.js tests/xlsxWriter.test.js",
+    "test": "node --test tests/razorpayRefund.test.js tests/xlsxWriter.test.js tests/unit/utils.test.js tests/unit/validations.test.js",
     "test:integration": "node --test --test-concurrency=1 tests/integration/integration.test.js"
   },
   "keywords": [],

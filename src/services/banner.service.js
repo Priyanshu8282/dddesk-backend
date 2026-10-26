@@ -113,7 +113,7 @@ const updateBannerById = async (id, libraryId, body, file) => {
 
 const toggleBanner = async (id, libraryId) => {
     assertId(id);
-    const banner = await Banner.findOneAndUpdate({ _id: id, libraryId }, [{ $set: { isActive: { $not: '$isActive' } } }], { new: true });
+    const banner = await Banner.findOneAndUpdate({ _id: id, libraryId }, [{ $set: { isActive: { $not: '$isActive' } } }], { returnDocument: 'after', updatePipeline: true });
     if (!banner) throw new ApiError(404, 'Banner not found');
     return banner;
 };

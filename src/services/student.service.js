@@ -1019,21 +1019,19 @@ const queryStudents = async (libraryId, q = {}, scope = {}) => {
 
     // one pass for every header number (status, membership, expiring soon, unseated)
     const base = { libraryId: new mongoose.Types.ObjectId(String(libraryId)), isDeleted: false, ...scope };
-    const [facet] = await Student.aggregate([
-        { $match: base },
-        { $facet: {
-            status: [{ $group: { _id: '$status', count: { $sum: 1 } } }],
-            membership: [{ $group: { _id: '$planStatus', count: { $sum: 1 } } }],
-            expiring: [{ $match: { expiryDate: { $gte: new Date(), $lte: new Date(Date.now() + 30 * DAY_MS) } } }, { $count: 'n' }],
-            noSeat: [{ $match: { seatId: null } }, { $count: 'n' }]
-        } }
+    // (four small queries, each covered by an index, run in parallel; one $facet had to read every full document)
+    const [byStatus, byMembership, expiringSoon, withoutSeat] = await Promise.all([
+        Student.aggregate([{ $match: base }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+        Student.aggregate([{ $match: base }, { $group: { _id: '$planStatus', count: { $sum: 1 } } }]),
+        Student.countDocuments({ ...base, expiryDate: { $gte: new Date(), $lte: new Date(Date.now() + 30 * DAY_MS) } }),
+        Student.countDocuments({ ...base, seatId: null })
     ]);
     const summary = { total: 0, active: 0, inactive: 0, leave: 0, suspended: 0 };
-    (facet.status || []).forEach((g) => { summary[g._id] = g.count; summary.total += g.count; });
+    byStatus.forEach((g) => { summary[g._id] = g.count; summary.total += g.count; });
     summary.membership = { none: 0, pending: 0, active: 0, paused: 0, expired: 0 };
-    (facet.membership || []).forEach((g) => { summary.membership[g._id || 'none'] = (summary.membership[g._id || 'none'] || 0) + g.count; });
-    summary.expiringSoon = facet.expiring[0] ? facet.expiring[0].n : 0;
-    summary.withoutSeat = facet.noSeat[0] ? facet.noSeat[0].n : 0;
+    byMembership.forEach((g) => { summary.membership[g._id || 'none'] = (summary.membership[g._id || 'none'] || 0) + g.count; });
+    summary.expiringSoon = expiringSoon;
+    summary.withoutSeat = withoutSeat;
 
     return { results: students, page, limit, totalPages: Math.ceil(totalResults / limit), totalResults, summary };
 };

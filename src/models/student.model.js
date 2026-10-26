@@ -125,6 +125,12 @@ studentSchema.index(
 );
 studentSchema.index({ libraryId: 1, isDeleted: 1, status: 1 });
 studentSchema.index({ libraryId: 1, planStatus: 1, expiryDate: 1 });
+// Student list (default "newest" order) and its header numbers: each is answered from an index instead of
+// sorting / scanning every student of the library on every request.
+studentSchema.index({ libraryId: 1, isDeleted: 1, createdAt: -1, _id: -1 }, { name: 'list_newest' });
+studentSchema.index({ libraryId: 1, isDeleted: 1, planStatus: 1 }, { name: 'summary_membership' });
+studentSchema.index({ libraryId: 1, isDeleted: 1, expiryDate: 1 }, { name: 'summary_expiring' });
+studentSchema.index({ libraryId: 1, isDeleted: 1, seatId: 1 }, { name: 'summary_seat' });
 
 studentSchema.index({ libraryId: 1, aadhaarHash: 1 }, { sparse: true, name: 'library_aadhaar_hash' });
 

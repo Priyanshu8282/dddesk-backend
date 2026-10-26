@@ -190,7 +190,7 @@ const updateStory = async (id, libraryId, body, media) => {
 
 const toggleActive = async (id, libraryId) => {
     assertId(id);
-    return Story.findOneAndUpdate({ _id: id, libraryId }, [{ $set: { isActive: { $not: '$isActive' } } }], { new: true });
+    return Story.findOneAndUpdate({ _id: id, libraryId }, [{ $set: { isActive: { $not: '$isActive' } } }], { returnDocument: 'after', updatePipeline: true });
 };
 
 const deleteStory = async (id, libraryId) => {
