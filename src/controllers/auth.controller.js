@@ -44,15 +44,19 @@ const sendBlocked = (res, err) =>
     libraryStatus: err.libraryStatus, statusReason: err.statusReason || null,
   });
 
-const authSuccess = (res, message, { token, userData, role }) =>
-  res.status(200).json({
+// refreshToken / refreshExpiresAt are present only for native apps ("X-Client-Type: mobile"); browsers get the HttpOnly cookie
+const authSuccess = (res, message, { token, userData, role, refreshToken, refreshExpiresAt }) => {
+  res.set('Cache-Control', 'no-store');
+  return res.status(200).json({
     success: true,
     message,
     token,
     user: userData,
-    data: { token, user: userData },
+    data: { token, user: userData, ...(refreshToken ? { refreshToken, refreshExpiresAt } : {}) },
+    ...(refreshToken ? { refreshToken, refreshExpiresAt } : {}),
     [role]: userData
   });
+};
 
 exports.login = async (req, res, next) => {
   try {
@@ -141,7 +145,8 @@ exports.refresh = async (req, res, next) => {
   try {
     const r = await sessionService.refresh(req, res);
     res.set('Cache-Control', 'no-store');
-    return res.status(200).json({ success: true, token: r.token, expiresIn: r.expiresIn, data: { token: r.token, expiresIn: r.expiresIn } });
+    const rotated = r.refreshToken ? { refreshToken: r.refreshToken, refreshExpiresAt: r.refreshExpiresAt } : {};
+    return res.status(200).json({ success: true, token: r.token, expiresIn: r.expiresIn, ...rotated, data: { token: r.token, expiresIn: r.expiresIn, ...rotated } });
   } catch (err) { return next(err); }
 };
 

@@ -190,10 +190,14 @@ const modelOf = (user) => user.constructor;
 // and OTP login/reset must never fail on unrelated validation.
 const setOtpFields = (user, fields) => modelOf(user).updateOne({ _id: user._id }, { $set: fields });
 
-// Stores a hashed OTP with a 10 min expiry and resets the attempt counter
-const issueOtp = async (user, { channel = 'sms', purpose = 'login', target = {} } = {}) => {
+// Stores a hashed OTP with a 10 min expiry and resets the attempt counter.
+// `siblings`: other accounts of the same person (a student mobile registered in several libraries). They all get the SAME
+// code, delivered once, so the student receives one SMS and can pick the library after the code is proven.
+const issueOtp = async (user, { channel = 'sms', purpose = 'login', target = {}, siblings = [] } = {}) => {
   const otp = generateOtp();
-  await setOtpFields(user, { otp: hashOtp(otp), otpExpires: new Date(Date.now() + OTP_TTL_MS), otpAttempts: 0 });
+  const fields = { otp: hashOtp(otp), otpExpires: new Date(Date.now() + OTP_TTL_MS), otpAttempts: 0 };
+  await setOtpFields(user, fields);
+  await Promise.all(siblings.map((s) => setOtpFields(s, fields)));
   // Delivery via the registered provider (never throws, never logs the OTP)
   try {
     const to = channel === 'email' ? user.email : user.mobile;
@@ -234,7 +238,7 @@ const checkOtp = async (user, otp) => {
 const clearOtp = (user) => setOtpFields(user, { otp: null, otpExpires: null, otpAttempts: 0 });
 
 // Single account for an OTP flow; ambiguity (same student mobile in many libraries) must be resolved by the caller
-const findOtpAccount = async ({ email, mobile, userRole, libraryId }) => {
+const findOtpAccount = async ({ email, mobile, userRole, libraryId }, { allowMany = false } = {}) => {
   const tenant = await resolveTenantHint({ libraryId });
   const normMobile = mobile ? normalizeMobile(mobile) : '';
   const lookups = userRole === undefined
@@ -244,7 +248,11 @@ const findOtpAccount = async ({ email, mobile, userRole, libraryId }) => {
     let list = await findCandidates(role, { email, mobile: email ? '' : normMobile, libraryId: tenant },
       { withSecrets: ['otp', 'otpExpires', 'otpAttempts'] });
     if (list.length === 1) return { user: list[0], role };
-    if (list.length > 1) throw fail(409, 'This number is registered in more than one library. Please specify the library.');
+    if (list.length > 1) {
+      // Student OTP login only: the caller resolves it after the code is verified (see sendOTP / verifyOTP)
+      if (allowMany && role === 'STUDENT') return { user: null, many: list, role };
+      throw fail(409, 'This number is registered in more than one library. Please specify the library.');
+    }
   }
   return { user: null, role: null };
 };
@@ -255,17 +263,44 @@ exports.sendOTP = async ({ identifier, email, mobile, userRole, libraryId }) => 
   const target = resolveTarget({ identifier, email, mobile });
   if (!target.email && !target.mobile) throw fail(400, 'Enter a valid email or mobile number');
   const channel = target.email ? 'email' : 'sms';
-  const { user } = await findOtpAccount({ ...target, userRole: userRole || 'ADMIN', libraryId });
-  if (!user || (user.status === false) || (user.status === 'inactive')) return noAccountOtp(channel, target);
+  const found = await findOtpAccount({ ...target, userRole: userRole || 'ADMIN', libraryId }, { allowMany: true });
+  const usable = (u) => u && u.status !== false && u.status !== 'inactive';
+  if (found.many) {
+    // same student mobile in several libraries: one code for all of them, the library is chosen after verification
+    const live = found.many.filter(usable);
+    if (!live.length) return noAccountOtp(channel, target);
+    return issueOtp(live[0], { channel, purpose: 'login', target, siblings: live.slice(1) });
+  }
+  const { user } = found;
+  if (!usable(user)) return noAccountOtp(channel, target);
   return issueOtp(user, { channel, purpose: 'login', target });
 };
 
 exports.verifyOTP = async ({ identifier, email, mobile, otp, userRole, fcmToken, libraryId }) => {
   const role = isStudentRole(userRole) ? 'STUDENT' : 'ADMIN';
   const target = resolveTarget({ identifier, email, mobile });
-  const { user } = await findOtpAccount({ ...target, userRole: role, libraryId });
-  if (!user) throw fail(400, 'Invalid OTP');
-  await checkOtp(user, otp);
+  const found = await findOtpAccount({ ...target, userRole: role, libraryId }, { allowMany: true });
+  let user = found.user;
+  if (found.many) {
+    // Several libraries share this student mobile. Only a correct code reveals the choice (library names are never shown
+    // before that), and the code is NOT consumed: the app repeats this call with the chosen libraryId.
+    const matches = [];
+    let lastError = null;
+    for (const candidate of found.many) {
+      try { await checkOtp(candidate, otp); matches.push(candidate); } catch (e) { lastError = e; }
+    }
+    if (!matches.length) throw lastError || fail(400, 'Invalid OTP');
+    if (matches.length > 1) {
+      throw fail(409, 'This number is registered in more than one library. Choose your library to continue.', {
+        errorCode: 'LIBRARY_CHOICE_REQUIRED',
+        data: { libraries: matches.map((m) => ({ id: String(m.libraryId?._id || m.libraryId), name: m.libraryId?.name || 'Library' })) },
+      });
+    }
+    user = matches[0];
+  } else {
+    if (!user) throw fail(400, 'Invalid OTP');
+    await checkOtp(user, otp);
+  }
 
   if (role === 'ADMIN') {
     if (!user.status) throw fail(403, 'Your account has been disabled. Contact your library owner.');

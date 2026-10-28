@@ -87,6 +87,19 @@ const clearRefreshCookie = (req, res) => {
     res.clearCookie(COOKIE_NAME, { httpOnly, secure, sameSite, path, ...(domain ? { domain } : {}) });
 };
 
+/**
+ * Native apps have no browser cookie jar and no Origin. A client that sends "X-Client-Type: mobile" gets the refresh token
+ * in the JSON body and presents it in the body (keep it in the Keychain/Keystore). That mode has no ambient credential,
+ * so the cookie-only CSRF origin check is not needed there; rotation, reuse detection and revocation are identical.
+ * Browsers keep using the HttpOnly cookie, which is never readable by scripts.
+ */
+const isMobileClient = (req) => String(req.headers['x-client-type'] || '').trim().toLowerCase() === 'mobile';
+
+const readBodyRefreshToken = (req) => {
+    const v = req.body && typeof req.body.refreshToken === 'string' ? req.body.refreshToken.trim() : '';
+    return v.length > 0 && v.length <= 400 ? v : null;
+};
+
 const readRefreshCookie = (req) => {
     const raw = String(req.headers.cookie || '');
     for (const part of raw.split(';')) {
@@ -145,9 +158,15 @@ const startLoginSession = async (req, res, login) => {
         ip: d.ip, userAgent: d.userAgent, device: d.device?.summary || null,
         absoluteExpiresAt: absolute, expiresAt,
     });
-    setRefreshCookie(req, res, session._id, secret, persistent, expiresAt);
+    const mobile = isMobileClient(req);
+    if (!mobile) setRefreshCookie(req, res, session._id, secret, persistent, expiresAt);
     trimSessions(userId, userType).catch(() => {});
-    return { ...login, token: signAccess({ userId, userType, sid: session._id }), sessionId: String(session._id) };
+    return {
+        ...login,
+        token: signAccess({ userId, userType, sid: session._id }),
+        sessionId: String(session._id),
+        ...(mobile ? { refreshToken: `${session._id}.${secret}`, refreshExpiresAt: expiresAt.toISOString() } : {}),
+    };
 };
 
 /** Support (impersonation) session: short, no refresh token, revocable. */
@@ -179,8 +198,9 @@ const accountAllowed = (session, acct) => {
 
 /** POST /public/refresh: trade the refresh cookie for a new access token (and a rotated cookie). */
 const refresh = async (req, res) => {
-    assertSameOriginRequest(req);
-    const raw = readRefreshCookie(req);
+    const mobile = isMobileClient(req);
+    if (!mobile) assertSameOriginRequest(req);
+    const raw = mobile ? readBodyRefreshToken(req) : readRefreshCookie(req);
     const [sid, secret] = String(raw || '').split('.');
     const reject = (reason, status = 401) => {
         clearRefreshCookie(req, res);
@@ -222,6 +242,7 @@ const refresh = async (req, res) => {
     }
 
     let newSecret = null;
+    let rotated = null; // mobile clients: the rotated token goes back in the body
     if (!parallel) {
         newSecret = crypto.randomBytes(48).toString('base64url');
         const idle = session.persistent ? IDLE_MS : SESSION_ONLY_IDLE_MS;
@@ -232,6 +253,7 @@ const refresh = async (req, res) => {
             { new: true }
         );
         if (!upd) parallel = true; // lost a race against another tab: it holds the new cookie
+        else if (mobile) rotated = { refreshToken: `${session._id}.${newSecret}`, refreshExpiresAt: expiresAt.toISOString() };
         else setRefreshCookie(req, res, session._id, newSecret, session.persistent, expiresAt);
     }
 
@@ -239,6 +261,7 @@ const refresh = async (req, res) => {
         token: signAccess({ userId: session.userId, userType: session.userType, sid: session._id }),
         userType: session.userType,
         expiresIn: config.jwt.accessTtlSeconds,
+        ...(rotated || {}),
     };
 };
 
@@ -266,8 +289,15 @@ const revokeAllForLibrary = async (libraryId, reason = 'library_suspended') => {
 
 /** POST /public/logout: revoke the session named in the refresh cookie (works even when the access token has expired). */
 const logout = async (req, res) => {
-    assertSameOriginRequest(req);
-    const [sid] = String(readRefreshCookie(req) || '').split('.');
+    const mobile = isMobileClient(req);
+    if (!mobile) assertSameOriginRequest(req);
+    const [sid, secret] = String((mobile ? readBodyRefreshToken(req) : readRefreshCookie(req)) || '').split('.');
+    // a body token must prove it is really this session's (an id alone must not be enough to sign someone out)
+    if (mobile) {
+        const row = sid && mongoose.Types.ObjectId.isValid(sid) && secret ? await Session.findById(sid).select('refreshHash prevRefreshHash').lean() : null;
+        const matches = row && (safeEq(sha256(secret), row.refreshHash) || safeEq(sha256(secret), row.prevRefreshHash));
+        if (!matches) return;
+    }
     clearRefreshCookie(req, res);
     if (sid && mongoose.Types.ObjectId.isValid(sid)) {
         const s = await Session.findById(sid).select('userId userType libraryId revokedAt').lean();
