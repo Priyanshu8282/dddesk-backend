@@ -3,6 +3,7 @@ const ApiError = require('../utils/ApiError');
 const Admin = require('../models/admin.model');
 const svc = require('../services/onboarding.service');
 const humanCheck = require('../services/humanCheck.service');
+const { isMobileClient } = require('../utils/clientPlatform');
 const authSvc = require('../services/auth.service');
 const sessionService = require('../services/session.service');
 const securityLog = require('../utils/securityLog');
@@ -27,7 +28,7 @@ exports.humanConfig = (req, res) => {
 
 exports.humanChallenge = (req, res) => {
     res.set('Cache-Control', 'no-store');
-    res.status(200).json({ success: true, data: humanCheck.issueChallenge() });
+    res.status(200).json({ success: true, data: humanCheck.issueChallenge(Date.now(), { mobile: isMobileClient(req) }) });
 };
 
 exports.humanStatus = catchAsync(async (req, res) => {

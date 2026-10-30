@@ -281,6 +281,8 @@ exports.logoutAll = catchAsync(async (req, res) => {
 exports.changePassword = catchAsync(async (req, res) => {
     const { currentPassword, newPassword } = req.body;
     await studentService.changeStudentPassword(req.user._id, currentPassword, newPassword);
+    // a changed password ends every OTHER device's session (this one keeps working)
+    await require('../services/session.service').revokeAllForUser(req.user._id, 'password_changed', { exceptSid: req.sessionId });
     res.status(200).json({ success: true, message: 'Password changed successfully' });
 });
 

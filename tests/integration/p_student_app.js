@@ -14,10 +14,10 @@ module.exports = (H) => {
   const GET = (path, query) => api('GET', P(path) + (query ? '?' + new URLSearchParams(query) : ''), { token });
 
   test('130 student sign-in (the app sends the mobile marker) and own profile', async () => {
-    const l = await api('POST', U('/login'), { headers: { 'x-client-type': 'mobile' }, body: { userRole: 'STUDENT', identifier: MOBILE, password: 'Stud#12345', libraryId: ctx.ids.library } });
+    const l = await api('POST', U('/login'), { headers: { 'x-client-platform': 'mobile' }, body: { userRole: 'STUDENT', identifier: MOBILE, password: 'Stud#12345', libraryId: ctx.ids.library } });
     ok(l, 'login');
     token = l.body.token;
-    assert.ok(token && l.body.refreshToken, 'access + refresh token for the app');
+    assert.ok(token && !l.body.refreshToken && l.body.expiresIn > 86400, 'one long-lived access token for the app, no refresh token');
     const me = await GET('/students/me');
     ok(me, 'me');
     const p = data(me);

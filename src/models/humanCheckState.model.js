@@ -3,8 +3,9 @@ const mongoose = require('mongoose');
 // Short-lived human-check bookkeeping (TTL cleanup):
 //   kind 'pow'  -> a proof-of-work challenge id that has been used (replay guard)
 //   kind 'fail' -> failed sign-in counter for an identifier / IP (decides when the login needs a challenge)
+//   kind 'mfail' -> failed mobile-app human checks per IP (one security alert when an address keeps failing)
 const humanCheckStateSchema = new mongoose.Schema({
-    kind: { type: String, enum: ['pow', 'fail'], required: true },
+    kind: { type: String, enum: ['pow', 'fail', 'mfail'], required: true },
     key: { type: String, required: true },
     count: { type: Number, default: 0 },
     expiresAt: { type: Date, required: true },

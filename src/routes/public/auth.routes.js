@@ -6,7 +6,7 @@ const validate = require('../../middlewares/validate.middleware');
 const { authValidation } = require('../../validations');
 const libraryValidation = require('../../validations/library.validation');
 const upload = require('../../middlewares/upload.middleware');
-const { requireHuman, requireHumanSilent, requireHumanLegacy } = require('../../middlewares/humanCheck.middleware');
+const { requireHuman, requireHumanSilent, requireHumanLegacy, requireHumanMobile, acceptHumanMobile } = require('../../middlewares/humanCheck.middleware');
 
 const router = express.Router();
 
@@ -15,8 +15,8 @@ router.post('/login', loginLimiter, accountLoginLimiter, requireHuman, validate(
 // Session cookie endpoints (CSRF-checked inside the service: custom header + allowed Origin)
 router.post('/refresh', refreshLimiter, authController.refresh);
 router.post('/logout', refreshLimiter, authController.logout);
-router.post('/send-otp', otpLimiter, accountOtpLimiter, validate(authValidation.sendOTP), authController.sendOTP);
-router.post('/verify-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(authValidation.verifyOTP), authController.verifyOTP);
+router.post('/send-otp', otpLimiter, accountOtpLimiter, requireHumanMobile, validate(authValidation.sendOTP), authController.sendOTP);
+router.post('/verify-otp', otpVerifyLimiter, accountOtpVerifyLimiter, acceptHumanMobile, validate(authValidation.verifyOTP), authController.verifyOTP);
 router.post('/forgot-password', otpLimiter, accountOtpLimiter, requireHumanSilent, validate(authValidation.forgotPassword), authController.forgotPassword);
 router.post('/verify-reset-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(authValidation.verifyResetOTP), authController.verifyResetOTP);
 router.post('/reset-password', loginLimiter, accountOtpVerifyLimiter, validate(authValidation.resetPassword), authController.resetPassword);

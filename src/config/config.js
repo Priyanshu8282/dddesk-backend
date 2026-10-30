@@ -29,6 +29,10 @@ const ttlSeconds = (v, fallback) => {
 };
 const MAX_ACCESS_TTL_S = 3600;
 const accessTtlSeconds = Math.min(ttlSeconds(envVars.ACCESS_TOKEN_TTL, 1800), MAX_ACCESS_TTL_S);
+// Native apps (header "X-Client-Platform: mobile") get a longer-lived access token that is still bound to a revocable session
+// row. Default 30 days, never more than 90 days (the session row also has a 90-day hard cap).
+const MAX_MOBILE_TTL_S = 90 * 86400;
+const mobileAccessTtlSeconds = Math.min(Math.max(ttlSeconds(envVars.MOBILE_ACCESS_TOKEN_TTL, 30 * 86400), 3600), MAX_MOBILE_TTL_S);
 
 // MongoDB configuration
 const mongooseConfig = {
@@ -90,6 +94,8 @@ const config = {
         // seconds (number): jsonwebtoken treats a bare number as seconds
         expiration: accessTtlSeconds,
         accessTtlSeconds,
+        mobileAccessTtlSeconds,
+        mobileMaxSessionSeconds: MAX_MOBILE_TTL_S,
     },
     productionProblems,
     productionWarnings,

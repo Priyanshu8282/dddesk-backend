@@ -44,16 +44,17 @@ const sendBlocked = (res, err) =>
     libraryStatus: err.libraryStatus, statusReason: err.statusReason || null,
   });
 
-// refreshToken / refreshExpiresAt are present only for native apps ("X-Client-Type: mobile"); browsers get the HttpOnly cookie
-const authSuccess = (res, message, { token, userData, role, refreshToken, refreshExpiresAt }) => {
+// Browsers get the access token in the body and the refresh token in an HttpOnly cookie. Native apps (X-Client-Platform: mobile)
+// get one long-lived, revocable access token (expiresIn = its lifetime in seconds) and no refresh token.
+const authSuccess = (res, message, { token, userData, role, expiresIn }) => {
   res.set('Cache-Control', 'no-store');
   return res.status(200).json({
     success: true,
     message,
     token,
     user: userData,
-    data: { token, user: userData, ...(refreshToken ? { refreshToken, refreshExpiresAt } : {}) },
-    ...(refreshToken ? { refreshToken, refreshExpiresAt } : {}),
+    ...(expiresIn ? { expiresIn } : {}),
+    data: { token, user: userData, ...(expiresIn ? { expiresIn } : {}) },
     [role]: userData
   });
 };
@@ -145,12 +146,11 @@ exports.refresh = async (req, res, next) => {
   try {
     const r = await sessionService.refresh(req, res);
     res.set('Cache-Control', 'no-store');
-    const rotated = r.refreshToken ? { refreshToken: r.refreshToken, refreshExpiresAt: r.refreshExpiresAt } : {};
-    return res.status(200).json({ success: true, token: r.token, expiresIn: r.expiresIn, ...rotated, data: { token: r.token, expiresIn: r.expiresIn, ...rotated } });
+    return res.status(200).json({ success: true, token: r.token, expiresIn: r.expiresIn, data: { token: r.token, expiresIn: r.expiresIn } });
   } catch (err) { return next(err); }
 };
 
-// Public: revokes the session named by the refresh cookie (works with an expired access token too)
+// Public: revokes the session named by the refresh cookie (browsers) or the bearer token (native apps); works with an expired access token too
 exports.logout = async (req, res, next) => {
   try {
     await sessionService.logout(req, res);

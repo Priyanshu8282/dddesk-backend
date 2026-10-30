@@ -8,6 +8,7 @@ const config = require('../config/config');
 const { isAllowedOrigin, normalize } = require('../config/cors');
 const { describeRequest } = require('../utils/device');
 const securityLog = require('../utils/securityLog');
+const { isMobileClient, appVersion } = require('../utils/clientPlatform');
 
 const COOKIE_NAME = 'dd_rt';
 const COOKIE_PATH = '/v1/public';           // the cookie is only ever sent to the refresh/logout endpoints
@@ -57,9 +58,9 @@ const forgetActiveForUser = (userId) => {
 // ---------------------------------------------------------------------------
 // Tokens + cookie
 // ---------------------------------------------------------------------------
-const signAccess = ({ userId, userType, sid, impersonatedBy = null, ttlSeconds = config.jwt.accessTtlSeconds }) =>
+const signAccess = ({ userId, userType, sid, impersonatedBy = null, ttlSeconds = config.jwt.accessTtlSeconds, client = null }) =>
     jwt.sign(
-        { id: userId, type: userType, sid: String(sid), ...(impersonatedBy ? { impersonatedBy } : {}) },
+        { id: userId, type: userType, sid: String(sid), ...(impersonatedBy ? { impersonatedBy } : {}), ...(client ? { cl: client } : {}) },
         config.jwt.secret,
         { algorithm: 'HS256', expiresIn: ttlSeconds }
     );
@@ -88,18 +89,13 @@ const clearRefreshCookie = (req, res) => {
 };
 
 /**
- * Native apps have no browser cookie jar and no Origin. A client that sends "X-Client-Type: mobile" gets the refresh token
- * in the JSON body and presents it in the body (keep it in the Keychain/Keystore). That mode has no ambient credential,
- * so the cookie-only CSRF origin check is not needed there; rotation, reuse detection and revocation are identical.
- * Browsers keep using the HttpOnly cookie, which is never readable by scripts.
+ * Native apps (header "X-Client-Platform: mobile", see utils/clientPlatform.js) have no browser cookie jar and no Origin.
+ * They do NOT use refresh tokens: sign-in issues one long-lived access token (MOBILE_ACCESS_TOKEN_TTL, default 30 days, hard cap
+ * 90 days) that is still tied to a Session row, so logout, "log out everywhere", password change/reset, disabling the account and
+ * library suspension end it within seconds, exactly like a web session. While the phone is in use the token is renewed in place
+ * (header X-New-Access-Token, see maybeReissueMobile); an idle phone's token simply expires. Browsers keep the short access
+ * token + HttpOnly rotating refresh cookie and are unchanged.
  */
-const isMobileClient = (req) => String(req.headers['x-client-type'] || '').trim().toLowerCase() === 'mobile';
-
-const readBodyRefreshToken = (req) => {
-    const v = req.body && typeof req.body.refreshToken === 'string' ? req.body.refreshToken.trim() : '';
-    return v.length > 0 && v.length <= 400 ? v : null;
-};
-
 const readRefreshCookie = (req) => {
     const raw = String(req.headers.cookie || '');
     for (const part of raw.split(';')) {
@@ -143,30 +139,77 @@ const trimSessions = async (userId, userType) => {
  * `login` is the {token, userData, role} object produced by auth.service (its own token is replaced).
  */
 const startLoginSession = async (req, res, login) => {
-    const persistent = String(req.headers['x-session-persist'] || '1') !== '0';
+    const mobile = isMobileClient(req);
+    const persistent = mobile ? true : String(req.headers['x-session-persist'] || '1') !== '0';
     const userId = login.userData.id;
     const userType = login.userData.userType;
     const libraryId = login.userData.libraryId?._id || login.userData.libraryId || null;
     const now = Date.now();
+    const d = describeRequest(req);
+
+    if (mobile) {
+        // one revocable row, no refresh secret; the idle expiry is the token lifetime, the absolute cap is 90 days
+        const ttl = config.jwt.mobileAccessTtlSeconds;
+        const absolute = new Date(now + config.jwt.mobileMaxSessionSeconds * 1000);
+        const expiresAt = new Date(Math.min(now + ttl * 1000, absolute.getTime()));
+        const version = appVersion(req);
+        const session = await Session.create({
+            userId, userType, libraryId: mongoose.Types.ObjectId.isValid(libraryId) ? libraryId : null,
+            refreshHash: null, persistent: true,
+            ip: d.ip, userAgent: d.userAgent, device: ('Mobile app' + (version ? ' v' + version : '') + (d.device?.summary ? ' (' + d.device.summary + ')' : '')).slice(0, 120),
+            absoluteExpiresAt: absolute, expiresAt,
+        });
+        trimSessions(userId, userType).catch(() => {});
+        const tokenTtl = Math.max(60, Math.floor((expiresAt.getTime() - now) / 1000));
+        return {
+            ...login,
+            token: signAccess({ userId, userType, sid: session._id, ttlSeconds: tokenTtl, client: 'm' }),
+            sessionId: String(session._id),
+            expiresIn: tokenTtl,
+        };
+    }
+
     const absolute = new Date(now + ABSOLUTE_MS);
     const expiresAt = new Date(Math.min(now + (persistent ? IDLE_MS : SESSION_ONLY_IDLE_MS), absolute.getTime()));
     const secret = crypto.randomBytes(48).toString('base64url');
-    const d = describeRequest(req);
     const session = await Session.create({
         userId, userType, libraryId: mongoose.Types.ObjectId.isValid(libraryId) ? libraryId : null,
         refreshHash: sha256(secret), persistent,
         ip: d.ip, userAgent: d.userAgent, device: d.device?.summary || null,
         absoluteExpiresAt: absolute, expiresAt,
     });
-    const mobile = isMobileClient(req);
-    if (!mobile) setRefreshCookie(req, res, session._id, secret, persistent, expiresAt);
+    setRefreshCookie(req, res, session._id, secret, persistent, expiresAt);
     trimSessions(userId, userType).catch(() => {});
     return {
         ...login,
         token: signAccess({ userId, userType, sid: session._id }),
         sessionId: String(session._id),
-        ...(mobile ? { refreshToken: `${session._id}.${secret}`, refreshExpiresAt: expiresAt.toISOString() } : {}),
     };
+};
+
+/**
+ * Sliding renewal for native apps: when a mobile access token has less than half of its lifetime left and the request already
+ * passed every check, send a fresh token for the SAME session in the X-New-Access-Token header and push the session's idle
+ * expiry forward (never past its 90-day absolute cap). Idle phones are not renewed and so expire.
+ */
+const maybeReissueMobile = async (decoded, res) => {
+    try {
+        if (!decoded || decoded.cl !== 'm' || !decoded.exp || !decoded.iat || decoded.impersonatedBy) return;
+        const nowS = Math.floor(Date.now() / 1000);
+        const total = decoded.exp - decoded.iat;
+        const left = decoded.exp - nowS;
+        if (total <= 0 || left > total / 2) return;
+        const row = await Session.findOne({ _id: decoded.sid, userId: decoded.id, revokedAt: null }).select('absoluteExpiresAt').lean();
+        if (!row) return;
+        const now = Date.now();
+        const ttl = Math.min(config.jwt.mobileAccessTtlSeconds, Math.floor((new Date(row.absoluteExpiresAt).getTime() - now) / 1000));
+        if (ttl <= left) return; // already at the hard cap: nothing to extend
+        const expiresAt = new Date(now + ttl * 1000);
+        await Session.updateOne({ _id: decoded.sid, revokedAt: null }, { $set: { expiresAt, lastUsedAt: new Date(now) } });
+        forgetActive(decoded.sid);
+        res.set('X-New-Access-Token', signAccess({ userId: decoded.id, userType: decoded.type, sid: decoded.sid, ttlSeconds: ttl, client: 'm' }));
+        res.set('X-New-Access-Token-Expires-In', String(ttl));
+    } catch (e) { /* renewal is a convenience: never fail the request because of it */ }
 };
 
 /** Support (impersonation) session: short, no refresh token, revocable. */
@@ -198,9 +241,12 @@ const accountAllowed = (session, acct) => {
 
 /** POST /public/refresh: trade the refresh cookie for a new access token (and a rotated cookie). */
 const refresh = async (req, res) => {
-    const mobile = isMobileClient(req);
-    if (!mobile) assertSameOriginRequest(req);
-    const raw = mobile ? readBodyRefreshToken(req) : readRefreshCookie(req);
+    if (isMobileClient(req)) {
+        // native apps hold one long-lived revocable access token and have no refresh token to present
+        throw fail(401, 'Session expired. Please log in again.', { errorCode: 'MOBILE_NO_REFRESH' });
+    }
+    assertSameOriginRequest(req);
+    const raw = readRefreshCookie(req);
     const [sid, secret] = String(raw || '').split('.');
     const reject = (reason, status = 401) => {
         clearRefreshCookie(req, res);
@@ -242,7 +288,6 @@ const refresh = async (req, res) => {
     }
 
     let newSecret = null;
-    let rotated = null; // mobile clients: the rotated token goes back in the body
     if (!parallel) {
         newSecret = crypto.randomBytes(48).toString('base64url');
         const idle = session.persistent ? IDLE_MS : SESSION_ONLY_IDLE_MS;
@@ -253,7 +298,6 @@ const refresh = async (req, res) => {
             { new: true }
         );
         if (!upd) parallel = true; // lost a race against another tab: it holds the new cookie
-        else if (mobile) rotated = { refreshToken: `${session._id}.${newSecret}`, refreshExpiresAt: expiresAt.toISOString() };
         else setRefreshCookie(req, res, session._id, newSecret, session.persistent, expiresAt);
     }
 
@@ -261,7 +305,6 @@ const refresh = async (req, res) => {
         token: signAccess({ userId: session.userId, userType: session.userType, sid: session._id }),
         userType: session.userType,
         expiresIn: config.jwt.accessTtlSeconds,
-        ...(rotated || {}),
     };
 };
 
@@ -287,17 +330,26 @@ const revokeAllForLibrary = async (libraryId, reason = 'library_suspended') => {
     activeCache.clear();
 };
 
-/** POST /public/logout: revoke the session named in the refresh cookie (works even when the access token has expired). */
+/**
+ * POST /public/logout. Browsers: revoke the session named in the refresh cookie (works with an expired access token too).
+ * Native apps: revoke the session named in their bearer token. The signature is verified (an expired token is fine), so only
+ * the holder of a genuine token for that session can end it.
+ */
 const logout = async (req, res) => {
-    const mobile = isMobileClient(req);
-    if (!mobile) assertSameOriginRequest(req);
-    const [sid, secret] = String((mobile ? readBodyRefreshToken(req) : readRefreshCookie(req)) || '').split('.');
-    // a body token must prove it is really this session's (an id alone must not be enough to sign someone out)
-    if (mobile) {
-        const row = sid && mongoose.Types.ObjectId.isValid(sid) && secret ? await Session.findById(sid).select('refreshHash prevRefreshHash').lean() : null;
-        const matches = row && (safeEq(sha256(secret), row.refreshHash) || safeEq(sha256(secret), row.prevRefreshHash));
-        if (!matches) return;
+    if (isMobileClient(req)) {
+        const token = String(req.headers.authorization || '').split(' ')[1] || '';
+        let decoded = null;
+        try { decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'], ignoreExpiration: true }); } catch (_) { decoded = null; }
+        if (!decoded || !decoded.sid || !decoded.id || decoded.purpose || !mongoose.Types.ObjectId.isValid(decoded.sid)) return;
+        const s = await Session.findOne({ _id: decoded.sid, userId: decoded.id }).select('userId userType libraryId revokedAt').lean();
+        if (s && !s.revokedAt) {
+            await revokeSession(decoded.sid, 'logout');
+            securityLog.record(req, { type: 'logout', outcome: 'success', userId: s.userId, userType: s.userType, libraryId: s.libraryId, meta: { client: 'mobile' } });
+        }
+        return;
     }
+    assertSameOriginRequest(req);
+    const [sid] = String(readRefreshCookie(req) || '').split('.');
     clearRefreshCookie(req, res);
     if (sid && mongoose.Types.ObjectId.isValid(sid)) {
         const s = await Session.findById(sid).select('userId userType libraryId revokedAt').lean();
@@ -314,7 +366,7 @@ const listForUser = (userId, userType) =>
 
 module.exports = {
     COOKIE_NAME, isActive, forgetActive, signAccess, startLoginSession, createImpersonationSession,
-    refresh, logout, revokeSession, revokeAllForUser, revokeAllForLibrary, listForUser,
+    refresh, logout, maybeReissueMobile, revokeSession, revokeAllForUser, revokeAllForLibrary, listForUser,
     // exported for tests
     _sha256: sha256, _readRefreshCookie: readRefreshCookie,
 };

@@ -174,6 +174,9 @@ const Authentication = async (req, res, next) => {
             ? expandPermissions((user.roleId.permissionIds || []).map(p => p.key))
             : [];
 
+        // native apps: renew a token that is past half its life (header X-New-Access-Token); no-op for browsers
+        if (decoded.cl === 'm') await sessionService.maybeReissueMobile(decoded, res);
+
         next();
     } catch (error) {
         return res.status(401).json({ success: false, code: 401, message: 'Invalid or expired token' });

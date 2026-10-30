@@ -28,6 +28,12 @@ exports.updateProfile = catchAsync(async (req, res) => {
 // PATCH /libraries/change-password (current password required; hashed once by the Admin model hook)
 exports.changePassword = catchAsync(async (req, res) => {
     await authService.changePassword(req.user._id, req.userType, req.body.currentPassword, req.body.newPassword);
+
+
+
+
+
+    await require('../services/session.service').revokeAllForUser(req.user._id, 'password_changed', { exceptSid: req.sessionId });
     await audit(req, 'auth.password_change', 'Admin', req.user._id);
     res.status(200).json({ success: true, message: 'Password updated successfully' });
 });
