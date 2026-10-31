@@ -74,13 +74,17 @@ const adjustPayment = z.object({
         lateFee: z.coerce.number().min(0).optional(),
         discountAmount: z.coerce.number().min(0).optional(),
         totalAmount: z.coerce.number().positive().optional(),
-        dueDate: optDate.optional()
+        dueDate: optDate.optional(),
+        requestId: requestId.optional()
     })
 });
 
 const cancelPayment = z.object({
     params: idParam,
-    body: z.object({ reason: z.string().trim().min(3, 'A reason is required').max(300) })
+    body: z.object({
+        reason: z.string().trim().min(3, 'A reason is required').max(300),
+        requestId: requestId.optional()
+    })
 });
 
 const queryPayments = z.object({

@@ -96,6 +96,81 @@ module.exports = (H) => {
     assert.ok(tooMuch.status >= 400, 'refund beyond paid refused: ' + msg(tooMuch));
   });
 
+  test('19b adjust and cancel: a repeat with the same key changes nothing', async () => {
+    const newCharge = async (description, amount = 500) => { const r = await api('POST', P('/payments'), { token: T('acct'), body: { studentId: ctx.ids.s1, amount, description } }); ok(r, description); return chargeIdOf(r); };
+    const adjust = (cid, body, extra = {}) => api('POST', P(`/payments/${cid}/adjust`), { token: T('owner'), body, ...extra });
+    const cancel = (cid, body, extra = {}) => api('POST', P(`/payments/${cid}/cancel`), { token: T('owner'), body, ...extra });
+    const waive = { reason: 'goodwill waiver', waiveAmount: 50, requestId: 'adjust-idem-0001' };
+
+    const cid = await newCharge('Idempotent waive');
+    const first = await adjust(cid, waive);
+    ok(first, 'waive');
+    assert.equal(first.body.replay, false, 'the first request is not a replay');
+    const again = await adjust(cid, waive);
+    ok(again, 'waive replay');
+    assert.equal(again.body.replay, true, 'the retry says it is a replay');
+    let c = await getCharge(cid);
+    assert.equal(c.waivedAmount, 50, 'a replay must not waive twice');
+    assert.equal(c.dueAmount, 450);
+    assert.equal(c.adjustments.filter((a) => a.type === 'waive').length, 1, 'one history entry');
+
+    // the key may come as the header, and a changed reason is still the same request
+    ok(await adjust(cid, { reason: 'typed again', waiveAmount: 50 }, { headers: { 'Idempotency-Key': waive.requestId } }), 'replay by header');
+    assert.equal((await getCharge(cid)).waivedAmount, 50, 'the header key counts as the same request');
+
+    // one key cannot mean two changes, and a new key is a new change
+    expectStatus(await adjust(cid, { ...waive, waiveAmount: 60 }), 409, 'same key, different amount');
+    expectStatus(await cancel(cid, { reason: 'wrong action', requestId: waive.requestId }), 409, 'same key, different action');
+    ok(await adjust(cid, { ...waive, requestId: 'adjust-idem-0002' }), 'second waive');
+    assert.equal((await getCharge(cid)).waivedAmount, 100, 'a new key is a new waiver');
+
+    // no key: nothing changes for callers that do not send one
+    ok(await adjust(cid, { reason: 'no key sent', waiveAmount: 10 }), 'waive without a key');
+    ok(await adjust(cid, { reason: 'no key sent', waiveAmount: 10 }), 'waive without a key again');
+    assert.equal((await getCharge(cid)).waivedAmount, 120, 'without a key each request applies');
+    expectStatus(await adjust(cid, { reason: 'bad key', waiveAmount: 1 }, { headers: { 'Idempotency-Key': 'short' } }), 400, 'a malformed header key');
+    expectStatus(await adjust(cid, { reason: 'bad key', waiveAmount: 1, requestId: 'short' }), 400, 'a malformed body key');
+
+    // parallel double submits apply once
+    const race = await newCharge('Parallel waive');
+    const results = await Promise.all(Array.from({ length: 8 }, () => adjust(race, { reason: 'double tap', waiveAmount: 25, requestId: 'adjust-race-0001' })));
+    results.forEach((r) => ok(r, 'parallel waive'));
+    assert.equal(results.filter((r) => r.body.replay === false).length, 1, 'exactly one request did the work');
+    assert.equal((await getCharge(race)).waivedAmount, 25, 'parallel repeats waive once');
+
+    // a late fee replayed after the charge moved on, and after it was cancelled
+    const moved = await newCharge('Replay after cancel');
+    const fee = { reason: 'paid late', lateFee: 30, requestId: 'adjust-late-0001' };
+    ok(await adjust(moved, fee), 'late fee');
+    const stop = { reason: 'joined by mistake', requestId: 'cancel-idem-0001' };
+    const cancelled = await cancel(moved, stop);
+    ok(cancelled, 'cancel');
+    assert.equal(cancelled.body.replay, false);
+    const cancelledAt = (await getCharge(moved)).cancelledAt;
+    const twice = await cancel(moved, stop);
+    ok(twice, 'cancel replay answers success, not "already cancelled"');
+    assert.equal(twice.body.replay, true);
+    ok(await adjust(moved, fee), 'adjust replay on a cancelled charge');
+    c = await getCharge(moved);
+    assert.equal(c.paymentStatus, 'cancelled');
+    assert.equal(c.cancelledAt, cancelledAt, 'a replay must not move the cancel date');
+    assert.equal(c.adjustments.filter((a) => a.type === 'cancel').length, 1, 'one cancel entry');
+    expectStatus(await cancel(moved, { reason: 'joined by mistake', requestId: 'cancel-idem-0002' }), 400, 'a new key on a cancelled charge is refused');
+    expectStatus(await cancel(moved, { reason: 'joined by mistake' }), 400, 'no key on a cancelled charge is refused');
+
+    // a refused cancel stores nothing, and a full refund is what closes a charge that holds money
+    const held = await newCharge('Cancel with money held', 300);
+    ok(await api('PATCH', P(`/payments/${held}/collect`), { token: T('acct'), body: { amount: 100, paymentMethod: 'cash', requestId: 'cancel-src-0001' } }), 'collect');
+    const refused = { reason: 'student left', requestId: 'cancel-idem-0003' };
+    expectStatus(await cancel(held, refused), 400, 'money is held');
+    expectStatus(await cancel(held, refused), 400, 'still refused, not a replay');
+    assert.ok(!(await getCharge(held)).adjustments.some((a) => a.requestId === refused.requestId), 'a refused request leaves no key');
+    ok(await api('POST', P(`/payments/${held}/refund`), { token: T('owner'), body: { reason: 'student left', amount: 100, method: 'cash', requestId: 'cancel-ref-0001' } }), 'refund');
+    c = await getCharge(held);
+    assert.equal(c.paymentStatus, 'refunded', 'a full refund closes the charge');
+    assert.equal(c.dueAmount, 0, 'nothing is left to pay, so no cancel is needed');
+  });
+
   test('20 GST on receipts when enabled (CGST/SGST), absent when disabled', async () => {
     const before = await api('GET', P(`/payments/${ctx.ids.charge1}/receipt`), { token: T('acct') });
     ok(before, 'receipt');

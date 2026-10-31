@@ -281,8 +281,9 @@ const buildLibrary = async (libId, scope, flags, range, now = new Date()) => {
   const cnt = (cond) => ({ $sum: { $cond: [cond, 1, 0] } });
 
   const noticeFilter = {
-    libraryId: libId, isActive: true, startDate: { $lte: now },
+    libraryId: libId, isActive: true,
     $and: [
+      { $or: [{ startDate: null }, { startDate: { $lte: now } }] },
       { $or: [{ endDate: null }, { endDate: { $gte: now } }] },
       ...(scope.branchId ? [{ $or: [{ branchId: null }, { branchId: scope.branchId }] }] : []),
     ],

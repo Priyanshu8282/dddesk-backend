@@ -25,7 +25,10 @@ const adjustmentSchema = new mongoose.Schema({
     reason: { type: String },
     amount: { type: Number, default: 0 },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
-    at: { type: Date, default: Date.now }
+    at: { type: Date, default: Date.now },
+    // idempotency key of an adjust / cancel request and what it asked for: a retry finds it and changes nothing
+    requestId: { type: String },
+    requestSignature: { type: String }
 }, { _id: false });
 
 const TERMINAL = ['cancelled', 'refunded'];

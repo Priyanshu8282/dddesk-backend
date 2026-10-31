@@ -35,6 +35,34 @@ module.exports = (H) => {
     expectStatus(await api('GET', P(`/notices/${nid}`), { token: T('owner') }), 404, 'gone after delete');
   });
 
+  test('110b notices: a null start date clears the old one and a scheduled notice still gets delivered', async () => {
+    const Notice = require('../../src/models/notice.model');
+    const { publishDueNotices } = require('../../src/services/notice.service');
+    const c = await api('POST', P('/notices'), { token: T('owner'), body: { title: 'Scheduled notice', description: 'Starts later.', startDate: `${day(5)}T00:00:00+05:30` } });
+    ok(c, 'create scheduled notice');
+    const nid = id(c); assert.ok(nid, msg(c));
+    const read = async () => data(await api('GET', P(`/notices/${nid}`), { token: T('owner') }));
+    assert.ok((await read()).startDate, 'start date saved');
+
+    // an update that leaves startDate out keeps it
+    ok(await api('PUT', P(`/notices/${nid}`), { token: T('owner'), body: { title: 'Scheduled notice two' } }), 'update title');
+    assert.ok((await read()).startDate, 'start date kept');
+    await publishDueNotices();
+    assert.equal((await Notice.findById(nid).lean()).notifiedAt, null, 'not delivered before it starts');
+
+    ok(await api('PUT', P(`/notices/${nid}`), { token: T('owner'), body: { startDate: null } }), 'clear with null');
+    assert.equal((await read()).startDate, null, 'start date cleared');
+    await publishDueNotices();
+    assert.ok((await Notice.findById(nid).lean()).notifiedAt, 'delivered by the cron pass');
+
+    // multipart forms send text
+    ok(await api('PUT', P(`/notices/${nid}`), { token: T('owner'), body: { startDate: `${day(1)}T00:00:00+05:30` } }), 'a date again');
+    ok(await api('PUT', P(`/notices/${nid}`), { token: T('owner'), body: { startDate: '' } }), 'clear with empty text');
+    assert.equal((await read()).startDate, null, 'cleared by empty text');
+    expectStatus(await api('PUT', P(`/notices/${nid}`), { token: T('owner'), body: { startDate: 'soon' } }), 400, 'bad date');
+    ok(await api('DELETE', P(`/notices/${nid}`), { token: T('owner') }), 'delete');
+  });
+
   test('111 stories: create, list, update, toggle, analytics, delete, validation and isolation', async () => {
     expectStatus(await api('POST', P('/stories'), { token: T('owner'), body: { title: 'x' } }), 400, 'short title');
     expectStatus(await api('POST', P('/stories'), { token: T('owner'), body: { title: 'Valid title', expiresInHours: 999 } }), 400, 'expiry over 168h');
@@ -138,6 +166,17 @@ module.exports = (H) => {
     hidden(await api('DELETE', P(`/expenses/${xid}`), { token: T('owner2') }), 'owner2 deleting expense');
     ok(await api('DELETE', P(`/expenses/${xid}`), { token: T('owner') }), 'delete');
     expectStatus(await api('GET', P(`/expenses/${xid}`), { token: T('owner') }), 404, 'gone after delete');
+  });
+
+  test('115b expenses: an emptied vendor and note clear the saved text', async () => {
+    const c = await api('POST', P('/expenses'), { token: T('owner'), body: { title: 'Water bill', amount: 300, vendor: 'PHED', notes: 'October' } });
+    ok(c, 'create expense');
+    const xid = id(c); assert.ok(xid, msg(c));
+    ok(await api('PUT', P(`/expenses/${xid}`), { token: T('owner'), body: { vendor: '', notes: '' } }), 'clear');
+    const after = data(await api('GET', P(`/expenses/${xid}`), { token: T('owner') }));
+    assert.equal(after.vendor, '', 'vendor cleared');
+    assert.equal(after.notes, '', 'notes cleared');
+    ok(await api('DELETE', P(`/expenses/${xid}`), { token: T('owner') }), 'delete');
   });
 
   test('116 complaints: create, validate, status flow, notes, stats, delete and isolation', async () => {

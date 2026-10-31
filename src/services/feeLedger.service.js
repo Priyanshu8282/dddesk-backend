@@ -698,10 +698,31 @@ const loadChargeForWrite = async (libraryId, paymentId) => {
     return charge;
 };
 
+/** A mutate callback returns this when the change is already on the charge: saveCharge then writes nothing. */
+const ALREADY_APPLIED = Symbol('alreadyApplied');
+
+/**
+ * Has the request with this idempotency key already changed this charge? The key is stored on the adjustment entry, so
+ * it is saved in the same write as the change itself: the change and its key can never be split, and two parallel
+ * requests with one key are settled by the charge's version check (the loser reloads and finds the key). A key is only
+ * looked up on its own charge. Refused requests store nothing, so they can be retried with the same key.
+ */
+const alreadyApplied = (charge, key, signature) => {
+    if (!key) return false;
+    const prev = charge.adjustments.find((a) => a.requestId === key);
+    if (!prev) return false;
+    if (prev.requestSignature !== signature) throw new ApiError(409, 'This request id was already used for a different change');
+    return true;
+};
+
 const saveCharge = async (mutate, libraryId, paymentId) => {
     for (let i = 0; i < OCC_TRIES; i += 1) {
         const charge = await loadChargeForWrite(libraryId, paymentId);
         const result = await mutate(charge);
+        if (result === ALREADY_APPLIED) {
+            charge.$locals.replay = true;
+            return { charge, result };
+        }
         try {
             await charge.save();
             return { charge, result };
@@ -725,10 +746,12 @@ const rollbackCharge = async (libraryId, chargeId, reason) => {
     } catch (e) { /* best effort */ }
 };
 
-const cancelCharge = async ({ libraryId, paymentId, reason, req, userId, trusted = false }) => {
+const cancelCharge = async ({ libraryId, paymentId, reason, req, userId, trusted = false, requestId }) => {
     if (!trusted) assertPermission(req, PERM_KEYS.adjust);
     if (!reason || !String(reason).trim()) throw new ApiError(400, 'A reason is required to cancel a charge');
-    const { charge } = await saveCharge((c) => {
+    const reqKey = cleanRequestKey(requestId);
+    const { charge, result } = await saveCharge((c) => {
+        if (alreadyApplied(c, reqKey, 'cancel')) return ALREADY_APPLIED; // before the status checks: a replay finds it cancelled
         if (c.paymentStatus === 'cancelled') throw new ApiError(400, 'Charge is already cancelled');
         if (c.paymentStatus === 'refunded') throw new ApiError(400, 'A refunded charge cannot be cancelled');
         if (r2(c.paidAmount - c.refundAmount) > EPS) throw new ApiError(400, 'Money was collected on this charge: refund it before cancelling');
@@ -736,8 +759,10 @@ const cancelCharge = async ({ libraryId, paymentId, reason, req, userId, trusted
         c.cancelledAt = new Date();
         c.cancelReason = String(reason).trim();
         c.cancelledBy = userId || (req && req.user && req.user._id);
-        c.adjustments.push({ type: 'cancel', reason: c.cancelReason, amount: c.totalAmount, by: c.cancelledBy });
+        c.adjustments.push({ type: 'cancel', reason: c.cancelReason, amount: c.totalAmount, by: c.cancelledBy, ...(reqKey ? { requestId: reqKey, requestSignature: 'cancel' } : {}) });
+        return undefined;
     }, libraryId, paymentId);
+    if (result === ALREADY_APPLIED) return charge;
     if (charge.couponId) await couponService.releaseCouponUsage(charge.couponId, libraryId, charge._id).catch(() => {});
     await refreshStudentPaymentStatus(libraryId, charge.studentId);
     auditEvent(req, libraryId, userId, 'payment.cancel', 'Payment', charge._id, { reason: charge.cancelReason, totalAmount: charge.totalAmount });
@@ -1020,14 +1045,23 @@ const refundPayment = async ({
     return refundTxn;
 };
 
-const adjustCharge = async ({ libraryId, paymentId, reason, waiveAmount, lateFee, discountAmount, totalAmount, dueDate, req, userId, trusted = false }) => {
+/** What an adjust request asks for: one key may only be replayed with the same change. */
+const adjustSignature = ({ waiveAmount, lateFee, discountAmount, totalAmount, dueDate }) => {
+    const money = (v) => (v === undefined || v === null ? null : r2(v));
+    return JSON.stringify({ waiveAmount: money(waiveAmount), lateFee: money(lateFee), discountAmount: money(discountAmount), totalAmount: money(totalAmount), dueDate: dueDate ? new Date(dueDate).getTime() : null });
+};
+
+const adjustCharge = async ({ libraryId, paymentId, reason, waiveAmount, lateFee, discountAmount, totalAmount, dueDate, req, userId, trusted = false, requestId }) => {
     if (!trusted) assertPermission(req, PERM_KEYS.adjust);
     if (!reason || !String(reason).trim()) throw new ApiError(400, 'A reason is required for an adjustment');
     const cleanReason = String(reason).trim();
     const by = userId || (req && req.user && req.user._id);
     const changes = {};
+    const reqKey = cleanRequestKey(requestId);
+    const signature = adjustSignature({ waiveAmount, lateFee, discountAmount, totalAmount, dueDate });
 
-    const { charge } = await saveCharge((c) => {
+    const { charge, result } = await saveCharge((c) => {
+        if (alreadyApplied(c, reqKey, signature)) return ALREADY_APPLIED; // before the status checks: the charge may have moved on since
         if (TERMINAL_STATUSES.includes(c.paymentStatus)) throw new ApiError(400, `Cannot adjust a ${c.paymentStatus} charge`);
         if (totalAmount !== undefined && totalAmount !== null) {
             const v = Number(totalAmount);
@@ -1066,8 +1100,10 @@ const adjustCharge = async ({ libraryId, paymentId, reason, waiveAmount, lateFee
             throw new ApiError(400, 'Adjustment would reduce the charge below the amount already paid. Refund first');
         }
         if (Object.keys(changes).length === 0) throw new ApiError(400, 'Nothing to adjust');
-        c.adjustments.push({ type: changes.waived ? 'waive' : 'adjust', reason: cleanReason, amount: changes.waived || 0, by });
+        c.adjustments.push({ type: changes.waived ? 'waive' : 'adjust', reason: cleanReason, amount: changes.waived || 0, by, ...(reqKey ? { requestId: reqKey, requestSignature: signature } : {}) });
+        return undefined;
     }, libraryId, paymentId);
+    if (result === ALREADY_APPLIED) return charge;
 
     await refreshStudentPaymentStatus(libraryId, charge.studentId);
     auditEvent(req, libraryId, by, changes.waived ? 'payment.waive' : 'payment.adjust', 'Payment', charge._id, { reason: cleanReason, changes });

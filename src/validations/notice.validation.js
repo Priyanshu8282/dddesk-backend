@@ -31,6 +31,9 @@ const AUDIENCES = ['all', 'selected', 'branch', 'membershipGroup'];
 // legacy clients: 'specific' means selected students
 const audience = z.preprocess((v) => (v === 'specific' ? 'selected' : v), z.enum(AUDIENCES));
 
+// multipart/form-data cannot send null, so '' and 'null' mean the same
+const clearableDate = z.preprocess((v) => (v === '' || v === 'null' ? null : v), isoDate.nullable());
+
 const fields = {
     title: z.string().trim().min(2, 'Notice title is required').max(150),
     description: z.string().trim().min(1, 'Description is required').max(3000),
@@ -39,8 +42,8 @@ const fields = {
     targetStudents: idList,
     targetBranchIds: idList,
     targetPlanIds: idList,
-    startDate: isoDate,
-    endDate: z.preprocess((v) => (v === '' || v === 'null' ? null : v), isoDate.nullable()),
+    startDate: clearableDate, // null = no start date: shows right away
+    endDate: clearableDate,
     expiryDate: isoDate, // legacy alias of endDate
     isPinned: bool,
     showOnWebsite: bool,

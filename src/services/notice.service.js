@@ -122,10 +122,8 @@ const deliverOnce = async (noticeId) => {
 // Cron hook: deliver scheduled notices that have just gone live.
 const publishDueNotices = async () => {
     const now = new Date();
-    const due = await Notice.find({
-        notifiedAt: null, isActive: true, startDate: { $lte: now },
-        $or: [{ endDate: null }, { endDate: { $gt: now } }]
-    }).select('_id').limit(200).lean();
+    // timeFilter also matches startDate null: clearing the start of a scheduled notice must not cost it its delivery
+    const due = await Notice.find({ notifiedAt: null, ...timeFilter(now) }).select('_id').limit(200).lean();
     let n = 0;
     for (const d of due) if (await deliverOnce(d._id)) n += 1;
     return n;
@@ -215,7 +213,10 @@ const updateNotice = async (id, libraryId, body, file) => {
 
     const set = pick(body, ['title', 'description', 'type', 'isPinned', 'showOnWebsite', 'isActive', 'targetStudents', 'targetBranchIds', 'targetPlanIds', 'branchId']); // branchId validated by the controller
     if (body.sendTo) set.sendTo = normAudience(body.sendTo);
-    if (body.startDate) { set.startDate = new Date(body.startDate); set.publishDate = set.startDate; }
+    if (body.startDate !== undefined) { // null clears it
+        set.startDate = body.startDate ? new Date(body.startDate) : null;
+        set.publishDate = set.startDate;
+    }
     if (body.endDate !== undefined || body.expiryDate) {
         const end = body.endDate || body.expiryDate;
         set.endDate = end ? new Date(end) : null;

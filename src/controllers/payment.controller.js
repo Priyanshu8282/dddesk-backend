@@ -149,15 +149,23 @@ const refundPayment = catchAsync(async (req, res) => {
 
 const adjustPayment = catchAsync(async (req, res) => {
     await guardPayment(req, req.params.paymentId);
-    const charge = await ledger.adjustCharge({ ...req.body, libraryId: lib(req), paymentId: req.params.paymentId, req });
-    ok(res, 'Payment adjusted successfully', charge);
+    const charge = await ledger.adjustCharge({
+        ...req.body, requestId: req.body.requestId || req.get('Idempotency-Key') || undefined,
+        libraryId: lib(req), paymentId: req.params.paymentId, req
+    });
+    const replay = !!charge.$locals.replay;
+    ok(res, replay ? 'Adjustment already recorded' : 'Payment adjusted successfully', charge, { replay });
 });
 
 const cancelPayment = catchAsync(async (req, res) => {
     await guardPayment(req, req.params.paymentId);
-    const charge = await ledger.cancelCharge({ libraryId: lib(req), paymentId: req.params.paymentId, reason: req.body.reason, req });
+    const charge = await ledger.cancelCharge({
+        libraryId: lib(req), paymentId: req.params.paymentId, reason: req.body.reason,
+        requestId: req.body.requestId || req.get('Idempotency-Key') || undefined, req
+    });
     const warning = await ledger.membershipWarning(lib(req), charge);
-    ok(res, 'Payment cancelled successfully', charge, { warning: warning || undefined });
+    const replay = !!charge.$locals.replay;
+    ok(res, replay ? 'Charge already cancelled' : 'Payment cancelled successfully', charge, { warning: warning || undefined, replay });
 });
 
 const getReceipt = catchAsync(async (req, res) => {
