@@ -564,9 +564,10 @@ const recordPayment = async ({
                 dueBefore, dueAfter: charge.dueAmount
             });
         }
+        const taxSnapshot = await snapshotTax({ libraryId, studentId, allocations: snapshot });
         const receiptNumber = await nextReceiptNo(libraryId);
         txn.set({
-            status: 'success', receiptNumber, allocations: snapshot, amount: amt, method, reference: reference || txn.reference,
+            status: 'success', receiptNumber, taxSnapshot, allocations: snapshot, amount: amt, method, reference: reference || txn.reference,
             note: note || txn.note, paymentDate: when, processingAt: undefined, failureReason: undefined, source,
             razorpayPaymentId: razorpayPaymentId || txn.razorpayPaymentId,
             razorpaySignature: razorpaySignature || txn.razorpaySignature
@@ -1027,10 +1028,12 @@ const refundPayment = async ({
                 { arrayFilters: [{ 'a.paymentId': d.chargeId }] }
             );
         }
+        const refundAllocations = dist.map((d) => ({ paymentId: d.chargeId, amount: d.take }));
+        const taxSnapshot = await snapshotTax({ libraryId, studentId, allocations: refundAllocations });
         const refundNo = await nextReceiptNo(libraryId, 'refund');
         refundTxn.set({
             status: 'success', receiptNumber: refundNo, processingAt: undefined, failureReason: undefined, needsReview: false,
-            allocations: dist.map((d) => ({ paymentId: d.chargeId, amount: d.take }))
+            taxSnapshot, allocations: refundAllocations
         });
         await refundTxn.save();
     } catch (e) {
@@ -1181,6 +1184,17 @@ const findMembershipCharge = async (libraryId, studentId, planId, asOf = new Dat
         periodStart: { $lte: asOf }, periodEnd: { $gte: asOf },
         $or: [{ 'items.kind': 'membership' }, { items: { $size: 0 } }]
     }).sort({ createdAt: -1 });
+};
+
+/** Live membership charges of the student's plan for periods that start after `after` (e.g. an early renewal). */
+const findFutureMembershipCharges = async (libraryId, studentId, planId, after = new Date()) => {
+    if (!planId) return [];
+    return Payment.find({
+        libraryId, studentId, planId,
+        paymentStatus: { $nin: TERMINAL_STATUSES },
+        periodStart: { $gt: after },
+        $or: [{ 'items.kind': 'membership' }, { items: { $size: 0 } }]
+    }).sort({ periodStart: 1 });
 };
 
 /**
@@ -1372,14 +1386,14 @@ const getStudentLedger = async (libraryId, studentId, { limit = 100 } = {}) => {
 const normState = (v) => String(v || '').trim().toLowerCase();
 
 /**
- * GST breakdown of a collection receipt (null when the library has not enabled GST, or for refunds).
+ * GST breakdown of some allocations under the library's current settings (null when it has not enabled GST).
  * Amounts are treated as GST-inclusive. Refundable security deposits are not taxable, so each allocation is
  * reduced by the deposit share of its charge before the tax is extracted.
  * Place of supply: student's state when known, else the library's. Same state as the library -> CGST+SGST, else IGST.
  */
-const buildReceiptTax = ({ library, student, items, charges, txn }) => {
+const computeReceiptTax = ({ library, student, items, charges }) => {
     const cfg = library && library.feeTax;
-    if (!cfg || !cfg.gstEnabled || txn.type !== 'collection') return null;
+    if (!cfg || !cfg.gstEnabled) return null;
     let gross = 0;
     items.forEach((i) => {
         const c = charges.get(String(i.chargeId)) || {};
@@ -1399,6 +1413,27 @@ const buildReceiptTax = ({ library, student, items, charges, txn }) => {
         inclusive: true, intraState, placeOfSupply: supplyState || undefined,
         taxableAmount: gross, ...split
     };
+};
+
+/** The tax to store on a receipt or refund as it is issued. The GSTIN is kept even with GST off: receipts print it either way. */
+const snapshotTax = async ({ libraryId, studentId, allocations }) => {
+    const library = await Library.findById(libraryId).select('state gstNumber feeTax').lean();
+    if (!library || !library.feeTax || !library.feeTax.gstEnabled) {
+        return { enabled: false, gstin: (library && library.gstNumber) || undefined };
+    }
+    const [student, charges] = await Promise.all([
+        Student.findOne({ _id: studentId, libraryId }).select('state').lean(),
+        Payment.find({ _id: { $in: allocations.map((a) => a.paymentId) }, libraryId }).select('totalAmount items').lean()
+    ]);
+    const items = allocations.map((a) => ({ chargeId: a.paymentId, allocated: a.amount }));
+    return computeReceiptTax({ library, student, items, charges: new Map(charges.map((c) => [String(c._id), c])) });
+};
+
+/** GST shown on a receipt: what was stored when it was issued; transactions older than the snapshot use the live settings. Refund notes show none. */
+const buildReceiptTax = ({ library, student, items, charges, txn }) => {
+    if (txn.type !== 'collection') return null;
+    if (!txn.taxSnapshot) return computeReceiptTax({ library, student, items, charges });
+    return txn.taxSnapshot.enabled ? txn.taxSnapshot : null;
 };
 
 const buildReceipt = async ({ libraryId, id, studentId }) => {
@@ -1444,7 +1479,8 @@ const buildReceipt = async ({ libraryId, id, studentId }) => {
         type: txn.type,
         date: txn.paymentDate || txn.createdAt,
         library: library && {
-            name: library.name, logo: library.logo, mobile: library.mobile, email: library.email, gstNumber: library.gstNumber,
+            name: library.name, logo: library.logo, mobile: library.mobile, email: library.email,
+            gstNumber: txn.taxSnapshot ? txn.taxSnapshot.gstin : library.gstNumber, // the mobile receipts print this one
             address: [library.address, library.city, library.state, library.pincode].filter(Boolean).join(', ')
         },
         student,
@@ -1599,6 +1635,7 @@ module.exports = {
     replayCollection,
     membershipNetOf,
     findMembershipCharge,
+    findFutureMembershipCharges,
     splitPlanChangeCredit,
     applyPlanChangeToOldCharge,
     membershipWarning,

@@ -166,4 +166,27 @@ module.exports = (H) => {
     ok(await api('POST', P(`/students/${sid}/renew`), { token: T('owner'), body: { keepSeat: false, paidNow: 1000, paymentMethod: 'cash' } }), 'renew');
     assert.ok(!(await getStudent(sid)).seatId, 'seat released');
   });
+
+  test('30 change plan also settles an early renewal of the old plan', async () => {
+    const make = async (name, mobile) => {
+      const c = await api('POST', P('/students/create-student'), { token: T('owner'), body: stu({ name, mobile, planId: ctx.ids.plan, branchId: ctx.ids.branchA }) });
+      ok(c, 'create'); const sid = id(c);
+      ok(await api('POST', P(`/students/mark-paid/${sid}`), { token: T('owner'), body: { paymentMethod: 'cash', amount: 1000 } }), 'activate');
+      return sid;
+    };
+    // unpaid renewal: its fee must go away, only the new plan less the paid month stays due
+    const a = await make('Early Unpaid', '9811100074');
+    ok(await api('POST', P(`/students/${a}/renew`), { token: T('owner'), body: {} }), 'renew on credit');
+    assert.equal(await due(a), 1000, 'renewal fee is due');
+    ok(await api('POST', P(`/students/${a}/change-plan`), { token: T('owner'), body: { planId: ctx.ids.plan3 } }), 'change plan');
+    const owedA = await due(a);
+    assert.ok(owedA > 0 && owedA <= 550, `the unused renewal is not billed on top of the new plan, got ${owedA}`);
+    // paid renewal: that money counts towards the new plan
+    const b = await make('Early Paid', '9811100075');
+    ok(await api('POST', P(`/students/${b}/renew`), { token: T('owner'), body: { paidNow: 1000, paymentMethod: 'cash' } }), 'renew paid');
+    const cb = await api('POST', P(`/students/${b}/change-plan`), { token: T('owner'), body: { planId: ctx.ids.plan3 } });
+    ok(cb, 'change plan');
+    assert.equal(await due(b), 0, 'two paid months cover the new plan');
+    assert.match(cb.text, /"creditLeftover":[1-9]/, 'surplus is reported');
+  });
 };

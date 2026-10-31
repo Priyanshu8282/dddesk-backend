@@ -11,6 +11,23 @@ const txnAllocationSchema = new mongoose.Schema({
     dueAfter: { type: Number }
 }, { _id: false });
 
+// GST as it stood when the receipt was issued; later settings changes never touch it. Absent on older transactions.
+const taxSnapshotSchema = new mongoose.Schema({
+    enabled: { type: Boolean, required: true },
+    gstin: { type: String },
+    sacCode: { type: String },
+    rate: { type: Number },
+    inclusive: { type: Boolean },
+    intraState: { type: Boolean },
+    placeOfSupply: { type: String },
+    taxableAmount: { type: Number }, // GST-inclusive amount the tax was extracted from (deposits excluded)
+    taxableValue: { type: Number },
+    cgst: { type: Number },
+    sgst: { type: Number },
+    igst: { type: Number },
+    totalTax: { type: Number }
+}, { _id: false });
+
 const transactionSchema = new mongoose.Schema({
     libraryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Library', required: true, index: true },
     studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true, index: true },
@@ -25,6 +42,7 @@ const transactionSchema = new mongoose.Schema({
     paymentDate: { type: Date, default: Date.now },
     receiptNumber: { type: String },
     allocations: [txnAllocationSchema],
+    taxSnapshot: { type: taxSnapshotSchema, default: undefined },
 
     receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
     receivedByType: { type: String, enum: ['admin', 'staff', 'superadmin', 'student', 'system'] },

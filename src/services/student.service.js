@@ -655,14 +655,32 @@ const changePlan = async (studentId, libraryId, { planId, startDate, reason, pai
         }
     }
 
-    // 2. New charge = price - credit left after the old charge was settled (never below zero)
+    // Periods of the old plan that have not started (an early renewal) are replaced by this change too: without this
+    // their fee stays due, or their payment is lost, for days the student will never get.
+    const laterCharges = [];
+    if (ledger && student.planStatus !== 'expired') {
+        const found = await ledger.findFutureMembershipCharges(libraryId, student._id, student.planId, new Date());
+        for (const c of found) {
+            if (oldCharge && String(c._id) === String(oldCharge._id)) continue;
+            const net = ledger.membershipNetOf(c);
+            const { credit } = student.planStatus === 'pending'
+                ? { credit: net }
+                : computeProration({ netAmount: net, periodStart: c.periodStart, periodEnd: c.periodEnd, asOf: window.start });
+            laterCharges.push({ charge: c, split: ledger.splitPlanChangeCredit({ credit, dueAmount: c.dueAmount, paidAmount: c.paidAmount, membershipNet: net }) });
+        }
+    }
+    const laterDiscount = money2(laterCharges.reduce((sum, x) => sum + x.split.discountNew, 0));
+    const totalDiscount = money2(split.discountNew + laterDiscount);
+
+    // 2. New charge = price - credit left after the old charges were settled (never below zero)
     const price = planAmount(plan);
-    const newDiscount = money2(Math.min(split.discountNew, price));
+    const newDiscount = money2(Math.min(totalDiscount, price));
     const chargeAmount = money2(price - newDiscount);
-    const creditLeftover = money2(split.discountNew - newDiscount);
+    const creditLeftover = money2(totalDiscount - newDiscount);
     const paid = money2(Math.max(0, Number(paidNow) || 0));
     if (paid > chargeAmount + 0.009) throw new ApiError(400, `Amount collected ₹${paid} is more than the new charge ₹${chargeAmount}`);
-    const relief = split.cancelOld ? (oldCharge?.dueAmount || 0) : split.waiveOld;
+    const reliefOf = (c, s) => (s.cancelOld ? (c?.dueAmount || 0) : s.waiveOld);
+    const relief = money2(laterCharges.reduce((sum, x) => sum + reliefOf(x.charge, x.split), reliefOf(oldCharge, split)));
     await assertCreditAllowed({ libraryId, studentId: student._id, chargeAmount, paidNow: paid, relief });
 
     const creditReason = `Plan change: unused period of the previous plan${reason ? ` (${reason})` : ''}`;
@@ -698,9 +716,11 @@ const changePlan = async (studentId, libraryId, { planId, startDate, reason, pai
 
     // 4. Settle the old charge
     const warnings = [];
-    if (oldCharge && (split.cancelOld || split.waiveOld > 0)) {
+    const toSettle = [...(oldCharge ? [{ charge: oldCharge, split }] : []), ...laterCharges];
+    for (const x of toSettle) {
+        if (!x.split.cancelOld && !(x.split.waiveOld > 0)) continue;
         try {
-            await ledger.applyPlanChangeToOldCharge({ libraryId, charge: oldCharge, split, reason: creditReason, req, userId: req?.user?._id });
+            await ledger.applyPlanChangeToOldCharge({ libraryId, charge: x.charge, split: x.split, reason: creditReason, req, userId: req?.user?._id });
         } catch (e) {
             console.error('[changePlan] could not settle the old charge:', e.message);
             warnings.push(`The previous plan's fee could not be adjusted automatically (${e.message}). Cancel or waive it manually to avoid double billing.`);
@@ -708,12 +728,13 @@ const changePlan = async (studentId, libraryId, { planId, startDate, reason, pai
     }
     if (ledger) await ledger.refreshStudentPaymentStatus(libraryId, student._id);
 
+    const credit = money2(proration.credit + laterDiscount);
     if (req) audit(req, 'student.change_plan', 'Student', student._id, {
-        from: student.planId, to: plan._id, reason, credit: proration.credit, waivedOld: split.waiveOld, cancelledOld: split.cancelOld, discountNew: newDiscount, creditLeftover
+        from: student.planId, to: plan._id, reason, credit, waivedOld: split.waiveOld, cancelledOld: split.cancelOld, laterChargesSettled: laterCharges.length, discountNew: newDiscount, creditLeftover
     });
     return {
         ...result, pendingCharge, charge, payment, warnings,
-        proration: { ...proration, cancelledOld: split.cancelOld, waivedFromOld: split.waiveOld, discountOnNew: newDiscount, creditLeftover, newCharge: chargeAmount }
+        proration: { ...proration, credit, cancelledOld: split.cancelOld, waivedFromOld: split.waiveOld, discountOnNew: newDiscount, creditLeftover, newCharge: chargeAmount }
     };
 };
 

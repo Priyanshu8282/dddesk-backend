@@ -221,6 +221,12 @@ module.exports = (H) => {
     ok(pinClear, 'clear pincode');
     assert.equal(pinClear.body.data.pincode, '', 'pincode cleared');
     expectStatus(await api('PUT', P('/libraries/profile'), { token: T('owner'), body: { pincode: '123' } }), 400, 'short pincode');
+    const kept = await api('GET', P(`/payments/${ctx.ids.charge1}/receipt`), { token: T('acct') });
+    ok(kept, 'receipt issued with GST off');
+    assert.ok(!/cgst|sgst|igst/i.test(kept.text), 'enabling GST adds no tax to a receipt issued without it');
+    // a transaction from before tax snapshots has none: it still follows the live settings
+    const Txn = require(L.SRC + '/models/paymentTransaction.model');
+    await Txn.updateOne({ _id: data(before).transactionId }, { $unset: { taxSnapshot: 1 } });
     const after = await api('GET', P(`/payments/${ctx.ids.charge1}/receipt`), { token: T('acct') });
     ok(after, 'receipt with GST');
     assert.match(after.text, /cgst/i, 'CGST present: ' + after.text.slice(0, 700));
@@ -231,5 +237,58 @@ module.exports = (H) => {
       assert.ok(Math.abs(sum - Number(t.taxableAmount)) < 0.02, `taxable value + CGST + SGST must equal the GST-inclusive amount ${t.taxableAmount}, got ${sum}: ${JSON.stringify(t)}`);
       assert.ok(Math.abs(Number(t.taxableValue) - Number(t.taxableAmount) / 1.18) < 0.02, 'taxable value = inclusive / 1.18');
     }
+  });
+
+  test('20b a receipt keeps the tax it was issued with when the GST settings change', async () => {
+    // acctB has made no payment writes yet (the 40 a minute limit is per user), and s2 still owes the plan fee from test 13
+    const collect = async (paidAmount, requestId) => {
+      const r = await api('POST', P('/payments'), { token: T('acctB'), body: { studentId: ctx.ids.s2, paidAmount, paymentMethod: 'cash', requestId } });
+      ok(r, 'collect ' + paidAmount);
+      return r.body.receipt.transactionId;
+    };
+    const receipt = async (txnId) => { const r = await api('GET', P(`/payments/${txnId}/receipt`), { token: T('acctB') }); ok(r, 'receipt'); return data(r); };
+    const settings = async (body) => ok(await api('PUT', P('/libraries/profile'), { token: T('owner'), body }), 'GST settings');
+
+    const taxedId = await collect(590, 'gst-keep-collect-1');
+    const taxed = await receipt(taxedId);
+    const issued = { enabled: true, gstin: '08ABCDE1234F1Z5', sacCode: '999293', rate: 18, inclusive: true, intraState: true, placeOfSupply: 'Rajasthan', taxableAmount: 590, taxableValue: 500, cgst: 45, sgst: 45, igst: 0, totalTax: 90 };
+    assert.deepEqual(taxed.tax, issued, 'the tax as issued');
+    const unchanged = async (label) => {
+      const now = await receipt(taxedId);
+      assert.deepEqual(now.tax, issued, label);
+      assert.equal(now.library.gstNumber, issued.gstin, label + ': the GSTIN the mobile receipts print');
+    };
+
+    await settings({ gstNumber: '27ABCDE1234F1Z5', state: 'Maharashtra', feeTax: { gstEnabled: true, gstRate: 5, sacCode: '999999' } });
+    await unchanged('rate, SAC, GSTIN and state changed');
+
+    await settings({ feeTax: { gstEnabled: false } });
+    await unchanged('GST turned off');
+    const plainId = await collect(295, 'gst-keep-collect-2');
+    const plain = await receipt(plainId);
+    assert.equal(plain.tax, null, 'a receipt issued with GST off has no tax');
+    assert.equal(plain.totals.amountReceived, 295);
+
+    await settings({ feeTax: { gstEnabled: true, gstRate: 12 } });
+    await unchanged('GST back on at another rate');
+    assert.equal((await receipt(plainId)).tax, null, 'turning GST back on adds no tax to a receipt issued without it');
+
+    // refund notes still show no tax, keep their own snapshot, and leave the source receipt alone
+    // straight to the service: every staff token that may refund has used up its payment writes by now
+    const ledger = require(L.SRC + '/services/feeLedger.service');
+    const rf = await ledger.refundPayment({ libraryId: ctx.ids.library, transactionId: taxedId, amount: 59, reason: 'gst snapshot', method: 'cash', requestId: 'gst-keep-refund-1' });
+    const note = await receipt(rf._id);
+    assert.equal(note.type, 'refund');
+    assert.equal(note.tax, null, 'a refund note carries no tax block');
+    assert.equal(note.library.gstNumber, '27ABCDE1234F1Z5', 'the GSTIN at the time of the refund');
+    const Txn = require(L.SRC + '/models/paymentTransaction.model');
+    const stored = (await Txn.findById(rf._id).lean()).taxSnapshot;
+    assert.equal(stored.enabled, true);
+    assert.equal(stored.rate, 12);
+    assert.equal(stored.taxableAmount, 59);
+    await unchanged('after a refund');
+    assert.equal((await receipt(taxedId)).totals.refunded, 59);
+
+    await settings({ gstNumber: issued.gstin, state: 'Rajasthan', feeTax: { gstEnabled: true, gstRate: 18, sacCode: '999293' } });
   });
 };
