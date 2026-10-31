@@ -86,6 +86,14 @@ module.exports = (H) => {
     const old = await api('GET', P(`/seats/${seats[3]}`), { token: T('owner') });
     assert.ok(/available/.test(old.text), 'previous seat freed when the student is given another: ' + old.text.slice(0, 250));
     ok(await api('PATCH', P(`/seats/${seats[4]}/release`), { token: T('recA') }), 'release');
+    // a seat of another branch cannot be held for the student; a reservation is cancelled through release
+    const until = new Date(Date.now() + 86400000).toISOString();
+    expectStatus(await api('POST', P(`/seats/${ctx.seatsB[ctx.seatsB.length - 1]}/reserve`), { token: T('mgr'), body: { studentId: sid, until } }), 400, 'cross-branch reserve');
+    ok(await api('POST', P(`/seats/${seats[4]}/reserve`), { token: T('mgr'), body: { studentId: sid, until } }), 'reserve');
+    ok(await api('PATCH', P(`/seats/${seats[4]}/release`), { token: T('recA') }), 'cancel reservation');
+    // a plan created switched off stays off
+    const off = await api('POST', P('/plans'), { token: T('owner'), body: { name: 'Created Off', durationType: 'monthly', price: 100, status: false } });
+    ok(off, 'inactive plan'); assert.equal(data(off).status, false, 'plan created inactive: ' + off.text.slice(0, 200));
     ctx.ids.s5 = sid;
   });
 
@@ -122,5 +130,40 @@ module.exports = (H) => {
     const exp = cron.expireMemberships || cron.runExpiry || cron.checkExpiredMemberships;
     if (exp) { await exp(); const s1 = await getStudent(ctx.ids.s1); console.log('after expiry cron planStatus=', s1.planStatus); assert.ok(['expired', 'pending', 'inactive'].includes(s1.planStatus), 'expired membership is flagged: ' + s1.planStatus); }
     else console.log('NOTE: expiry function name not found among exports');
+  });
+
+  test('28 student edit: empty fields clear, photo removal, guardian consent date stays, fee figures need a fee right', async () => {
+    const c = await api('POST', P('/students/create-student'), { token: T('owner'), body: stu({ name: 'Clear Me', mobile: '9811100171', email: 'clear@x.test', gender: 'Male', dob: '2012-01-01', pincode: '302001', guardianName: 'Dad', guardianMobile: '9811100072', guardianConsentGiven: true, planId: ctx.ids.plan }) });
+    ok(c, 'create minor');
+    const sid = id(c);
+    const before = await getStudent(sid);
+    assert.ok(before.feesDue > 0, 'feesDue totals the open charges: ' + before.feesDue);
+    const stale = await api('PUT', P(`/students/update-student/${sid}`), { token: T('owner'), body: { address: 'New road', guardianConsentGiven: true } });
+    ok(stale, 'unrelated edit');
+    assert.equal(data(stale).guardianConsent.givenAt, before.guardianConsent.givenAt, 're-saving does not rewrite the consent date');
+    const noGuardian = await api('PUT', P(`/students/update-student/${sid}`), { token: T('owner'), body: { guardianMobile: '' } });
+    assert.equal(noGuardian.status, 400, 'a minor cannot lose the guardian mobile: ' + msg(noGuardian));
+    const cl = await api('PUT', P(`/students/update-student/${sid}`), { token: T('owner'), body: { email: '', gender: '', pincode: '', dob: '', profileImage: 'null' } });
+    ok(cl, 'clear');
+    const after = await getStudent(sid);
+    for (const k of ['email', 'gender', 'pincode', 'dob']) assert.ok(after[k] === undefined || after[k] === null, `${k} cleared: ${after[k]}`);
+    assert.ok(!after.profileImage, 'photo removed');
+    const bad = await api('PUT', P(`/students/update-student/${sid}`), { token: T('owner'), body: { profileImage: '/etc/passwd' } });
+    assert.equal(bad.status, 400, 'a path cannot be set as the photo');
+    const rec = await getStudent(sid, T('recA'));
+    assert.equal(rec.paymentHistory, undefined, 'no fee right, no payment history');
+    assert.equal(rec.feesDue, undefined, 'no fee right, no fees due');
+  });
+
+  test('29 renew with keepSeat false gives the seat up', async () => {
+    const free = await api('GET', P('/seats?status=available&limit=5'), { token: T('owner') });
+    const seat = (data(free).seats || data(free) || free.body.seats)[0];
+    const c = await api('POST', P('/students/create-student'), { token: T('owner'), body: stu({ name: 'Seat Giver', mobile: '9811100073', planId: ctx.ids.plan, seatId: seat._id, branchId: seat.branchId || ctx.ids.branchA }) });
+    ok(c, 'create seated');
+    const sid = id(c);
+    ok(await api('POST', P(`/students/mark-paid/${sid}`), { token: T('owner'), body: { paymentMethod: 'cash', amount: 1000 } }), 'activate');
+    assert.equal((await getStudent(sid)).seatId && true, true, 'seated');
+    ok(await api('POST', P(`/students/${sid}/renew`), { token: T('owner'), body: { keepSeat: false, paidNow: 1000, paymentMethod: 'cash' } }), 'renew');
+    assert.ok(!(await getStudent(sid)).seatId, 'seat released');
   });
 };

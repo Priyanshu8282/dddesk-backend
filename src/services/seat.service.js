@@ -527,6 +527,9 @@ const reserveSeat = async (seatId, libraryId, { studentId, until, reason }, acto
     const student = await loadStudentForSeat(studentId, libraryId);
     const untilDate = new Date(until);
     if (isNaN(untilDate.getTime()) || untilDate <= new Date()) throw new ApiError(400, 'Reservation end time must be in the future');
+    // Same rule as assigning: a hold the student could never take up must not be accepted
+    const target = await Seat.findOne({ _id: seatId, libraryId });
+    if (target) await assertPlanEligible(student, target, libraryId);
 
     const seat = await Seat.findOneAndUpdate(
         { _id: seatId, libraryId, isDeleted: false, status: 'available' },

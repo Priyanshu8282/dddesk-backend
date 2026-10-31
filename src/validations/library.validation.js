@@ -85,7 +85,7 @@ const profileBody = z.object({
     city: z.string().trim().max(80),
     state: z.string().trim().max(80),
     country: z.string().trim().max(60),
-    pincode: z.string().trim().regex(/^\d{6}$/, 'Pincode must be 6 digits'),
+    pincode: z.string().trim().regex(/^(\d{6})?$/, 'Pincode must be 6 digits'), // '' clears it
     website: url,
     gstNumber: gstin,
     facilities: stringList,

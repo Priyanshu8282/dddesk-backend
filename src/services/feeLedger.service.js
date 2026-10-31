@@ -400,11 +400,25 @@ const createCharge = async ({
 };
 
 // Optimistic-concurrency retries: many staff/devices can hit one charge at once; wait a random, growing moment before re-reading
-const OCC_TRIES = 15;
-const occPause = (i) => new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 12 * (i + 1))));
+// Two layers: an in-process queue per charge (requests of this server take turns, so N parallel collects cost N saves
+// instead of N^2 version conflicts) and the optimistic-concurrency retry, which still guards other servers / scripts.
+// The old 15 tries with a ~12 ms pause failed the last of 20 parallel collects: each round only one writer wins.
+const OCC_TRIES = 40;
+const occPause = (i) => new Promise((resolve) => setTimeout(resolve, 2 + Math.floor(Math.random() * Math.min(60, 8 * (i + 1)))));
+const chargeQueues = new Map();
+const withChargeLock = (chargeId, fn) => {
+    const key = String(chargeId);
+    const prev = chargeQueues.get(key) || Promise.resolve();
+    const run = prev.then(fn);
+    const tail = run.catch(() => {});
+    chargeQueues.set(key, tail);
+    tail.then(() => { if (chargeQueues.get(key) === tail) chargeQueues.delete(key); });
+    return run;
+};
 
 // ── recordPayment (allocation engine) ─────────────────────────────────────────
-const applyToCharge = async ({ libraryId, studentId, paymentId, amount, txnId, method, receivedBy, paymentDate, razorpayPaymentId }) => {
+const applyToCharge = (args) => withChargeLock(args.paymentId, () => applyToChargeUnlocked(args));
+const applyToChargeUnlocked = async ({ libraryId, studentId, paymentId, amount, txnId, method, receivedBy, paymentDate, razorpayPaymentId }) => {
     for (let i = 0; i < OCC_TRIES; i += 1) {
         const charge = await Payment.findOne({ _id: paymentId, libraryId, studentId });
         if (!charge) throw new ApiError(404, 'Charge not found for this student');
@@ -440,13 +454,15 @@ const applyToCharge = async ({ libraryId, studentId, paymentId, amount, txnId, m
 
 const rollbackApplied = async (applied, libraryId, txnId) => {
     for (const a of applied) {
-        for (let i = 0; i < OCC_TRIES; i += 1) {
-            const charge = await Payment.findOne({ _id: a.paymentId, libraryId });
-            if (!charge) break;
-            charge.paidAmount = r2(Math.max(0, charge.paidAmount - a.amount));
-            charge.allocations = charge.allocations.filter((x) => String(x.transactionId) !== String(txnId));
-            try { await charge.save(); break; } catch (e) { if (e.name !== 'VersionError') break; await occPause(i); }
-        }
+        await withChargeLock(a.paymentId, async () => {
+            for (let i = 0; i < OCC_TRIES; i += 1) {
+                const charge = await Payment.findOne({ _id: a.paymentId, libraryId });
+                if (!charge) break;
+                charge.paidAmount = r2(Math.max(0, charge.paidAmount - a.amount));
+                charge.allocations = charge.allocations.filter((x) => String(x.transactionId) !== String(txnId));
+                try { await charge.save(); break; } catch (e) { if (e.name !== 'VersionError') break; await occPause(i); }
+            }
+        });
     }
 };
 
@@ -715,7 +731,8 @@ const alreadyApplied = (charge, key, signature) => {
     return true;
 };
 
-const saveCharge = async (mutate, libraryId, paymentId) => {
+const saveCharge = (mutate, libraryId, paymentId) => withChargeLock(paymentId, () => saveChargeUnlocked(mutate, libraryId, paymentId));
+const saveChargeUnlocked = async (mutate, libraryId, paymentId) => {
     for (let i = 0; i < OCC_TRIES; i += 1) {
         const charge = await loadChargeForWrite(libraryId, paymentId);
         const result = await mutate(charge);
@@ -824,6 +841,7 @@ const refundPayment = async ({
     let sourceTxn = null;
     let studentId;
     let refundBranchId = null;
+    let chargeMethod = null;
     if (transactionId) {
         if (!isId(transactionId)) throw new ApiError(400, 'Invalid transaction id');
         sourceTxn = await PaymentTransaction.findOne({ _id: transactionId, libraryId, type: 'collection', status: 'success' });
@@ -837,6 +855,7 @@ const refundPayment = async ({
         const charge = await loadChargeForWrite(libraryId, paymentId);
         studentId = charge.studentId;
         refundBranchId = charge.branchId || null;
+        chargeMethod = charge.paymentMethod || null;
         if (charge.paymentStatus === 'cancelled') throw new ApiError(400, 'Cannot refund a cancelled charge');
         const refundable = r2(charge.paidAmount - charge.refundAmount);
         if (refundable <= EPS) throw new ApiError(400, 'Nothing left to refund on this charge');
@@ -894,10 +913,18 @@ const refundPayment = async ({
             }
         }
     }
+    // Reports net refunds against collections per method, so a refund with no method follows the money it returns
+    // (the receipt's method, else the charge's last method), never a blind 'cash'.
+    let defaultMethod = chargeMethod;
+    if (!method) {
+        const srcId = (dist.find((d) => d.txnId) || {}).txnId || (sourceTxn && sourceTxn._id);
+        const src = sourceTxn || (srcId ? await PaymentTransaction.findOne({ _id: srcId, libraryId }).select('method').lean() : null);
+        if (src && src.method) defaultMethod = src.method;
+    }
     const gatewayPaymentId = gatewayTxn ? gatewayTxn.razorpayPaymentId : razorpayPaymentId;
     const creating = {
         libraryId, branchId: refundBranchId, studentId, type: 'refund', status: gatewayTxn ? 'pending' : 'processing', amount: refundAmt,
-        method: (gatewayTxn || razorpayRefundId) ? 'online' : (method || 'cash'),
+        method: (gatewayTxn || razorpayRefundId) ? 'online' : (method || defaultMethod || 'cash'),
         reason: cleanReason, refundOf: sourceTxn ? sourceTxn._id : (gatewayTxn ? gatewayTxn._id : undefined),
         razorpayRefundId, razorpayPaymentId: gatewayPaymentId, refundRequestId: reqId || undefined,
         refundToGateway: gatewayTxn ? true : (manualOnline ? false : undefined),
@@ -1100,7 +1127,14 @@ const adjustCharge = async ({ libraryId, paymentId, reason, waiveAmount, lateFee
             throw new ApiError(400, 'Adjustment would reduce the charge below the amount already paid. Refund first');
         }
         if (Object.keys(changes).length === 0) throw new ApiError(400, 'Nothing to adjust');
-        c.adjustments.push({ type: changes.waived ? 'waive' : 'adjust', reason: cleanReason, amount: changes.waived || 0, by, ...(reqKey ? { requestId: reqKey, requestSignature: signature } : {}) });
+        // lateFee / discountAmount / totalAmount SET the figure (they do not add to it): the history says what it was and what it became
+        const entries = [];
+        if (changes.totalAmount) entries.push({ type: 'total', amount: changes.totalAmount[1], previous: changes.totalAmount[0] });
+        if (changes.lateFee) entries.push({ type: 'late_fee', amount: changes.lateFee[1], previous: changes.lateFee[0] });
+        if (changes.discountAmount) entries.push({ type: 'discount', amount: changes.discountAmount[1], previous: changes.discountAmount[0] });
+        if (changes.dueDate) entries.push({ type: 'due_date', amount: 0 });
+        if (changes.waived) entries.push({ type: 'waive', amount: changes.waived });
+        entries.forEach((e, n) => c.adjustments.push({ ...e, reason: cleanReason, by, ...(reqKey && n === 0 ? { requestId: reqKey, requestSignature: signature } : {}) }));
         return undefined;
     }, libraryId, paymentId);
     if (result === ALREADY_APPLIED) return charge;

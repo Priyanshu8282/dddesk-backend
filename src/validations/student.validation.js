@@ -100,11 +100,21 @@ const importStudents = z.object({
     })
 });
 
+// On an edit an empty optional field means "clear it", so the '' must reach the service instead of being dropped
+const clearable = (schema) => z.union([z.literal(''), schema]);
+
 const updateStudent = z.object({
     body: z.object({
         ...studentFields,
         name: studentFields.name.optional(),
         mobile: mobile.optional(),
+        email: clearable(studentFields.email),
+        gender: clearable(studentFields.gender),
+        dob: clearable(studentFields.dob),
+        pincode: clearable(studentFields.pincode),
+        guardianMobile: clearable(studentFields.guardianMobile),
+        // 'null' removes the current photo; a new photo arrives as a file, not as text
+        profileImage: z.enum(['null', '']).optional(),
         documentType: z.string().optional()
     }).superRefine((b, ctx) => {
         // Only checked when the request touches the guardian block together with the date of birth, so editing

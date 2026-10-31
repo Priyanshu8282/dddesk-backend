@@ -61,6 +61,7 @@ const biQuery = z.object({
     query: z.object({
         startDate: day.optional(),
         endDate: day.optional(),
+        branchId: objectId.optional(),
         libraryId: objectId.optional(),
         granularity: z.enum(['day', 'month']).optional(),
         listLimit: z.coerce.number().int().min(1).max(50).optional()

@@ -172,7 +172,7 @@ const queryNotices = async (libraryId, { search, status = 'all', type, sendTo, p
     }
     if (status === 'inactive') filter.isActive = false;
     else if (status === 'active') Object.assign(filter, timeFilter(now));
-    else if (status === 'scheduled') Object.assign(filter, { isActive: true, startDate: { $gt: now } });
+    else if (status === 'scheduled') Object.assign(filter, { isActive: true, startDate: { ...filter.startDate, $gt: now } });
     else if (status === 'expired') Object.assign(filter, { isActive: true, endDate: { $lte: now } });
 
     if (scope.branchId) filter.$and = [...(filter.$and || []), { $or: [{ branchId: null }, scope] }];
@@ -183,7 +183,8 @@ const queryNotices = async (libraryId, { search, status = 'all', type, sendTo, p
     const [rows, totalResults, [agg]] = await Promise.all([
         Notice.find(filter).select('-seenBy').sort(NOTICE_SORTS[sort] || NOTICE_SORTS.pinned).skip((p - 1) * l).limit(l).lean(),
         Notice.countDocuments(filter),
-        Notice.aggregate([{ $match: { libraryId: lib } }, { $group: {
+        // Same branch scope as the list, so the numbers add up for branch-limited staff
+        Notice.aggregate([{ $match: { libraryId: lib, ...(scope.branchId ? { $or: [{ branchId: null }, scope] } : {}) } }, { $group: {
             _id: null, total: { $sum: 1 }, totalViews: { $sum: '$views' },
             pinned: { $sum: { $cond: ['$isPinned', 1, 0] } },
             inactive: { $sum: { $cond: ['$isActive', 0, 1] } },

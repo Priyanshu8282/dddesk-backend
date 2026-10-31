@@ -23,7 +23,8 @@ const itemSchema = new mongoose.Schema({
 const adjustmentSchema = new mongoose.Schema({
     type: { type: String },
     reason: { type: String },
-    amount: { type: Number, default: 0 },
+    amount: { type: Number, default: 0 }, // waive: the amount waived; late_fee / discount / total: the NEW figure
+    previous: { type: Number }, // late_fee / discount / total: the figure before this change
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
     at: { type: Date, default: Date.now },
     // idempotency key of an adjust / cancel request and what it asked for: a retry finds it and changes nothing
@@ -186,7 +187,8 @@ paymentSchema.pre('save', function () {
         this.dueAmount = 0;
         return;
     }
-    if ((this.refundAmount || 0) > 0 && this.paidAmount > 0 && this.refundAmount >= this.paidAmount - 0.001) {
+    // Only a charge with nothing left to pay closes as refunded: a part-paid charge keeps its unpaid balance
+    if ((this.refundAmount || 0) > 0 && this.paidAmount > 0 && this.refundAmount >= this.paidAmount - 0.001 && this.dueAmount <= 0.001) {
         this.paymentStatus = 'refunded';
         this.dueAmount = 0;
         return;

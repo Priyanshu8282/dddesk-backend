@@ -82,7 +82,7 @@ const queryStories = async (libraryId, { search, status, type, from, to, sort = 
     const filter = { libraryId };
     if (search) {
         const rx = new RegExp(escapeRegex(String(search).trim()), 'i');
-        filter.$or = [{ title: rx }, { description: rx }];
+        filter.$or = [{ title: rx }, { description: rx }, { textContent: rx }];
     }
     if (status === 'archived') filter.archived = true;
     else if (status === 'expired') Object.assign(filter, { archived: { $ne: true }, expiresAt: { $lte: now } });
@@ -102,18 +102,18 @@ const queryStories = async (libraryId, { search, status, type, from, to, sort = 
     const [stories, totalResults, summary] = await Promise.all([
         Story.find(filter).select('-viewedBy -repliesData -likedBy').sort(STORY_SORTS[sort] || STORY_SORTS.newest).skip((p - 1) * l).limit(l).lean(),
         Story.countDocuments(filter),
-        analytics(libraryId)
+        analytics(libraryId, scope)
     ]);
     const results = stories.map((s) => ({ ...s, status: statusOf(s, now) }));
     return { results, page: p, limit: l, totalResults, summary };
 };
 
-const analytics = async (libraryId) => {
+const analytics = async (libraryId, scope = {}) => {
     const now = new Date();
     const past24h = new Date(Date.now() - 24 * HOUR);
     const lib = new mongoose.Types.ObjectId(String(libraryId));
     const [agg] = await Story.aggregate([
-        { $match: { libraryId: lib } },
+        { $match: { libraryId: lib, ...(scope.branchId ? { $or: [{ branchId: null }, scope] } : {}) } },
         { $group: {
             _id: null,
             totalStories: { $sum: 1 },
@@ -126,8 +126,8 @@ const analytics = async (libraryId) => {
                 { $eq: ['$isActive', true] }, { $ne: ['$archived', true] },
                 { $lte: ['$publishAt', now] }, { $gt: ['$expiresAt', now] }
             ] }, 1, 0] } },
-            totalExpired: { $sum: { $cond: [{ $lte: ['$expiresAt', now] }, 1, 0] } },
-            totalInactive: { $sum: { $cond: [{ $and: [{ $eq: ['$isActive', false] }, { $ne: ['$archived', true] }, { $gt: ['$expiresAt', now] }] }, 1, 0] } },
+            totalExpired: { $sum: { $cond: [{ $and: [{ $ne: ['$archived', true] }, { $lte: ['$expiresAt', now] }] }, 1, 0] } },
+            totalInactive: { $sum: { $cond: [{ $and: [{ $eq: ['$isActive', false] }, { $ne: ['$archived', true] }, { $lte: ['$publishAt', now] }, { $gt: ['$expiresAt', now] }] }, 1, 0] } },
             totalScheduled: { $sum: { $cond: [{ $and: [{ $ne: ['$archived', true] }, { $gt: ['$publishAt', now] }] }, 1, 0] } }
         } }
     ]);

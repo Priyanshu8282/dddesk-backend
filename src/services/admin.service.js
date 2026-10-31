@@ -131,7 +131,7 @@ exports.createStaff = async (req) => {
   // Plan limit (spec 12 / platform plan maxStaff)
   const maxStaff = library.planLimits?.maxStaff;
   if (typeof maxStaff === 'number' && maxStaff > 0) {
-    const current = await Admin.countDocuments({ libraryId: tenant, userType: 'staff' });
+    const current = await Admin.countDocuments({ libraryId: tenant, userType: 'staff', isDeleted: false });
     if (current >= maxStaff) {
       throw err(`Staff limit reached for your plan (${maxStaff}). Upgrade your plan to add more staff.`, 403);
     }
@@ -431,6 +431,8 @@ exports.resetPasswordByOwner = async (req, id, newPassword) => {
   const target = await loadTarget(req, id);
   if (target.userType !== 'staff' && req.userType !== 'superadmin') throw err('You can only reset passwords of your staff', 403);
   if (target.userType === 'superadmin' && req.userType !== 'superadmin') throw err('User not found', 404);
+  if (req.userType === 'staff' && idOf(target._id) === idOf(req.user._id)) throw err('Change your own password from your profile', 400);
+  await assertCanManageTarget(req, target);
   target.password = newPassword;   // save() -> pre-save hook hashes
   target.tokensValidAfter = new Date(); // end the staff member's existing sessions
   target.updatedBy = req.user._id;

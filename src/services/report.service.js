@@ -51,7 +51,7 @@ exports.getFinanceReport = async (L, q) => {
     const [sumAgg, methodAgg, statusAgg, dailyAgg, outstandingAgg, topDue, list] = await Promise.all([
         Payment.aggregate([{ $match: base }, { $group: {
             _id: null, totalBilled: { $sum: '$totalAmount' }, totalCollected: { $sum: '$paidAmount' }, totalDue: { $sum: '$dueAmount' },
-            totalDiscount: { $sum: '$discountAmount' }, totalWaived: { $sum: '$waivedAmount' }, totalRefunded: { $sum: '$refundAmount' }, count: { $sum: 1 }
+            totalLateFee: { $sum: '$lateFee' }, totalDiscount: { $sum: '$discountAmount' }, totalWaived: { $sum: '$waivedAmount' }, totalRefunded: { $sum: '$refundAmount' }, count: { $sum: 1 }
         } }]),
         Payment.aggregate([{ $match: paid }, { $group: { _id: '$paymentMethod', totalAmount: { $sum: '$paidAmount' }, count: { $sum: 1 } } }, { $sort: { totalAmount: -1 } }]),
         Payment.aggregate([{ $match: base }, { $group: { _id: '$paymentStatus', totalAmount: { $sum: '$paidAmount' }, totalDue: { $sum: '$dueAmount' }, count: { $sum: 1 } } }]),
@@ -69,9 +69,9 @@ exports.getFinanceReport = async (L, q) => {
         withList(q.view, FINANCE_VIEWS, L, q, 'collection')
     ]);
 
-    const s = sumAgg[0] || { totalBilled: 0, totalCollected: 0, totalDue: 0, totalDiscount: 0, totalWaived: 0, totalRefunded: 0, count: 0 };
+    const s = sumAgg[0] || { totalBilled: 0, totalCollected: 0, totalDue: 0, totalLateFee: 0, totalDiscount: 0, totalWaived: 0, totalRefunded: 0, count: 0 };
     delete s._id;
-    const netBillable = s.totalBilled - s.totalDiscount - s.totalWaived;
+    const netBillable = s.totalBilled + s.totalLateFee - s.totalDiscount - s.totalWaived;
     const o = outstandingAgg[0] || {};
     return {
         period: period(q),

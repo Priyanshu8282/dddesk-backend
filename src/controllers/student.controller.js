@@ -78,6 +78,11 @@ exports.exportStudents = catchAsync(async (req, res) => {
 exports.getStudentById = catchAsync(async (req, res) => {
     const student = await require('../utils/securityEvent').flagOnMiss(req, require('../models/student.model'), req.params.id, 'Student',
         () => studentService.getStudentById(req.params.id, lib(req)));
+    // fee figures follow the same rule as /payment-history and /ledger (fees.view or fees.collect)
+    if (req.userType === 'staff' && !['fees.view', 'fees.collect'].some((k) => (req.permissions || []).includes(k))) {
+        delete student.paymentHistory;
+        delete student.feesDue;
+    }
     ok(res, 'Student retrieved successfully', student);
 });
 

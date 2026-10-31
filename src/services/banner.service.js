@@ -75,13 +75,14 @@ const queryBanners = async (libraryId, { page = 1, limit = 10, search = '', stat
 
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
+    const inScope = { libraryId, ...(scope.branchId ? { $or: [{ branchId: null }, scope] } : {}) }; // summary matches the list for branch-limited staff
     const [banners, totalResults, total, active, scheduled, expired] = await Promise.all([
         Banner.find(query).populate('createdBy', 'name userType').sort(BANNER_SORTS[sort] || sortSpec).skip((p - 1) * l).limit(l).lean(),
         Banner.countDocuments(query),
-        Banner.countDocuments({ libraryId }),
-        Banner.countDocuments({ libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now } }),
-        Banner.countDocuments({ libraryId, isActive: true, startDate: { $gt: now }, endDate: { $gte: now } }),
-        Banner.countDocuments({ libraryId, endDate: { $lt: now } })
+        Banner.countDocuments(inScope),
+        Banner.countDocuments({ ...inScope, isActive: true, startDate: { $lte: now }, endDate: { $gte: now } }),
+        Banner.countDocuments({ ...inScope, isActive: true, startDate: { $gt: now }, endDate: { $gte: now } }),
+        Banner.countDocuments({ ...inScope, endDate: { $lt: now } })
     ]);
     return {
         results: banners.map((b) => ({ ...b, status: statusOf(b, now) })), page: p, limit: l, totalPages: Math.ceil(totalResults / l), totalResults,

@@ -10,7 +10,7 @@ const Seat = require('../models/seat.model');
 const Library = require('../models/library.model');
 const ApiError = require('../utils/ApiError');
 const escapeRegex = require('../utils/escapeRegex');
-const { startOfDayIST, endOfDayIST, IST_OFFSET_MS, DAY_MS } = require('../utils/time');
+const { startOfDayIST, endOfDayIST, toISTString, IST_OFFSET_MS, DAY_MS } = require('../utils/time');
 
 const MIN = 60 * 1000;
 const STALE_SESSION_MS = 16 * 60 * MIN;
@@ -472,12 +472,19 @@ const correctSession = async ({ id, libraryId, library, body, userId }) => {
         att.date = startOfDayIST(att.checkIn);
         att.duration = att.checkOut ? diffMinutes(att.checkIn, att.checkOut) : 0;
         att.open = att.checkOut ? undefined : true;
-        const flags = computeFlags({ checkIn: att.checkIn, checkOut: att.checkOut, rules: getRules(library), hours: getHours(library) });
+        // A later session of the same day is never late (same rule as checkIn)
+        const earlier = await Attendance.exists({ _id: { $ne: att._id }, studentId: att.studentId, libraryId, date: att.date, status: 'present', checkIn: { $lt: att.checkIn } });
+        const flags = computeFlags({ checkIn: att.checkIn, checkOut: att.checkOut, rules: getRules(library), hours: getHours(library), checkLate: !earlier });
         Object.assign(att, flags);
+        att.leaveReason = undefined;
+        // The times are now staff-entered: an old auto / manual close no longer describes this record
+        if (body.checkOut !== undefined) { att.autoClosed = false; att.manualClose = false; att.manualCloseReason = undefined; att.manualClosedBy = undefined; }
     } else {
         att.checkIn = undefined; att.checkOut = undefined; att.duration = 0; att.open = undefined;
         att.isLate = false; att.lateByMinutes = 0; att.isEarlyExit = false; att.earlyByMinutes = 0;
-        if (att.status === 'leave' && body.leaveReason) att.leaveReason = body.leaveReason;
+        att.autoClosed = false; att.manualClose = false; att.manualCloseReason = undefined; att.manualClosedBy = undefined;
+        if (att.status === 'absent') att.leaveReason = undefined;
+        else if (body.leaveReason) att.leaveReason = body.leaveReason;
     }
     att.corrections.push({ by: userId, at: new Date(), reason: body.reason, before, after: snap(att) });
     try {
@@ -634,7 +641,7 @@ const queryAttendance = async (libraryId, query = {}, scope = {}) => {
         filter.studentId = { $in: ids.map((s) => s._id) };
     }
     const [results, totalResults] = await Promise.all([
-        Attendance.find(filter).populate('studentId', 'name mobile rollNumber').sort({ date: -1, checkIn: -1 })
+        Attendance.find(filter).populate('studentId', 'name mobile rollNumber').sort({ date: -1, checkIn: -1, _id: -1 })
             .skip((page - 1) * limit).limit(limit).lean(),
         Attendance.countDocuments(filter)
     ]);
@@ -704,24 +711,29 @@ const percentageReport = async ({ libraryId, library, query, scope = {} }) => {
     const page = Math.max(parseInt(query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(query.limit, 10) || 100, 1), 500);
 
+    const sort = query.sort === 'low' || query.sort === 'high' ? query.sort : 'name';
+
     const studentFilter = { libraryId, status: 'active', ...scope };
     const total = await Student.countDocuments(studentFilter);
-    const students = await Student.find(studentFilter).select('name mobile rollNumber joiningDate')
-        .sort({ name: 1 }).skip((page - 1) * limit).limit(limit).lean();
+    // Sorting by percentage needs every student's figures before the page can be cut
+    const studentQuery = Student.find(studentFilter).select('name mobile rollNumber joiningDate').sort({ name: 1, _id: 1 });
+    const students = await (sort === 'name' ? studentQuery.skip((page - 1) * limit).limit(limit) : studentQuery).lean();
     const ids = students.map((s) => s._id);
 
     const agg = await Attendance.aggregate([
         { $match: { libraryId: new mongoose.Types.ObjectId(String(libraryId)), studentId: { $in: ids }, date: { $gte: from, $lte: to }, status: { $in: ['present', 'leave'] } } },
-        { $group: { _id: { s: '$studentId', d: '$date', st: '$status' }, minutes: { $sum: '$duration' } } },
+        // One row per student-day; a day the student came counts as present even if leave was also marked
+        { $group: { _id: { s: '$studentId', d: '$date' }, statuses: { $addToSet: '$status' }, minutes: { $sum: '$duration' } } },
+        { $addFields: { came: { $in: ['present', '$statuses'] } } },
         { $group: {
             _id: '$_id.s',
-            present: { $sum: { $cond: [{ $eq: ['$_id.st', 'present'] }, 1, 0] } },
-            leave: { $sum: { $cond: [{ $eq: ['$_id.st', 'leave'] }, 1, 0] } },
+            present: { $sum: { $cond: ['$came', 1, 0] } },
+            leave: { $sum: { $cond: ['$came', 0, 1] } },
             minutes: { $sum: '$minutes' }
         } }
     ]);
     const map = new Map(agg.map((a) => [String(a._id), a]));
-    const results = students.map((s) => {
+    let results = students.map((s) => {
         const a = map.get(String(s._id)) || { present: 0, leave: 0, minutes: 0 };
         const effFrom = s.joiningDate && startOfDayIST(s.joiningDate) > from ? startOfDayIST(s.joiningDate) : from;
         const workingDays = effFrom <= to ? countWorkingDays(effFrom, to, hours) : 0;
@@ -732,6 +744,10 @@ const percentageReport = async ({ libraryId, library, query, scope = {} }) => {
             percentage: effective > 0 ? Math.min(100, Math.round((a.present / effective) * 1000) / 10) : 0
         };
     });
+    if (sort !== 'name') {
+        results.sort((a, b) => (sort === 'low' ? a.percentage - b.percentage : b.percentage - a.percentage));
+        results = results.slice((page - 1) * limit, page * limit);
+    }
     return { from, to, results, page, limit, totalResults: total, totalPages: Math.ceil(total / limit) };
 };
 
@@ -742,8 +758,9 @@ const trend = async ({ libraryId, days = 14, scope = {} }) => {
     const from = new Date(to.getTime() - (n - 1) * DAY_MS);
     const rows = await Attendance.aggregate([
         { $match: { libraryId: new mongoose.Types.ObjectId(String(libraryId)), date: { $gte: from, $lte: endOfDayIST(to) }, status: { $in: ['present', 'leave'] }, ...scope } },
-        { $group: { _id: { d: '$date', s: '$studentId', st: '$status' }, minutes: { $sum: '$duration' } } },
-        { $group: { _id: { d: '$_id.d', st: '$_id.st' }, students: { $sum: 1 }, minutes: { $sum: '$minutes' } } }
+        // A student who came is present that day even if leave was also marked (as on the Today roster)
+        { $group: { _id: { d: '$date', s: '$studentId' }, statuses: { $addToSet: '$status' }, minutes: { $sum: '$duration' } } },
+        { $group: { _id: { d: '$_id.d', st: { $cond: [{ $in: ['present', '$statuses'] }, 'present', 'leave'] } }, students: { $sum: 1 }, minutes: { $sum: '$minutes' } } }
     ]);
     const fmt = (d) => new Date(d.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
     const map = new Map();
@@ -782,10 +799,10 @@ const exportCsv = async ({ libraryId, query = {}, scope = {}, write }) => {
         filter.studentId = { $in: ids.map((s) => s._id) };
     }
     await write('\uFEFF' + ['Date', 'Student', 'Mobile', 'Roll no', 'Status', 'Check in', 'Check out', 'Minutes', 'Late', 'Source', 'Leave reason'].map(csvCell).join(',') + '\n');
-    const cursor = Attendance.find(filter).populate('studentId', 'name mobile rollNumber').sort({ date: -1, checkIn: -1 }).limit(20000).lean().cursor();
+    const cursor = Attendance.find(filter).populate('studentId', 'name mobile rollNumber').sort({ date: -1, checkIn: -1, _id: -1 }).limit(20000).lean().cursor();
     for await (const r of cursor) {
         const day = new Date(new Date(r.date).getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
-        await write([day, r.studentId && r.studentId.name, r.studentId && r.studentId.mobile, r.studentId && r.studentId.rollNumber, r.status, r.checkIn, r.checkOut, r.duration, r.isLate ? 'yes' : '', r.source, r.leaveReason].map(csvCell).join(',') + '\n');
+        await write([day, r.studentId && r.studentId.name, r.studentId && r.studentId.mobile, r.studentId && r.studentId.rollNumber, r.status, r.checkIn && toISTString(r.checkIn), r.checkOut && toISTString(r.checkOut), r.duration, r.isLate ? 'yes' : '', r.source, r.leaveReason].map(csvCell).join(',') + '\n');
     }
 };
 

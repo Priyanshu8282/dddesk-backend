@@ -35,6 +35,7 @@ const CREATE_FIELDS = [
     'joiningDate', 'branchId', 'profileImage'
 ];
 const UPDATE_FIELDS = CREATE_FIELDS;
+const CLEARABLE_FIELDS = ['email', 'gender', 'dob', 'pincode', 'guardianMobile'];
 
 const STATUS_VALUES = ['active', 'inactive', 'leave', 'suspended'];
 const MEMBERSHIP_STATUS_VALUES = ['none', 'pending', 'active', 'paused', 'expired'];
@@ -153,7 +154,7 @@ const assertCreditAllowed = async ({ libraryId, studentId, chargeAmount, paidNow
     if (remaining <= 0.009) return;
     const policy = await ledger.getPolicy(libraryId);
     if (!policy.allowCredit) {
-        throw new ApiError(400, `This library does not allow credit: collect ₹${remaining} now (send paidNow) to renew / change the plan`);
+        throw new ApiError(400, `This library does not allow credit: collect ₹${remaining} now to renew or change the plan`);
     }
     await ledger.enforceCreditPolicy({ libraryId, studentId, newDue: money2(remaining - relief), paidNow, dueDate, policy });
 };
@@ -660,7 +661,7 @@ const changePlan = async (studentId, libraryId, { planId, startDate, reason, pai
     const chargeAmount = money2(price - newDiscount);
     const creditLeftover = money2(split.discountNew - newDiscount);
     const paid = money2(Math.max(0, Number(paidNow) || 0));
-    if (paid > chargeAmount + 0.009) throw new ApiError(400, `paidNow ₹${paid} is more than the new charge ₹${chargeAmount}`);
+    if (paid > chargeAmount + 0.009) throw new ApiError(400, `Amount collected ₹${paid} is more than the new charge ₹${chargeAmount}`);
     const relief = split.cancelOld ? (oldCharge?.dueAmount || 0) : split.waiveOld;
     await assertCreditAllowed({ libraryId, studentId: student._id, chargeAmount, paidNow: paid, relief });
 
@@ -734,7 +735,7 @@ const renewMembership = async (studentId, libraryId, { planId, startDate, keepSe
     if (plan.allowRenewal === false) throw new ApiError(400, `Plan "${plan.name}" does not allow renewal`);
     const chargeAmount = money2(Math.max(0, planAmount(plan) - couponDiscount));
     const paid = money2(Math.max(0, Number(paidNow) || 0));
-    if (paid > chargeAmount + 0.009) throw new ApiError(400, `paidNow ₹${paid} is more than the renewal fee ₹${chargeAmount}`);
+    if (paid > chargeAmount + 0.009) throw new ApiError(400, `Amount collected ₹${paid} is more than the renewal fee ₹${chargeAmount}`);
     // Credit policy first: reject before the seat or membership is touched
     await assertCreditAllowed({ libraryId, studentId: student._id, chargeAmount, paidNow: paid, dueDate });
 
@@ -757,6 +758,10 @@ const renewMembership = async (studentId, libraryId, { planId, startDate, keepSe
                 seatNote = `previous seat not available: ${e.message}`;
             }
         }
+    }
+    // "Keep seat" unticked: the student gives their seat up with this renewal
+    if (!keepSeat && student.seatId) {
+        await seatService.releaseSeatForStudent(student._id, libraryId, { actor: seatService.actorOf(req), reason: 'Seat not kept at renewal' });
     }
     const fresh = await Student.findOne({ _id: student._id, libraryId });
 
@@ -989,11 +994,17 @@ const buildStudentFilter = (libraryId, q = {}, scope = {}) => {
         filter.joiningDate = { ...(dayOk(q.joinedFrom) && { $gte: startOfDayIST(q.joinedFrom) }), ...(dayOk(q.joinedTo) && { $lte: endOfDayIST(q.joinedTo) }) };
     }
     if (q.search) {
-        const rx = { $regex: escapeRegex(String(q.search).trim()), $options: 'i' };
+        const text = String(q.search).trim();
+        const rx = { $regex: escapeRegex(text), $options: 'i' };
         filter.$or = [
             { name: rx }, { mobile: rx }, { email: rx },
             { registrationNumber: rx }, { rollNumber: rx }, { seatNumber: rx }
         ];
+        // the list shows "+91 98765 43210": a pasted number must still find the stored 10 digits
+        if (/^\+?[\d\s-]+$/.test(text)) {
+            const digits = text.replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+            if (digits) filter.$or.push({ mobile: { $regex: escapeRegex(digits) } });
+        }
     }
     Object.assign(filter, scope);
     return filter;
@@ -1052,6 +1063,12 @@ const getStudentById = async (id, libraryId) => {
     const obj = student.toObject();
     delete obj.password; delete obj.otp; delete obj.fcmTokens;
     obj.paymentHistory = payments;
+    // paymentHistory is only the latest 3 entries, so the total owed is summed across all of them
+    const [owed] = await Payment.aggregate([
+        { $match: { studentId: student._id, libraryId: student.libraryId } },
+        { $group: { _id: null, due: { $sum: '$dueAmount' } } }
+    ]);
+    obj.feesDue = owed ? owed.due : 0;
     obj.currentMembership = currentMembership;
     return obj;
 };
@@ -1060,20 +1077,26 @@ const updateStudentById = async (id, libraryId, body, req) => {
     const student = await loadStudent(id, libraryId);
     if (student.erasedAt) throw new ApiError(400, 'This student record has been erased and cannot be edited');
     const data = pick(body, UPDATE_FIELDS);
-    if (data.email === '') data.email = undefined;
+    // An emptied optional field clears the stored value (the edit form always sends every field, so skip ones already empty)
+    const cleared = CLEARABLE_FIELDS.filter((k) => data[k] === '');
+    cleared.forEach((k) => { delete data[k]; });
+    const clearing = cleared.filter((k) => student[k] !== undefined && student[k] !== null && student[k] !== '');
     normaliseContactFields(data);
     await applyAadhaar(data, libraryId, { excludeId: student._id });
 
     // DPDP: consent can be recorded later for older records; guardian consent can be given or withdrawn
     if (dpdp.toBool(body.consentGiven) && !student.consent?.given) data.consent = await buildConsent(req);
     const guardianConsentTouched = body.guardianConsentGiven !== undefined;
-    if (guardianConsentTouched) data.guardianConsent = dpdp.toBool(body.guardianConsentGiven) ? { given: true, givenAt: new Date() } : { given: false };
+    // only a real change is recorded, so re-saving the form keeps the original consent date
+    if (guardianConsentTouched && dpdp.toBool(body.guardianConsentGiven) !== !!student.guardianConsent?.given) {
+        data.guardianConsent = dpdp.toBool(body.guardianConsentGiven) ? { given: true, givenAt: new Date() } : { given: false };
+    }
 
     // Minors: re-check the guardian block only when the request changes it (or the date of birth), so unrelated edits to an older record are never blocked
-    if (data.dob !== undefined || data.guardianName !== undefined || data.guardianMobile !== undefined || guardianConsentTouched) {
-        assertMinorRules(data.dob !== undefined ? data.dob : student.dob, {
+    if (data.dob !== undefined || data.guardianName !== undefined || data.guardianMobile !== undefined || guardianConsentTouched || clearing.includes('guardianMobile')) {
+        assertMinorRules(clearing.includes('dob') ? null : data.dob !== undefined ? data.dob : student.dob, {
             guardianName: data.guardianName !== undefined ? data.guardianName : student.guardianName,
-            guardianMobile: data.guardianMobile !== undefined ? data.guardianMobile : student.guardianMobile,
+            guardianMobile: clearing.includes('guardianMobile') ? '' : data.guardianMobile !== undefined ? data.guardianMobile : student.guardianMobile,
             guardianConsentGiven: data.guardianConsent ? data.guardianConsent.given : student.guardianConsent?.given
         });
     }
@@ -1085,6 +1108,7 @@ const updateStudentById = async (id, libraryId, body, req) => {
     if (data.branchId !== undefined) data.branchId = data.branchId ? await validateBranch(data.branchId, libraryId) : null;
 
     Object.assign(student, data);
+    clearing.forEach((k) => { student[k] = undefined; });
     try {
         await student.save();
     } catch (e) {
@@ -1270,7 +1294,7 @@ const csvCell = (v) => {
 
 const exportStudentsCsv = async (libraryId, q, scope, write) => {
     await write('\uFEFF' + ['Reg. no', 'Name', 'Mobile', 'Email', 'Gender', 'Status', 'Plan', 'Plan status', 'Seat', 'Joined', 'Expires', 'Branch', 'City', 'Guardian', 'Guardian mobile'].map(csvCell).join(',') + '\n');
-    const cursor = Student.find(buildStudentFilter(libraryId, q, scope)).select('-notes').populate('planId', 'name').populate('branchId', 'name').sort({ createdAt: -1 }).limit(20000).lean().cursor();
+    const cursor = Student.find(buildStudentFilter(libraryId, q, scope)).select('-notes').populate('planId', 'name').populate('branchId', 'name').sort({ ...(SORTS[q.sort] || SORTS.newest), _id: -1 }).limit(20000).lean().cursor();
     let n = 0;
     for await (const s of cursor) {
         await write([s.registrationNumber, s.name, s.mobile, s.email, s.gender, s.status, s.planId && s.planId.name, s.planStatus, s.seatNumber, s.joiningDate, s.expiryDate, s.branchId && s.branchId.name, s.city, s.guardianName, s.guardianMobile].map(csvCell).join(',') + '\n');

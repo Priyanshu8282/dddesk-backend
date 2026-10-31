@@ -286,6 +286,7 @@ module.exports = (H) => {
       if (r.status === 403) console.log('NOTE manager lacks permission for', path);
     }
     expectStatus(await api('GET', P('/reports/finance'), { token: T('recA') }), 403, 'receptionist cannot read finance reports');
+    expectStatus(await api('GET', P('/reports/bi/overview?branchId=nope'), { token: T('owner') }), 400, 'BI reports read branchId (it used to be dropped silently)');
     ok(await api('GET', P('/notifications'), { token: T('owner') }), 'notifications list');
   });
 

@@ -84,6 +84,8 @@ exports.listCoupons = async (libraryId, query = {}) => {
     if (query.status === 'active') {
         filter.isActive = true;
         filter.endDate = { $gte: now };
+    } else if (query.status === 'inactive') {
+        filter.isActive = false;
     } else if (query.status === 'expired') {
         filter.endDate = { $lt: now };
     } else if (query.status === 'upcoming') {
@@ -92,6 +94,10 @@ exports.listCoupons = async (libraryId, query = {}) => {
 
     if (query.offerType) {
         filter.offerType = String(query.offerType);
+    }
+
+    if (query.discountType) {
+        filter.discountType = String(query.discountType);
     }
 
     if (query.search && String(query.search).trim()) {
@@ -103,17 +109,28 @@ exports.listCoupons = async (libraryId, query = {}) => {
     const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
     const skip = (page - 1) * limit;
 
-    const [data, total] = await Promise.all([
+    const [data, total, [agg]] = await Promise.all([
         Coupon.find(filter)
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
             .populate('applicablePlans', 'name price')
             .populate('createdBy', 'name'),
-        Coupon.countDocuments(filter)
+        Coupon.countDocuments(filter),
+        // Header numbers cover the whole library, not the filtered page
+        Coupon.aggregate([
+            { $match: { libraryId: new mongoose.Types.ObjectId(String(libraryId)), isDeleted: false } },
+            { $group: {
+                _id: null,
+                total: { $sum: 1 },
+                redemptions: { $sum: '$usageCount' },
+                active: { $sum: { $cond: [{ $and: ['$isActive', { $lte: ['$startDate', now] }, { $gte: ['$endDate', now] }] }, 1, 0] } }
+            } }
+        ])
     ]);
 
-    return { data, total, page, totalPages: Math.ceil(total / limit), limit };
+    const summary = { total: agg ? agg.total : 0, active: agg ? agg.active : 0, redemptions: agg ? agg.redemptions : 0 };
+    return { data, total, page, totalPages: Math.ceil(total / limit), limit, summary };
 };
 
 /**

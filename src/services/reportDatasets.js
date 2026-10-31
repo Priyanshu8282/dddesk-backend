@@ -320,7 +320,7 @@ REG.expenses = { columns: [
     if (q.method) f.paymentMethod = q.method;
     if (q.search) f.$or = [{ title: searchRegex(q.search) }, { notes: searchRegex(q.search) }];
     return { kind: 'find', model: Expense, filter: f, sort: { date: -1 }, totalsGroup: { amount: { $sum: '$amount' } },
-        row: (e) => ({ date: d(e.date), title: e.title, category: e.category, amount: num(e.amount), paymentMethod: e.paymentMethod, notes: e.notes || '' }) };
+        row: (e) => ({ date: d(e.date), title: e.title, category: e.customCategory || e.category, amount: num(e.amount), paymentMethod: e.paymentMethod, notes: e.notes || '' }) };
 } };
 
 REG.complaints = { columns: [

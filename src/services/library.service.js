@@ -51,6 +51,8 @@ exports.updateProfile = async (req, libraryId) => {
   if ($set['feeTax.gstEnabled'] === true) {
     const gstin = $set.gstNumber !== undefined ? $set.gstNumber : library.gstNumber;
     if (!gstin) throw new ApiError(400, 'Add your GSTIN in the profile before turning on GST for fee receipts');
+  } else if ($set.gstNumber === '' && library.feeTax?.gstEnabled && $set['feeTax.gstEnabled'] !== false) {
+    throw new ApiError(400, 'Turn off GST on fee receipts before removing your GSTIN');
   }
 
   // Images

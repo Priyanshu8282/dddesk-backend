@@ -26,7 +26,8 @@ exports.getCoupons = catchAsync(async (req, res) => {
         total: result.total,
         page: result.page,
         totalPages: result.totalPages,
-        limit: result.limit
+        limit: result.limit,
+        summary: result.summary
     });
 });
 

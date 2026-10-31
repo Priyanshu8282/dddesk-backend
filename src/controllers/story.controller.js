@@ -25,7 +25,7 @@ exports.getStories = catchAsync(async (req, res) => {
 
 exports.getAnalytics = catchAsync(async (req, res) => {
     const [summary, top] = await Promise.all([
-        storyService.analytics(req.libraryId),
+        storyService.analytics(req.libraryId, branchFilter(req)),
         storyService.topStories(req.libraryId)
     ]);
     ApiResponse.ok(res, { summary, topStories: top }, 'Story analytics retrieved successfully');

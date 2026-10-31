@@ -128,6 +128,11 @@ module.exports = (H) => {
     ok(list, 'list'); assert.ok(JSON.stringify(data(list)).includes('FEST10'), 'listed');
     ok(await api('PUT', P(`/coupons/${cid}`), { token: T('owner'), body: { title: 'Festival 15%', discountValue: 15 } }), 'update');
     ok(await api('PATCH', P(`/coupons/${cid}/toggle`), { token: T('owner') }), 'toggle');
+    const off = await api('GET', P('/coupons?status=inactive&discountType=percentage'), { token: T('owner') });
+    ok(off, 'filter by inactive + discount type'); assert.ok(JSON.stringify(data(off)).includes('FEST10'), 'the turned-off coupon is listed');
+    assert.ok(!JSON.stringify(data(await api('GET', P('/coupons?discountType=flat'), { token: T('owner') }))).includes('FEST10'), 'discount type filter applies');
+    assert.ok(!JSON.stringify(data(await api('GET', P('/coupons?status=active'), { token: T('owner') }))).includes('FEST10'), 'a turned-off coupon is not active');
+    assert.ok(off.body.summary && off.body.summary.total >= 1 && off.body.summary.redemptions >= 0, 'library-wide summary: ' + JSON.stringify(off.body.summary));
     ok(await api('GET', P('/offers'), { token: T('owner') }), 'the /offers alias works');
     denied(await api('POST', P('/coupons'), { token: T('acct'), body: mk({ code: 'ACCT1' }) }), 'accountant create');
     hidden(await api('GET', P(`/coupons/${cid}`), { token: T('owner2') }), 'owner2 reading coupon');

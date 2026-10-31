@@ -48,6 +48,7 @@ const queryReviews = z.object({
         status: z.enum(['all', 'pending', 'approved', 'rejected']).optional().default('all'),
         type: z.enum(['public', 'internal']).optional(),
         rating: z.coerce.number().int().min(1).max(5).optional(),
+        search: z.string().trim().max(100).optional(),
         isFeatured: bool.optional(),
         page: z.coerce.number().int().min(1).optional().default(1),
         limit: z.coerce.number().int().min(1).max(100).optional().default(20)

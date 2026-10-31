@@ -9,7 +9,7 @@ const BACKEND = process.env.DD_BACKEND || path.join(__dirname, '..', '..');
 const SRC = path.join(BACKEND, 'src');
 const breq = (p) => require(path.join(BACKEND, 'node_modules', p));
 
-const state = { warnings: [], mongod: null, server: null, base: '', mongoose: null, ipCounter: 1 };
+const state = { warnings: [], mongod: null, server: null, base: '', mongoose: null, ipCounter: 1, blockedFetches: [] };
 const TEST_ENV = {
   NODE_ENV: 'development',
   PORT: '0',
@@ -31,7 +31,26 @@ const TEST_ENV = {
   SOCKET_SESSION_CHECK_MS: '400',
 };
 
+// No test may depend on the internet: any fetch to a host other than this machine is refused at once (and recorded).
+function blockOutbound() {
+  if (globalThis.fetch.__ddBlocked) return;
+  const real = globalThis.fetch;
+  const guarded = function (input, init) {
+    const raw = typeof input === 'string' ? input : (input && input.url) || String(input);
+    let host = '';
+    try { host = new URL(raw).hostname; } catch (_) { /* relative */ }
+    if (host && !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host)) {
+      state.blockedFetches.push(raw);
+      return Promise.reject(new TypeError('network disabled in tests: ' + raw));
+    }
+    return real(input, init);
+  };
+  guarded.__ddBlocked = true;
+  globalThis.fetch = guarded;
+}
+
 async function boot() {
+  blockOutbound();
   process.on('warning', (w) => { state.warnings.push(String(w.message || w)); });
   const { MongoMemoryServer } = require('mongodb-memory-server');
   process.env.MONGOMS_VERSION = process.env.MONGOMS_VERSION || '6.0.14';
@@ -88,7 +107,8 @@ async function api(method, url, { token, body, ip, headers = {}, cookie, form } 
   let payload;
   if (form) payload = form;
   else if (body !== undefined) { h['content-type'] = 'application/json'; payload = JSON.stringify(body); }
-  const res = await fetch(state.base + url, { method, headers: h, body: payload });
+  // redirect: 'manual' - the test client must never follow a redirect off the box (e.g. /admin-image redirects to ui-avatars.com)
+  const res = await fetch(state.base + url, { method, headers: h, body: payload, redirect: 'manual' });
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch (_) { /* not json */ }

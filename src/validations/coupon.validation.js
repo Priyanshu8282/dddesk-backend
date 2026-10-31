@@ -58,8 +58,9 @@ const validateCoupon = z.object({
 
 const queryCoupons = z.object({
     query: z.object({
-        status: z.enum(['all', 'active', 'expired', 'upcoming']).optional().default('all'),
+        status: z.enum(['all', 'active', 'inactive', 'expired', 'upcoming']).optional().default('all'),
         offerType: z.string().optional(),
+        discountType: z.enum(discountTypes).optional(),
         search: z.string().optional(),
         page: z.coerce.number().optional().default(1),
         limit: z.coerce.number().max(100).optional().default(20)

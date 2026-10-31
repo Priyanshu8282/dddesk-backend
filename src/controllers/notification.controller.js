@@ -2,6 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const notificationService = require('../services/notification.service');
+const { branchFilter } = require('../utils/branchScope');
 
 const who = (req) => {
     const userId = req.user ? req.user._id : null;
@@ -54,7 +55,7 @@ exports.deleteReadNotifications = catchAsync(async (req, res) => {
 
 exports.sendToStudents = catchAsync(async (req, res) => {
     if (!req.libraryId) throw new ApiError(400, 'Library context required');
-    const result = await notificationService.broadcastToStudents(req.libraryId, req.body);
+    const result = await notificationService.broadcastToStudents(req.libraryId, req.body, branchFilter(req));
     ApiResponse.ok(res, result, `Sent to ${result.recipients} student${result.recipients === 1 ? '' : 's'}`);
 });
 

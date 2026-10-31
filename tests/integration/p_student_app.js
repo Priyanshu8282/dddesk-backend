@@ -149,6 +149,15 @@ module.exports = (H) => {
     const mine = await GET('/reviews/my');
     ok(mine, 'my reviews');
     assert.ok(Array.isArray(data(mine)) && data(mine).some((x) => x._id === rv._id));
+    // the admin Reviews page: search box and reply
+    const owner = H.T('owner');
+    const hit = await api('GET', P('/reviews?search=calm%20and'), { token: owner });
+    assert.ok(data(hit).some((x) => x._id === rv._id), `search finds by text: ${msg(hit)}`);
+    const miss = await api('GET', P('/reviews?search=zzqqxx'), { token: owner });
+    assert.ok(!data(miss).some((x) => x._id === rv._id), 'search leaves out what does not match');
+    const rep = await api('POST', P(`/reviews/${rv._id}/reply`), { token: owner, body: { reply: 'Thank you' } });
+    ok(rep, 'reply');
+    assert.equal(data(rep).ownerReply.text, 'Thank you');
     ok(await api('DELETE', P(`/reviews/${rv._id}`), { token }), 'delete own review');
   });
 

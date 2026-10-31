@@ -158,7 +158,7 @@ module.exports = (H) => {
     expectStatus(await cancel(moved, { reason: 'joined by mistake', requestId: 'cancel-idem-0002' }), 400, 'a new key on a cancelled charge is refused');
     expectStatus(await cancel(moved, { reason: 'joined by mistake' }), 400, 'no key on a cancelled charge is refused');
 
-    // a refused cancel stores nothing, and a full refund is what closes a charge that holds money
+    // a refused cancel stores nothing; a charge that holds money is refunded first, then cancelled to close any unpaid balance
     const held = await newCharge('Cancel with money held', 300);
     ok(await api('PATCH', P(`/payments/${held}/collect`), { token: T('acct'), body: { amount: 100, paymentMethod: 'cash', requestId: 'cancel-src-0001' } }), 'collect');
     const refused = { reason: 'student left', requestId: 'cancel-idem-0003' };
@@ -167,8 +167,40 @@ module.exports = (H) => {
     assert.ok(!(await getCharge(held)).adjustments.some((a) => a.requestId === refused.requestId), 'a refused request leaves no key');
     ok(await api('POST', P(`/payments/${held}/refund`), { token: T('owner'), body: { reason: 'student left', amount: 100, method: 'cash', requestId: 'cancel-ref-0001' } }), 'refund');
     c = await getCharge(held);
-    assert.equal(c.paymentStatus, 'refunded', 'a full refund closes the charge');
-    assert.equal(c.dueAmount, 0, 'nothing is left to pay, so no cancel is needed');
+    assert.equal(c.dueAmount, 200, 'refunding what was paid keeps the 200 never paid: it is not silently written off');
+    assert.equal(c.paymentStatus, 'partial');
+    ok(await cancel(held, { reason: 'student left', requestId: 'cancel-idem-0004' }), 'with the money returned, cancelling closes the unpaid balance');
+    assert.equal((await getCharge(held)).dueAmount, 0);
+  });
+
+  test('19c late fee and discount SET the figure; history keeps before/after; a refund without method follows the receipt', async () => {
+    const r = await api('POST', P('/payments'), { token: T('acct'), body: { studentId: ctx.ids.s1, amount: 500, description: 'Set semantics' } });
+    ok(r, 'charge 500'); const cid = chargeIdOf(r);
+    const adjust = (body) => api('POST', P(`/payments/${cid}/adjust`), { token: T('owner'), body });
+    ok(await adjust({ reason: 'late once', lateFee: 30 }), 'late fee 30');
+    assert.equal((await getCharge(cid)).dueAmount, 530);
+    ok(await adjust({ reason: 'late again', lateFee: 50 }), 'late fee 50');
+    let c = await getCharge(cid);
+    assert.equal(c.lateFee, 50, 'a second late fee REPLACES the first (50, not 80)');
+    assert.equal(c.dueAmount, 550);
+    ok(await adjust({ reason: 'offer', discountAmount: 20 }), 'discount 20');
+    ok(await adjust({ reason: 'bigger offer', discountAmount: 70 }), 'discount 70');
+    c = await getCharge(cid);
+    assert.equal(c.discountAmount, 70, 'a second discount REPLACES the first');
+    assert.equal(c.dueAmount, 480);
+    const hist = (t) => c.adjustments.filter((a) => a.type === t).map((a) => [a.previous, a.amount]);
+    assert.deepEqual(hist('late_fee'), [[0, 30], [30, 50]], 'late fee history: previous -> new');
+    assert.deepEqual(hist('discount'), [[0, 20], [20, 70]], 'discount history: previous -> new');
+    ok(await adjust({ reason: 'cleared', lateFee: 0 }), 'late fee back to 0');
+    c = await getCharge(cid);
+    assert.equal(c.lateFee, 0); assert.equal(c.dueAmount, 430);
+
+    // refund with no method: stored with the method of the receipt, so reports net it against the right method
+    ok(await api('PATCH', P(`/payments/${cid}/collect`), { token: T('acct'), body: { amount: 100, paymentMethod: 'upi', requestId: 'setsem-collect-01' } }), 'collect upi');
+    ok(await api('POST', P(`/payments/${cid}/refund`), { token: T('owner'), body: { reason: 'no method sent', amount: 40, requestId: 'setsem-refund-0001' } }), 'refund without method');
+    const Txn = require(L.SRC + '/models/paymentTransaction.model');
+    const refund = await Txn.findOne({ type: 'refund', refundRequestId: 'setsem-refund-0001' }).lean();
+    assert.equal(refund.method, 'upi', 'refund method follows the upi receipt, not a blind cash');
   });
 
   test('20 GST on receipts when enabled (CGST/SGST), absent when disabled', async () => {
@@ -181,6 +213,14 @@ module.exports = (H) => {
     ok(en, 'enable GST with GSTIN');
     const badG = await api('PUT', P('/libraries/profile'), { token: T('owner'), body: { gstNumber: 'NOTAGSTIN' } });
     expectStatus(badG, 400, 'invalid GSTIN');
+    const noGstin = await api('PUT', P('/libraries/profile'), { token: T('owner'), body: { gstNumber: '' } });
+    expectStatus(noGstin, 400, 'GSTIN cannot be removed while GST on receipts is on');
+    const pinOk = await api('PUT', P('/libraries/profile'), { token: T('owner'), body: { pincode: '302001' } });
+    ok(pinOk, 'set pincode');
+    const pinClear = await api('PUT', P('/libraries/profile'), { token: T('owner'), body: { pincode: '' } });
+    ok(pinClear, 'clear pincode');
+    assert.equal(pinClear.body.data.pincode, '', 'pincode cleared');
+    expectStatus(await api('PUT', P('/libraries/profile'), { token: T('owner'), body: { pincode: '123' } }), 400, 'short pincode');
     const after = await api('GET', P(`/payments/${ctx.ids.charge1}/receipt`), { token: T('acct') });
     ok(after, 'receipt with GST');
     assert.match(after.text, /cgst/i, 'CGST present: ' + after.text.slice(0, 700));

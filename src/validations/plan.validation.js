@@ -42,7 +42,8 @@ const createPlan = z.object({
         shiftStart: hhmm.optional(),
         shiftEnd: hhmm.optional(),
         allowRenewal: z.boolean().optional().default(true),
-        autoRenewReminderDays: planFields.autoRenewReminderDays.optional().default(3)
+        autoRenewReminderDays: planFields.autoRenewReminderDays.optional().default(3),
+        status: z.boolean().optional()
     }).refine(customNeedsDays, customMsg).refine(discountOk, discountMsg).refine(shiftOk, shiftMsg)
 });
 

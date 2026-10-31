@@ -30,8 +30,8 @@ router.put('/update-admin/:id', requireStaff, blockImpersonation, upload.any(), 
 router.put('/update-status/:id', requireStaff, blockImpersonation, validate(adminValidation.updateStatus), adminController.updateAdminStatus);
 router.delete('/delete-admin/:id', requireStaff, blockImpersonation, validate(adminValidation.idParam), adminController.deleteAdmin);
 
-// Owner resets a staff member's password
-router.post('/reset-password/:id', requireOwner, blockImpersonation, validate(adminValidation.resetStaffPassword), adminController.resetStaffPassword);
+// Owner, or staff whose role has "Reset Staff Password", sets a new password for a staff member
+router.post('/reset-password/:id', requireStaff, blockImpersonation, requirePermission('staff.reset_password'), validate(adminValidation.resetStaffPassword), adminController.resetStaffPassword);
 
 // Generic REST by id. MUST stay last: '/:id' would otherwise swallow /get-admins, /dashboard, /get-libraries, /get-admin ...
 router.get('/:id', requireStaff, validate(adminValidation.idParam), adminController.getAdminById);

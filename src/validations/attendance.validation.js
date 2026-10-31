@@ -81,6 +81,7 @@ const rangeFields = z.object({
     month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'month must be YYYY-MM').optional(),
     from: isoDate.optional(),
     to: isoDate.optional(),
+    sort: z.enum(['name', 'low', 'high']).optional(),
     page: z.coerce.number().int().min(1).optional(),
     limit: z.coerce.number().int().min(1).max(500).optional()
 }).passthrough();

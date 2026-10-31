@@ -49,9 +49,9 @@ const getNotifications = async (userId, userType, query = {}) => {
 
 // Owner/staff broadcast to their students (in-app + push, optional email/sms/whatsapp via library prefs)
 const AUDIENCES = ['all', 'active', 'expiring', 'expired', 'pending'];
-const resolveStudentIds = async (libraryId, audience) => {
+const resolveStudentIds = async (libraryId, audience, scope = {}) => {
     const Student = require('../models/student.model');
-    const filter = { libraryId, isDeleted: false };
+    const filter = { libraryId, isDeleted: false, ...scope };
     if (audience === 'active') Object.assign(filter, { status: 'active', planStatus: 'active' });
     else if (audience === 'expired') filter.planStatus = 'expired';
     else if (audience === 'pending') filter.planStatus = 'pending';
@@ -63,9 +63,9 @@ const resolveStudentIds = async (libraryId, audience) => {
     return rows.map((r) => r._id);
 };
 
-const broadcastToStudents = async (libraryId, { audience = 'all', title, message, channels }) => {
+const broadcastToStudents = async (libraryId, { audience = 'all', title, message, channels }, scope = {}) => {
     if (!AUDIENCES.includes(audience)) throw new ApiError(400, 'Unknown audience');
-    const ids = await resolveStudentIds(libraryId, audience);
+    const ids = await resolveStudentIds(libraryId, audience, scope);
     if (!ids.length) throw new ApiError(400, 'No students match this audience');
     const res = await notifyEvent('announcement', libraryId, {
         studentIds: ids, title, message, channels: channels && channels.length ? channels : ['inapp', 'push'],

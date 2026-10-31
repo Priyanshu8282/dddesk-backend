@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const crypto = require('crypto');
 const Review = require('../models/review.model');
 const ApiError = require('../utils/ApiError');
+const escapeRegex = require('../utils/escapeRegex');
 
 const SPAM_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const EDIT_COOLDOWN_MS = 60 * 1000;
@@ -80,6 +81,10 @@ exports.listReviews = async (libraryId, query = {}) => {
     if (query.type) filter.type = query.type;
     if (query.rating) filter.rating = Number(query.rating);
     if (query.isFeatured !== undefined) filter.isFeatured = query.isFeatured === true || query.isFeatured === 'true';
+    if (query.search && String(query.search).trim()) {
+        const rx = new RegExp(escapeRegex(String(query.search).trim()), 'i');
+        filter.$or = [{ review: rx }, { studentName: rx, isAnonymous: false }]; // an anonymous review is not found by name
+    }
 
     const page = Math.max(1, parseInt(query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));

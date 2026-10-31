@@ -90,6 +90,10 @@ const markManual = catchAsync(async (req, res) => {
   const { studentId, time } = req.body;
   await guardStudent(req, studentId);
   const type = req.body.type || (req.body.action === 'check-out' ? 'out' : 'in');
+  // The route accepts either key, so a staff member must still hold the one for this direction
+  if (req.userType === 'staff' && !(req.permissions || []).includes(type === 'in' ? 'attendance.checkin' : 'attendance.checkout')) {
+    throw new ApiError(403, 'You do not have permission to perform this action');
+  }
   const result = await attendanceService.manualMark({
     libraryId: req.libraryId, library: req.library, studentId, type, time, markedBy: req.user._id
   });
