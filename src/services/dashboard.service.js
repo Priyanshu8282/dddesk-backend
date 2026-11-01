@@ -96,7 +96,7 @@ exports.getAdminDashboardData = async (libraryId, req = null) => {
       expired: cnt({ $eq: ['$planStatus', 'expired'] }),
     } }]),
     Attendance.distinct('studentId', { libraryId: libId, ...scope, date: { $gte: todayStart, $lte: todayEnd }, status: 'present' }),
-    Attendance.countDocuments({ libraryId: libId, ...scope, open: true }),
+    Attendance.countInside(libId, scope),
     Seat.aggregate([
       { $match: { libraryId: libId, ...scope, isDeleted: false } },
       { $group: { _id: '$status', count: { $sum: 1 } } },
@@ -120,6 +120,7 @@ exports.getAdminDashboardData = async (libraryId, req = null) => {
   const seats = { total: 0, available: 0, occupied: 0, reserved: 0, blocked: 0, maintenance: 0 };
   seatStats.forEach((s) => { seats[s._id] = s.count; seats.total += s.count; });
   const occupancyRate = seats.total ? Math.round((seats.occupied / seats.total) * 1000) / 10 : 0;
+  seats.partlyFree = seats.occupied ? (await require('./seat.service').getShiftCounts(libId, scope)).partlyFree : 0;
 
   // Financial block (hidden for staff without fees.view)
   let fees = null, today = { attendance: attendedToday.length, insideNow, collection: null };

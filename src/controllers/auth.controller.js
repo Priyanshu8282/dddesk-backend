@@ -12,6 +12,8 @@ const securityLog = require('../utils/securityLog');
 const maintenance = require('../services/maintenance.service');
 const sessionService = require('../services/session.service');
 const humanCheck = require('../services/humanCheck.service');
+const PlatformPlan = require('../models/platformPlan.model');
+const { getSubscriptionState } = require('../services/subscriptionState.service');
 const loginIdentifier = (req) => (req.body && (req.body.identifier || req.body.email || req.body.mobile)) || '';
 
 // During maintenance only super admins may sign in ('all' scope), or everyone except the chosen libraries ('libraries' scope).
@@ -28,6 +30,7 @@ const maintenanceBlock = async (req, res, userData = {}) => {
 
 // Why a sign-in failed, in words an investigator can filter on
 const reasonOf = (err) => {
+  if (err.errorCode === 'LIBRARY_CHOICE_REQUIRED') return 'library_choice';
   if (err.libraryStatus) return 'library_blocked';
   if (err.status === 429) return /sign-in attempts/i.test(err.message) ? 'account_locked' : 'otp_locked';
   if (err.status === 403) return 'account_disabled';
@@ -187,6 +190,13 @@ exports.removeFcmToken = catchAsync(async (req, res) => {
 exports.getMe = catchAsync(async (req, res) => {
   const user = req.user;
   const lib = req.library;
+  // Owners and staff both need this (staff cannot read the billing routes) for the renew / contact-your-owner banner
+  let subscription = null;
+  if (lib && req.userType !== 'student') {
+    const plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId).select('graceDays').lean() : null;
+    const s = getSubscriptionState(lib, plan);
+    subscription = { state: s.state, expiresAt: s.expiresAt, graceEndsAt: s.graceEndsAt, graceDaysLeft: s.graceDaysLeft };
+  }
   const profileData = {
     id: user._id,
     name: user.name,
@@ -194,7 +204,7 @@ exports.getMe = catchAsync(async (req, res) => {
     mobile: user.mobile,
     role: user.roleId?.name,
     libraryId: req.libraryId || null,
-    library: lib ? { id: lib._id, name: lib.name, status: lib.status, statusReason: lib.statusReason || null, logo: lib.logo || null } : null,
+    library: lib ? { id: lib._id, name: lib.name, status: lib.status, statusReason: lib.statusReason || null, logo: lib.logo || null, ...(subscription ? { subscription } : {}) } : null,
     branchIds: user.branchIds || [],
     profileImage: user.profileImage,
     userType: req.userType,

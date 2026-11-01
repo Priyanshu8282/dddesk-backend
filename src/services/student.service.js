@@ -378,7 +378,8 @@ const registerStudent = async (libraryId, body, req) => {
         if (!isValidId(body.seatId)) throw new ApiError(404, 'Seat not found');
         seat = await Seat.findOne({ _id: body.seatId, libraryId });
         if (!seat) throw new ApiError(404, 'Seat not found');
-        if (seat.status !== 'available') throw new ApiError(400, `Seat is ${seat.status}`);
+        // an occupied seat can still take this student on a free shift; assignSeat below decides, and names the shift if not
+        if (seat.status !== 'available' && seat.status !== 'occupied') throw new ApiError(400, `Seat is ${seat.status}`);
         if (plan && !seatService.isSeatTypeEligible(plan, seat)) throw new ApiError(400, `Plan "${plan.name}" is not eligible for ${seat.type} seats`);
         if (data.branchId && seat.branchId && String(data.branchId) !== String(seat.branchId)) throw new ApiError(400, 'Seat belongs to a different branch than the student');
         if (!data.branchId && seat.branchId) data.branchId = seat.branchId;
@@ -422,7 +423,7 @@ const registerStudent = async (libraryId, body, req) => {
     let seatAssigned = null;
     if (seat) {
         try {
-            seatAssigned = await seatService.assignSeat(seat._id, student._id, libraryId, seatService.actorOf(req));
+            seatAssigned = await seatService.assignSeat(seat._id, student._id, libraryId, seatService.actorOf(req), { plan });
         } catch (e) {
             await failRegistration('Seat', e);
         }
@@ -469,6 +470,7 @@ const assignPlan = async (studentId, libraryId, { planId, joiningDate, dueDate, 
         if (seat && !seatService.isSeatTypeEligible(plan, seat)) {
             throw new ApiError(400, `Plan "${plan.name}" is not eligible for the student's ${seat.type} seat`);
         }
+        if (seat) await seatService.assertPlanFitsSeat(seat, student, plan);
     }
 
     const update = { planId: plan._id, planStatus: 'pending', paymentStatus: 'pending', paymentMethod: 'unpaid', updatedBy: req?.user?._id };
@@ -634,6 +636,7 @@ const changePlan = async (studentId, libraryId, { planId, startDate, reason, pai
         if (seat && !seatService.isSeatTypeEligible(plan, seat)) {
             throw new ApiError(400, `Plan "${plan.name}" is not eligible for the student's ${seat.type} seat`);
         }
+        if (seat) await seatService.assertPlanFitsSeat(seat, student, plan);
     }
 
     const ledger = getLedger();
@@ -759,6 +762,11 @@ const renewMembership = async (studentId, libraryId, { planId, startDate, keepSe
     if (paid > chargeAmount + 0.009) throw new ApiError(400, `Amount collected ₹${paid} is more than the renewal fee ₹${chargeAmount}`);
     // Credit policy first: reject before the seat or membership is touched
     await assertCreditAllowed({ libraryId, studentId: student._id, chargeAmount, paidNow: paid, dueDate });
+    // Renewing onto another plan must not overlap whoever shares the kept seat
+    if (keepSeat && student.seatId && String(plan._id) !== String(student.planId)) {
+        const seat = await Seat.findOne({ _id: student.seatId, libraryId });
+        if (seat) await seatService.assertPlanFitsSeat(seat, student, plan);
+    }
 
     const now = new Date();
     let start = startDate ? new Date(startDate) : now;
@@ -773,7 +781,7 @@ const renewMembership = async (studentId, libraryId, { planId, startDate, keepSe
         const last = await MembershipHistory.findOne({ studentId: student._id, libraryId, seatId: { $ne: null } }).sort({ endDate: -1 });
         if (last?.seatId) {
             try {
-                await seatService.assignSeat(last.seatId, student._id, libraryId, seatService.actorOf(req));
+                await seatService.assignSeat(last.seatId, student._id, libraryId, seatService.actorOf(req), { plan });
                 seatNote = 'previous seat re-assigned';
             } catch (e) {
                 seatNote = `previous seat not available: ${e.message}`;
@@ -1041,7 +1049,7 @@ const queryStudents = async (libraryId, q = {}, scope = {}) => {
     const [students, totalResults] = await Promise.all([
         Student.find(filter)
             .select('-notes')
-            .populate('planId', 'name price finalPrice durationType durationDays')
+            .populate('planId', 'name price finalPrice durationType durationDays shiftName shiftStart shiftEnd')
             .populate('branchId', 'name')
             .sort({ ...(SORTS[q.sort] || SORTS.newest), _id: -1 })
             .skip((page - 1) * limit)

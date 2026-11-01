@@ -1,7 +1,6 @@
 const Admin = require('./admin.model');
 const Attendance = require('./attendance.model');
 const AttendanceQR = require('./attendanceQR.model');
-const DailyCode = require('./dailyCode.model');
 const AuditLog = require('./auditLog.model');
 const Banner = require('./banner.model');
 const Branch = require('./branch.model');
@@ -33,7 +32,6 @@ module.exports = {
     Admin,
     Attendance,
     AttendanceQR,
-    DailyCode,
     AuditLog,
     Banner,
     Branch,

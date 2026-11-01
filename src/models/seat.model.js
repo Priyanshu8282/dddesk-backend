@@ -51,6 +51,17 @@ const seatSchema = new mongoose.Schema({
         type: Date,
         default: null
     },
+    // Seat sharing by shift: `studentId` stays the first occupant (so a seat with no sharing looks as it always did);
+    // students of non-overlapping shifts who share the seat are listed here. Shifts are read from each student's plan.
+    coOccupants: {
+        type: [new mongoose.Schema({
+            studentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', required: true },
+            assignedAt: { type: Date, default: Date.now }
+        }, { _id: false })],
+        default: []
+    },
+    // Bumped on every occupancy write; sharing writes match on it so two overlapping students cannot both get in
+    occupancyRev: { type: Number },
     // Temporary reservation (auto-expires via cron)
     reservedFor: { type: mongoose.Schema.Types.ObjectId, ref: 'Student', default: null },
     reservedUntil: { type: Date, default: null },
@@ -77,6 +88,7 @@ seatSchema.index(
     { unique: true, partialFilterExpression: { isDeleted: false }, name: 'uniq_library_seat_active' }
 );
 seatSchema.index({ libraryId: 1, studentId: 1 });
+seatSchema.index({ libraryId: 1, 'coOccupants.studentId': 1 });
 
 // Soft delete filter
 seatSchema.pre(['find', 'findOne', 'countDocuments'], function () {

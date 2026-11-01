@@ -7,6 +7,7 @@ const Attendance = require('../models/attendance.model');
 const SeatHistory = require('../models/seatHistory.model');
 const ApiError = require('../utils/ApiError');
 const pick = require('../utils/pick');
+const { FULL_DAY, shiftOf, overlaps, availabilityOf } = require('../utils/seatShift');
 
 const oid = (v) => new mongoose.Types.ObjectId(String(v));
 const isValidId = (v) => mongoose.Types.ObjectId.isValid(String(v));
@@ -44,6 +45,109 @@ const notifySeat = (libraryId, studentId, action, seatNumber) => {
             data: { type: 'seat_update', action }
         })).catch(() => {});
     } catch (_) { /* ignore */ }
+};
+
+// ---------------------------------------------------------------------------
+// Shift sharing: `studentId` is the first occupant, `coOccupants` the rest
+// ---------------------------------------------------------------------------
+const idOf = (v) => String(v?._id ?? v);
+/** Query fragment: seats this student sits on, as first occupant or sharing. */
+const heldBy = (studentId) => ({ $or: [{ studentId }, { 'coOccupants.studentId': studentId }] });
+/** One entry per occupant, first occupant first. Works on populated and raw seats. */
+const entriesOf = (seat) => [
+    ...(seat.studentId ? [{ studentId: seat.studentId, assignedAt: seat.assignedAt, primary: true }] : []),
+    ...(seat.coOccupants || []).map((c) => ({ studentId: c.studentId, assignedAt: c.assignedAt, primary: false }))
+];
+const holds = (seat, studentId) => entriesOf(seat).some((e) => idOf(e.studentId) === String(studentId));
+
+/** Plans by id. Aggregate on purpose: a deleted plan keeps its shift for students still on it. */
+const plansById = async (ids) => {
+    const list = [...new Set(ids.filter(Boolean).map(String))].map(oid);
+    if (!list.length) return new Map();
+    const rows = await Plan.aggregate([{ $match: { _id: { $in: list } } }, { $project: { name: 1, shiftName: 1, shiftStart: 1, shiftEnd: 1 } }]);
+    return new Map(rows.map((p) => [String(p._id), p]));
+};
+
+/** studentId -> { name, shift } for every occupant of these seats. A student who cannot be read counts as full day. */
+const occupantInfo = async (seats) => {
+    const ids = [...new Set(seats.flatMap((s) => entriesOf(s).map((e) => idOf(e.studentId))))];
+    if (!ids.length) return new Map();
+    const students = await Student.find({ _id: { $in: ids } }).select('name planId').lean();
+    const plans = await plansById(students.map((s) => s.planId));
+    return new Map(students.map((s) => [String(s._id), { name: s.name, shift: s.planId ? shiftOf(plans.get(String(s.planId))) : FULL_DAY }]));
+};
+const shiftIn = (info, entry) => info.get(idOf(entry.studentId))?.shift ?? FULL_DAY;
+
+const hoursOf = async (libraryId) => (await Library.findById(libraryId).select('workingHours').lean())?.workingHours;
+
+/** Plain seats with `occupants`, `shiftState` and `freeWindows` added; `studentId` is left as it was. */
+const decorateSeats = async (seats, libraryId) => {
+    if (!seats.length) return [];
+    const [info, hours] = await Promise.all([occupantInfo(seats), hoursOf(libraryId)]);
+    return seats.map((doc) => {
+        const seat = doc.toObject ? doc.toObject() : doc;
+        const occupants = entriesOf(seat).map((e) => ({ student: e.studentId, assignedAt: e.assignedAt, primary: e.primary, shift: shiftIn(info, e) }));
+        return { ...seat, occupants, ...availabilityOf(seat.status, occupants.map((o) => o.shift), hours) };
+    });
+};
+
+/** Refuse a student whose shift overlaps a student already on the seat, naming both shifts. */
+const assertShiftFree = (seat, me, others) => {
+    const clash = others.find((o) => overlaps(me.shift, o.shift));
+    if (!clash) return;
+    const who = clash.name || 'another student';
+    if (clash.shift.fullDay) throw new ApiError(400, `Seat ${seat.seatNumber} is already occupied by ${who} for the full day`);
+    if (me.shift.fullDay) throw new ApiError(400, `Seat ${seat.seatNumber} is already occupied by ${who} (${clash.shift.label}). ${me.name} has a full-day plan, which cannot share it`);
+    throw new ApiError(400, `Seat ${seat.seatNumber} is already occupied by ${who} (${clash.shift.label}), which overlaps ${me.name}'s shift (${me.shift.label})`);
+};
+
+/** Everyone on the seat except `exceptId`, with their shifts. */
+const othersOn = async (seat, exceptId) => {
+    const info = await occupantInfo([seat]);
+    return entriesOf(seat).filter((e) => idOf(e.studentId) !== String(exceptId))
+        .map((e) => ({ name: info.get(idOf(e.studentId))?.name, shift: shiftIn(info, e) }));
+};
+
+/** Before a seated student changes plan: would the new plan's shift overlap someone they share with? */
+const assertPlanFitsSeat = async (seat, student, plan) => {
+    assertShiftFree(seat, { name: student.name, shift: shiftOf(plan) }, await othersOn(seat, student._id));
+};
+
+/** Before a plan's times change: would any shared seat with a student on this plan end up with overlapping shifts? */
+const assertShiftChangeSafe = async (libraryId, plan) => {
+    const shift = shiftOf(plan);
+    const seats = await Seat.find({ libraryId, status: 'occupied', 'coOccupants.0': { $exists: true } });
+    if (!seats.length) return;
+    const info = await occupantInfo(seats);
+    const ids = seats.flatMap((s) => entriesOf(s).map((e) => idOf(e.studentId)));
+    const onPlan = new Set((await Student.find({ libraryId, planId: plan._id, _id: { $in: ids } }).select('_id').lean()).map((s) => String(s._id)));
+    for (const seat of seats) {
+        const after = entriesOf(seat).map((e) => {
+            const mine = onPlan.has(idOf(e.studentId));
+            return { name: info.get(idOf(e.studentId))?.name, mine, shift: mine ? shift : shiftIn(info, e) };
+        });
+        for (const me of after.filter((o) => o.mine)) assertShiftFree(seat, me, after.filter((o) => o !== me));
+    }
+};
+
+/** Atomically take a student off a seat. The seat stays occupied while anyone else is on it. Returns the seat, or null. */
+const vacateSeat = async (seatId, libraryId, studentId) => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const cur = await Seat.findOne({ _id: seatId, libraryId, status: 'occupied' });
+        if (!cur || !holds(cur, studentId)) return null;
+        const co = cur.coOccupants || [];
+        let update;
+        if (idOf(cur.studentId) !== String(studentId)) update = { $pull: { coOccupants: { studentId } } };
+        else if (co.length) update = { $set: { studentId: co[0].studentId, assignedAt: co[0].assignedAt }, $pull: { coOccupants: { studentId: co[0].studentId } } };
+        else update = { $set: { status: 'available', studentId: null, assignedAt: null } };
+        const seat = await Seat.findOneAndUpdate(
+            { _id: cur._id, libraryId, status: 'occupied', studentId: cur.studentId, occupancyRev: cur.occupancyRev ?? null },
+            { ...update, $inc: { occupancyRev: 1 } },
+            { new: true }
+        );
+        if (seat) return seat;
+    }
+    return null;
 };
 
 const actorOf = (req) => (req && req.user ? { id: req.user._id, type: req.userType } : null);
@@ -160,6 +264,7 @@ const getSeats = async (filter = {}, options = {}) => {
     const [seats, total] = await Promise.all([
         Seat.find(filter)
             .populate('studentId', 'name mobile planId expiryDate planStatus registrationNumber')
+            .populate('coOccupants.studentId', 'name mobile planId expiryDate planStatus registrationNumber')
             .populate('reservedFor', 'name mobile')
             .sort({ floor: 1, room: 1, seatNumber: 1 })
             .collation({ locale: 'en', numericOrdering: true })
@@ -167,16 +272,28 @@ const getSeats = async (filter = {}, options = {}) => {
         Seat.countDocuments(filter)
     ]);
 
-    return { seats, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return { seats: await decorateSeats(seats, filter.libraryId), total, page, limit, totalPages: Math.ceil(total / limit) };
 };
 
 const getSeatById = async (id, libraryId) => {
     if (!isValidId(id)) throw new ApiError(404, 'Seat not found');
     const seat = await Seat.findOne({ _id: id, libraryId })
         .populate('studentId', 'name mobile planId expiryDate planStatus')
+        .populate('coOccupants.studentId', 'name mobile planId expiryDate planStatus')
         .populate('reservedFor', 'name mobile');
     if (!seat) throw new ApiError(404, 'Seat not found');
-    return seat;
+    return (await decorateSeats([seat], libraryId))[0];
+};
+
+/** Taken seats by how much of the day is left: `partlyFree` still has a free shift, `shared` has several students. */
+const getShiftCounts = async (libraryId, scope = {}) => {
+    const seats = await Seat.find({ libraryId, ...scope, status: 'occupied' }).select('status studentId assignedAt coOccupants').lean();
+    const list = await decorateSeats(seats, libraryId);
+    return {
+        partlyFree: list.filter((s) => s.shiftState === 'partly_free').length,
+        shared: list.filter((s) => s.occupants.length > 1).length,
+        occupants: list.reduce((n, s) => n + s.occupants.length, 0)
+    };
 };
 
 // `scope` is a branch filter fragment from utils/branchScope.branchFilter(req) ({} = all branches)
@@ -191,22 +308,23 @@ const getSeatStats = async (libraryId, scope = {}) => {
     // Share of bookable seats (excluding blocked/maintenance) that are taken
     const usable = result.total - result.blocked - result.maintenance;
     result.utilizationPercentage = usable > 0 ? Math.round(((result.occupied + result.reserved) / usable) * 10000) / 100 : 0;
-    return result;
+    return { ...result, ...(await getShiftCounts(libraryId, scope)) };
 };
 
 /** Public helper for the library website: seat availability counts only. */
 const getPublicAvailability = async (libraryId, scope = {}) => {
     const s = await getSeatStats(libraryId, scope);
-    return { total: s.total, available: s.available, occupied: s.occupied };
+    return { total: s.total, available: s.available, occupied: s.occupied, partlyFree: s.partlyFree };
 };
 
 /** Seats grouped by floor and room for a visual seat map. */
 const getLayout = async (libraryId, scope = {}) => {
-    const seats = await Seat.find({ libraryId, ...scope })
+    const seats = await decorateSeats(await Seat.find({ libraryId, ...scope })
         .populate('studentId', 'name mobile expiryDate planStatus')
+        .populate('coOccupants.studentId', 'name mobile expiryDate planStatus')
         .populate('reservedFor', 'name')
         .sort({ seatNumber: 1 })
-        .collation({ locale: 'en', numericOrdering: true });
+        .collation({ locale: 'en', numericOrdering: true }), libraryId);
 
     const floors = new Map();
     for (const seat of seats) {
@@ -218,8 +336,8 @@ const getLayout = async (libraryId, scope = {}) => {
         rooms.get(roomName).push(seat);
     }
 
-    const summarize = (list) => list.reduce((a, s) => { a.total++; a[s.status] = (a[s.status] || 0) + 1; return a; },
-        { total: 0, available: 0, occupied: 0, reserved: 0, blocked: 0, maintenance: 0 });
+    const summarize = (list) => list.reduce((a, s) => { a.total++; a[s.status] = (a[s.status] || 0) + 1; if (s.shiftState === 'partly_free') a.partlyFree++; return a; },
+        { total: 0, available: 0, occupied: 0, reserved: 0, blocked: 0, maintenance: 0, partlyFree: 0 });
 
     return [...floors.entries()].map(([floor, rooms]) => {
         const roomList = [...rooms.entries()].map(([room, list]) => ({ room, summary: summarize(list), seats: list }));
@@ -250,8 +368,11 @@ const getRecoveryList = async (libraryId, days = 7, scope = {}) => {
     const now = new Date();
     const since = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
     const seats = await Seat.find({ libraryId, ...scope, status: 'occupied', studentId: { $ne: null } })
-        .populate('studentId', 'name mobile planStatus expiryDate status joiningDate registrationNumber');
-    const studentIds = seats.map(s => s.studentId?._id).filter(Boolean);
+        .populate('studentId', 'name mobile planStatus expiryDate status joiningDate registrationNumber')
+        .populate('coOccupants.studentId', 'name mobile planStatus expiryDate status joiningDate registrationNumber');
+    // One row per student, so each sharer of a seat is judged on their own
+    const held = seats.flatMap((seat) => entriesOf(seat).filter((e) => e.studentId?._id).map((e) => ({ seat, st: e.studentId, assignedAt: e.assignedAt })));
+    const studentIds = held.map((h) => h.st._id);
     if (!studentIds.length) return { days, count: 0, results: [] };
 
     const recent = await Attendance.aggregate([
@@ -267,9 +388,7 @@ const getRecoveryList = async (libraryId, days = 7, scope = {}) => {
     const lastMap = new Map(lastEver.map(r => [String(r._id), r.last]));
 
     const results = [];
-    for (const seat of seats) {
-        const st = seat.studentId;
-        if (!st) continue;
+    for (const { seat, st, assignedAt } of held) {
         const reasons = [];
         const expired = st.planStatus === 'expired' || (st.expiryDate && st.expiryDate < now);
         if (expired) reasons.push('plan_expired');
@@ -278,7 +397,7 @@ const getRecoveryList = async (libraryId, days = 7, scope = {}) => {
         if (!recentSet.has(String(st._id)) && !joinedRecently) reasons.push(`no_attendance_${days}_days`);
         if (reasons.length) {
             results.push({
-                seat: { _id: seat._id, seatNumber: seat.seatNumber, floor: seat.floor, room: seat.room, assignedAt: seat.assignedAt },
+                seat: { _id: seat._id, seatNumber: seat.seatNumber, floor: seat.floor, room: seat.room, assignedAt },
                 student: st,
                 lastAttendance: lastMap.get(String(st._id)) || null,
                 reasons
@@ -304,7 +423,7 @@ const updateSeat = async (id, libraryId, data) => {
         if (!seat) throw new ApiError(404, 'Seat not found');
         // Keep denormalised seatNumber on the student in sync
         if (update.seatNumber && seat.studentId) {
-            await Student.updateOne({ _id: seat.studentId, libraryId }, { $set: { seatNumber: seat.seatNumber } });
+            await Student.updateMany({ _id: { $in: entriesOf(seat).map((e) => e.studentId) }, libraryId }, { $set: { seatNumber: seat.seatNumber } });
         }
         return seat;
     } catch (e) {
@@ -383,44 +502,68 @@ const claimSeat = async (seatId, libraryId, studentId) => {
                 { status: 'reserved', reservedUntil: { $lte: now } }
             ]
         },
-        { $set: { status: 'occupied', studentId, assignedAt: now, ...CLEAR_RESERVATION } },
+        { $set: { status: 'occupied', studentId, assignedAt: now, ...CLEAR_RESERVATION }, $inc: { occupancyRev: 1 } },
         { new: true }
     );
 };
 
-const revertClaim = async (seat, libraryId) => {
+/**
+ * Put a student on a seat: claim it when free, or join the students already there when no shift overlaps
+ * (`me` = { name, shift }). Throws when a shift overlaps; returns null when the seat cannot be taken for another reason.
+ * The join matches on occupancyRev, so of two overlapping students racing for a seat only one gets in.
+ */
+const takeSeat = async (seatId, libraryId, studentId, me) => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+        const claimed = await claimSeat(seatId, libraryId, studentId);
+        if (claimed) return claimed;
+        const cur = await Seat.findOne({ _id: seatId, libraryId });
+        if (cur?.status === 'available') continue;
+        if (cur?.status !== 'occupied' || !cur.studentId) return null;
+        if (holds(cur, studentId)) return cur;
+        assertShiftFree(cur, me, await othersOn(cur, studentId));
+        const joined = await Seat.findOneAndUpdate(
+            { _id: cur._id, libraryId, isDeleted: false, status: 'occupied', studentId: cur.studentId, occupancyRev: cur.occupancyRev ?? null },
+            { $push: { coOccupants: { studentId, assignedAt: new Date() } }, $inc: { occupancyRev: 1 } },
+            { new: true }
+        );
+        if (joined) return joined;
+    }
+    return null;
+};
+
+const myShift = async (student, plan) => ({
+    name: student.name,
+    shift: shiftOf(plan || (student.planId ? (await plansById([student.planId])).get(String(student.planId)) : null))
+});
+
+const revertClaim = async (seat, libraryId, studentId) => {
     // Best-effort rollback of a claim made in this request
-    await Seat.updateOne(
-        { _id: seat._id, libraryId, studentId: seat.studentId, status: 'occupied' },
-        { $set: { status: 'available', studentId: null, assignedAt: null } }
-    );
+    await vacateSeat(seat._id, libraryId, studentId);
 };
 
 /** Release every seat held by the student except `exceptSeatId`. */
 const releaseOtherSeats = async (studentId, libraryId, exceptSeatId, actor, action = 'released', reason) => {
-    const query = { studentId, libraryId, status: 'occupied' };
+    const query = { ...heldBy(studentId), libraryId, status: 'occupied' };
     if (exceptSeatId) query._id = { $ne: exceptSeatId };
     const held = await Seat.find(query);
     for (const s of held) {
-        const freed = await Seat.findOneAndUpdate(
-            { _id: s._id, libraryId, studentId, status: 'occupied' },
-            { $set: { status: 'available', studentId: null, assignedAt: null } },
-            { new: true }
-        );
+        const freed = await vacateSeat(s._id, libraryId, studentId);
         if (freed) await logSeat(libraryId, s, action, { studentId, actor, reason });
     }
 };
 
-const assignSeat = async (seatId, studentId, libraryId, actor = null) => {
+// `plan`: the plan the student is about to get (admission assigns the seat first, with no plan on the student yet)
+const assignSeat = async (seatId, studentId, libraryId, actor = null, { plan = null } = {}) => {
     if (!isValidId(seatId)) throw new ApiError(404, 'Seat not found');
     const student = await loadStudentForSeat(studentId, libraryId);
 
     const seatDoc = await Seat.findOne({ _id: seatId, libraryId });
     if (!seatDoc) throw new ApiError(404, 'Seat not found');
-    if (seatDoc.status === 'occupied' && String(seatDoc.studentId) === String(student._id)) return seatDoc; // idempotent
+    if (seatDoc.status === 'occupied' && holds(seatDoc, student._id)) return seatDoc; // idempotent
     await assertPlanEligible(student, seatDoc, libraryId);
 
-    const seat = await claimSeat(seatId, libraryId, student._id);
+    const me = await myShift(student, plan);
+    const seat = await takeSeat(seatId, libraryId, student._id, me);
     if (!seat) {
         const fresh = await Seat.findOne({ _id: seatId, libraryId });
         if (fresh?.status === 'reserved') throw new ApiError(400, 'Seat is reserved for another student');
@@ -431,12 +574,12 @@ const assignSeat = async (seatId, studentId, libraryId, actor = null) => {
     try {
         await Student.updateOne({ _id: student._id, libraryId }, { $set: { seatNumber: seat.seatNumber, seatId: seat._id } });
     } catch (e) {
-        await revertClaim(seat, libraryId);
+        await revertClaim(seat, libraryId, student._id);
         throw e;
     }
 
     await releaseOtherSeats(student._id, libraryId, seat._id, actor, 'released', 'Reassigned to another seat');
-    await logSeat(libraryId, seat, 'assigned', { studentId: student._id, actor });
+    await logSeat(libraryId, seat, 'assigned', { studentId: student._id, actor, reason: me.shift.fullDay ? undefined : `Shift: ${me.shift.label}` });
     notifySeat(libraryId, student._id, 'assigned', seat.seatNumber);
     return seat;
 };
@@ -444,12 +587,26 @@ const assignSeat = async (seatId, studentId, libraryId, actor = null) => {
 /**
  * Release (or cancel a reservation on) a seat.
  * action: 'released' (manual) | 'auto_released' (cron)
+ * studentId: which student leaves; required when several share the seat, the others keep it.
  */
-const releaseSeat = async (seatId, libraryId, actor = null, { reason, action = 'released' } = {}) => {
+const releaseSeat = async (seatId, libraryId, actor = null, { reason, action = 'released', studentId = null } = {}) => {
     if (!isValidId(seatId)) throw new ApiError(404, 'Seat not found');
     const before = await Seat.findOne({ _id: seatId, libraryId });
     if (!before) throw new ApiError(404, 'Seat not found');
     if (before.status !== 'occupied' && before.status !== 'reserved') throw new ApiError(400, 'Seat is not occupied or reserved');
+
+    if (before.status === 'occupied' && before.studentId) {
+        const occupants = entriesOf(before);
+        if (!studentId && occupants.length > 1) throw new ApiError(400, `Seat ${before.seatNumber} is shared by ${occupants.length} students. Choose which student to release.`);
+        const leaving = studentId || before.studentId;
+        if (!holds(before, leaving)) throw new ApiError(400, 'That student is not on this seat');
+        const left = await vacateSeat(before._id, libraryId, leaving);
+        if (!left) throw new ApiError(409, 'Seat state changed, please retry');
+        await Student.updateOne({ _id: leaving, libraryId, seatId: before._id }, { $set: { seatNumber: null, seatId: null } });
+        await logSeat(libraryId, before, action, { studentId: leaving, actor, reason });
+        if (action === 'released') notifySeat(libraryId, leaving, 'released', before.seatNumber);
+        return left;
+    }
 
     const seat = await Seat.findOneAndUpdate(
         { _id: seatId, libraryId, status: before.status, studentId: before.studentId, isDeleted: false },
@@ -470,14 +627,10 @@ const releaseSeat = async (seatId, libraryId, actor = null, { reason, action = '
 
 /** Release whatever seat(s) a student holds. Returns number of seats freed. */
 const releaseSeatForStudent = async (studentId, libraryId, { actor = null, reason, action = 'released' } = {}) => {
-    const held = await Seat.find({ libraryId, studentId, status: 'occupied' });
+    const held = await Seat.find({ libraryId, ...heldBy(studentId), status: 'occupied' });
     let freed = 0;
     for (const s of held) {
-        const r = await Seat.findOneAndUpdate(
-            { _id: s._id, libraryId, studentId, status: 'occupied' },
-            { $set: { status: 'available', studentId: null, assignedAt: null } },
-            { new: true }
-        );
+        const r = await vacateSeat(s._id, libraryId, studentId);
         if (r) { freed++; await logSeat(libraryId, s, action, { studentId, actor, reason }); }
     }
     // Also clear dangling pointers on the student
@@ -491,7 +644,7 @@ const releaseSeatForStudent = async (studentId, libraryId, { actor = null, reaso
 const transferSeat = async (studentId, toSeatId, libraryId, actor = null, reason) => {
     if (!isValidId(toSeatId)) throw new ApiError(404, 'Target seat not found');
     const student = await loadStudentForSeat(studentId, libraryId);
-    const fromSeat = await Seat.findOne({ libraryId, studentId: student._id, status: 'occupied' });
+    const fromSeat = await Seat.findOne({ libraryId, ...heldBy(student._id), status: 'occupied' });
     if (!fromSeat) throw new ApiError(400, 'Student does not currently hold a seat');
     if (String(fromSeat._id) === String(toSeatId)) throw new ApiError(400, 'Student already occupies this seat');
 
@@ -499,19 +652,15 @@ const transferSeat = async (studentId, toSeatId, libraryId, actor = null, reason
     if (!target) throw new ApiError(404, 'Target seat not found');
     await assertPlanEligible(student, target, libraryId);
 
-    const claimed = await claimSeat(toSeatId, libraryId, student._id);
+    const claimed = await takeSeat(toSeatId, libraryId, student._id, await myShift(student));
     if (!claimed) throw new ApiError(400, `Target seat is not available (currently ${target.status})`);
 
     try {
         await Student.updateOne({ _id: student._id, libraryId }, { $set: { seatNumber: claimed.seatNumber, seatId: claimed._id } });
-        const freed = await Seat.findOneAndUpdate(
-            { _id: fromSeat._id, libraryId, studentId: student._id, status: 'occupied' },
-            { $set: { status: 'available', studentId: null, assignedAt: null } },
-            { new: true }
-        );
+        const freed = await vacateSeat(fromSeat._id, libraryId, student._id);
         if (!freed) throw new ApiError(409, 'Source seat changed during transfer');
     } catch (e) {
-        await revertClaim(claimed, libraryId);
+        await revertClaim(claimed, libraryId, student._id);
         await Student.updateOne({ _id: student._id, libraryId }, { $set: { seatNumber: fromSeat.seatNumber, seatId: fromSeat._id } });
         throw e;
     }
@@ -584,8 +733,8 @@ const expireReservations = async (libraryId = null) => {
 module.exports = {
     createSeat, bulkCreateSeats, getSeats, getSeatById, updateSeat, setSeatStatus,
     assignSeat, releaseSeat, releaseSeatForStudent, transferSeat, reserveSeat, deleteSeat,
-    getSeatStats, getPublicAvailability, getLayout, getSeatHistory, getRecoveryList,
-    expireReservations, isSeatTypeEligible, checkSeatLimit, actorOf
+    getSeatStats, getShiftCounts, getPublicAvailability, getLayout, getSeatHistory, getRecoveryList,
+    expireReservations, isSeatTypeEligible, checkSeatLimit, actorOf, assertPlanFitsSeat, assertShiftChangeSafe
 };
 
 // ---- Live dashboards (no-op without sockets, never throws) ----

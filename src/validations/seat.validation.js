@@ -61,6 +61,14 @@ const assignSeat = z.object({
     })
 });
 
+// The body is optional: only a shared seat needs to be told which student leaves
+const releaseSeat = z.object({
+    body: z.object({
+        studentId: objectId.optional(),
+        reason: z.string().max(300).optional()
+    }).optional()
+});
+
 const transferSeat = z.object({
     body: z.object({
         studentId: objectId,
@@ -110,6 +118,7 @@ module.exports = {
     updateSeat,
     bulkCreateSeats,
     assignSeat,
+    releaseSeat,
     transferSeat,
     reserveSeat,
     setSeatStatus,

@@ -59,12 +59,13 @@ const ownerIds = async (libraryId) => {
     return owners.map((o) => o._id);
 };
 
-const notifyOwners = async (event, libraryId, variables = {}, channels = ['inapp', 'push', 'email']) => {
+// accountNotice: these reach email and SMS even though the library's own SMS switch is off by default
+const notifyOwners = async (event, libraryId, variables = {}, channels = ['inapp', 'push', 'email', 'sms']) => {
     try {
         const { notifyEvent } = require('./notification.service');
         const ids = await ownerIds(libraryId);
         if (!ids.length) return;
-        await notifyEvent(event, libraryId, { adminIds: ids, variables, channels, data: { event } });
+        await notifyEvent(event, libraryId, { adminIds: ids, variables, channels, data: { event }, accountNotice: true });
     } catch (e) {
         console.error(`[subscription-cron] notify ${event} failed:`, e.message);
     }

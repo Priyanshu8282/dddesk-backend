@@ -140,6 +140,8 @@ exports.autoApprove = () => !!current().onboarding.autoApproveNewLibraries;
 exports.defaultTrialDays = () => Number(current().onboarding.defaultTrialDays);
 exports.defaultGraceDays = () => Number(current().onboarding.defaultGraceDays);
 exports.alertConfig = () => current().alerts;
+/** Where owners reach platform support (e-mail, else phone); '' when neither is set */
+exports.supportContact = () => current().general.supportEmail || current().general.supportPhone || '';
 
 /** Origin of the configured frontend URL, allowed by CORS in addition to the env list */
 exports.extraAllowedOrigins = () => {

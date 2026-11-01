@@ -18,6 +18,7 @@ const QR_WINDOW_SEC = 60;
 
 const DEFAULT_RULES = { graceMinutes: 15, lateAfterMinutes: 30, autoReleaseNoShow: false, noShowGraceMinutes: 60, enforceShift: false };
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const NOT_CAME = ['leave', 'absent'];
 
 const isValidId = (id) => mongoose.Types.ObjectId.isValid(id) && String(new mongoose.Types.ObjectId(id)) === String(id);
 const idOf = (v) => (v && v._id ? v._id : v);
@@ -91,13 +92,21 @@ const dayKey = (d) => new Date(new Date(d).getTime() + IST_OFFSET_MS).toISOStrin
 
 const diffMinutes = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a)) / MIN));
 
-// Late / early flags relative to library hours + rules
-const computeFlags = ({ checkIn, checkOut, rules, hours, checkLate = true }) => {
+// Minute of the IST day a check-in is measured from: the plan's shift start, else library opening.
+// A round-the-clock plan (start = end) has no start to be late for.
+const lateBaseMinute = (inMin, hours, shift) => {
+    if (!shift || shift.start === shift.end) return hours.open;
+    // After midnight on an overnight shift: the shift began the evening before
+    return shift.end < shift.start && inMin <= shift.end ? shift.start - 24 * 60 : shift.start;
+};
+
+// Late / early flags relative to the plan shift or library hours + rules
+const computeFlags = ({ checkIn, checkOut, rules, hours, shift = null, checkLate = true }) => {
     const out = { isLate: false, lateByMinutes: 0, isEarlyExit: false, earlyByMinutes: 0 };
     if (checkIn && checkLate) {
         const dayStart = startOfDayIST(checkIn);
         const inMin = (new Date(checkIn) - dayStart) / MIN;
-        const lateBy = Math.round(inMin - (hours.open + rules.lateAfterMinutes));
+        const lateBy = Math.round(inMin - (lateBaseMinute(inMin, hours, shift) + rules.lateAfterMinutes));
         if (lateBy > 0) { out.isLate = true; out.lateByMinutes = lateBy; }
     }
     if (checkIn && checkOut) {
@@ -235,6 +244,25 @@ const resolveBranchId = async (student) => {
 
 const duplicateKey = (e) => e && (e.code === 11000 || /E11000/.test(e.message || ''));
 
+const dropNotCameRows = (studentId, libraryId, date) =>
+    Attendance.deleteMany({ studentId, libraryId, date, status: { $in: NOT_CAME } });
+
+// Turns the day's leave / absent row into this check-in, so the day keeps one record. Null when there is none.
+const convertNotCameRow = async ({ studentId, libraryId, date, fields, markedBy }) => {
+    const row = await Attendance.findOne({ studentId, libraryId, date, status: { $in: NOT_CAME } })
+        .sort({ status: -1 }).select('status leaveReason').lean(); // a staff-entered leave wins over a cron absent
+    if (!row) return null;
+    const update = { $set: { ...fields, duration: 0 }, $unset: { leaveReason: 1 } };
+    if (markedBy) update.$set.markedBy = markedBy; else update.$unset.markedBy = 1;
+    if (row.status === 'leave') {
+        update.$push = { corrections: {
+            by: markedBy, at: new Date(), reason: 'Checked in on a day marked as leave',
+            before: { status: 'leave', leaveReason: row.leaveReason || null }, after: { status: 'present', checkIn: fields.checkIn }
+        } };
+    }
+    return Attendance.findOneAndUpdate({ _id: row._id, status: row.status }, update, { new: true });
+};
+
 const checkIn = async ({ student, library, source = 'manual', at = new Date(), markedBy }) => {
     const libraryId = idOf(student.libraryId);
     await autoCloseStaleSessions({ libraryId, studentId: student._id });
@@ -245,11 +273,11 @@ const checkIn = async ({ student, library, source = 'manual', at = new Date(), m
     const hours = getHours(library);
     const date = startOfDayIST(at);
     const firstToday = !(await Attendance.exists({ studentId: student._id, libraryId, date, status: 'present' }));
-    const flags = computeFlags({ checkIn: at, rules, hours, checkLate: firstToday });
+    const shift = await getShiftWindow(student);
+    const flags = computeFlags({ checkIn: at, rules, hours, shift, checkLate: firstToday });
 
     // Plan shift window: reject (enforceShift + not a staff-entered check-in) or just flag
     let outsideShift = false;
-    const shift = await getShiftWindow(student);
     if (shift && !withinShift(istMinuteOfDay(at), shift.start, shift.end, rules.graceMinutes)) {
         outsideShift = true;
         if (rules.enforceShift && source !== 'manual') {
@@ -257,11 +285,12 @@ const checkIn = async ({ student, library, source = 'manual', at = new Date(), m
         }
     }
     const branchId = await resolveBranchId(student);
+    const fields = { branchId, checkIn: at, status: 'present', source, open: true, outsideShift, ...flags };
     try {
-        return await Attendance.create({
-            studentId: student._id, libraryId, branchId, date, checkIn: at, status: 'present',
-            source, open: true, markedBy, outsideShift, ...flags
-        });
+        const session = await convertNotCameRow({ studentId: student._id, libraryId, date, fields, markedBy })
+            || await Attendance.create({ ...fields, studentId: student._id, libraryId, date, markedBy });
+        await dropNotCameRows(student._id, libraryId, date);
+        return session;
     } catch (e) {
         if (duplicateKey(e)) throw new ApiError(409, 'Already checked in. Please check out first.');
         throw e;
@@ -474,7 +503,9 @@ const correctSession = async ({ id, libraryId, library, body, userId }) => {
         att.open = att.checkOut ? undefined : true;
         // A later session of the same day is never late (same rule as checkIn)
         const earlier = await Attendance.exists({ _id: { $ne: att._id }, studentId: att.studentId, libraryId, date: att.date, status: 'present', checkIn: { $lt: att.checkIn } });
-        const flags = computeFlags({ checkIn: att.checkIn, checkOut: att.checkOut, rules: getRules(library), hours: getHours(library), checkLate: !earlier });
+        const student = await Student.findOne({ _id: att.studentId, libraryId }).select('planId libraryId').lean();
+        const shift = student ? await getShiftWindow(student) : null;
+        const flags = computeFlags({ checkIn: att.checkIn, checkOut: att.checkOut, rules: getRules(library), hours: getHours(library), shift, checkLate: !earlier });
         Object.assign(att, flags);
         att.leaveReason = undefined;
         // The times are now staff-entered: an old auto / manual close no longer describes this record
@@ -493,6 +524,7 @@ const correctSession = async ({ id, libraryId, library, body, userId }) => {
         if (duplicateKey(e)) throw new ApiError(409, 'Student already has another open session');
         throw e;
     }
+    if (att.status === 'present') await dropNotCameRows(att.studentId, libraryId, att.date);
     return att;
 };
 
@@ -605,8 +637,9 @@ const getToday = async (libraryId, query = {}, scope = {}) => {
 const getActive = async (libraryId, scope = {}) => {
     await autoCloseStaleSessions({ libraryId });
     const active = await Attendance.find({ libraryId, ...scope, status: 'present', checkOut: { $exists: false } })
-        .populate('studentId', STUDENT_FIELDS).sort({ checkIn: -1 }).lean();
-    const results = active.map((att) => ({
+        .populate('studentId', `${STUDENT_FIELDS} status`).sort({ checkIn: -1 }).lean();
+    // A student made inactive mid-session stays open until it closes, but no longer counts as inside
+    const results = active.filter((att) => att.studentId?.status === 'active').map((att) => ({
         _id: att._id, studentId: att.studentId?._id, name: att.studentId?.name || 'Unknown',
         mobile: att.studentId?.mobile || '', rollNumber: att.studentId?.rollNumber || '',
         profileImage: att.studentId?.profileImage || null, seatNumber: att.studentId?.seatNumber || null,
@@ -649,9 +682,12 @@ const queryAttendance = async (libraryId, query = {}, scope = {}) => {
 };
 
 // ─── Percentage / summary ────────────────────────────────────────────────────
-const countWorkingDays = (from, to, hours) => {
+// Today is unfinished: it only counts once the student came or is on leave (`todayDecided`), never as missed
+const countWorkingDays = (from, to, hours, todayDecided = false) => {
+    const today = startOfDayIST(new Date()).getTime();
     let n = 0;
     for (let t = startOfDayIST(from).getTime(); t <= to.getTime(); t += DAY_MS) {
+        if (t === today && !todayDecided) continue;
         if (!isHoliday(new Date(t), hours)) n += 1;
     }
     return n;
@@ -695,7 +731,8 @@ const studentSummary = async ({ student, library, query }) => {
         } else leave.add(k);
     }
     for (const k of present) leave.delete(k);
-    const workingDays = effFrom <= to ? countWorkingDays(effFrom, to, hours) : 0;
+    const todayKey = dayKey(new Date());
+    const workingDays = effFrom <= to ? countWorkingDays(effFrom, to, hours, present.has(todayKey) || leave.has(todayKey)) : 0;
     const effective = Math.max(workingDays - leave.size, 0);
     const presentDays = present.size;
     const percentage = effective > 0 ? Math.min(100, Math.round((presentDays / effective) * 1000) / 10) : 0;
@@ -729,14 +766,15 @@ const percentageReport = async ({ libraryId, library, query, scope = {} }) => {
             _id: '$_id.s',
             present: { $sum: { $cond: ['$came', 1, 0] } },
             leave: { $sum: { $cond: ['$came', 0, 1] } },
+            today: { $sum: { $cond: [{ $gte: ['$_id.d', startOfDayIST(new Date())] }, 1, 0] } },
             minutes: { $sum: '$minutes' }
         } }
     ]);
     const map = new Map(agg.map((a) => [String(a._id), a]));
     let results = students.map((s) => {
-        const a = map.get(String(s._id)) || { present: 0, leave: 0, minutes: 0 };
+        const a = map.get(String(s._id)) || { present: 0, leave: 0, today: 0, minutes: 0 };
         const effFrom = s.joiningDate && startOfDayIST(s.joiningDate) > from ? startOfDayIST(s.joiningDate) : from;
-        const workingDays = effFrom <= to ? countWorkingDays(effFrom, to, hours) : 0;
+        const workingDays = effFrom <= to ? countWorkingDays(effFrom, to, hours, a.today > 0) : 0;
         const effective = Math.max(workingDays - a.leave, 0);
         return {
             studentId: s._id, name: s.name, mobile: s.mobile, rollNumber: s.rollNumber,
@@ -776,7 +814,10 @@ const trend = async ({ libraryId, days = 14, scope = {} }) => {
         const day = new Date(from.getTime() + i * DAY_MS);
         const k = fmt(day);
         const v = map.get(k) || { present: 0, leave: 0, minutes: 0 };
-        results.push({ date: k, present: v.present, leave: v.leave, absent: Math.max(activeStudents - v.present - v.leave, 0), minutes: v.minutes });
+        const rest = Math.max(activeStudents - v.present - v.leave, 0);
+        // Today is unfinished: whoever hasn't come is "not yet", not absent
+        const isToday = i === n - 1;
+        results.push({ date: k, present: v.present, leave: v.leave, absent: isToday ? 0 : rest, notYet: isToday ? rest : 0, minutes: v.minutes });
     }
     return { days: n, activeStudents, results };
 };

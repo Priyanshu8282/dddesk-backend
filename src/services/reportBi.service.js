@@ -334,10 +334,11 @@ exports.actionList = async (L, p) => {
         Student.countDocuments({ ...live, status: 'active', planStatus: 'active', seatId: null }),
         Student.find({ ...live, status: 'active', planStatus: 'active', seatId: null }).select('name mobile planStartDate').sort({ planStartDate: -1 }).limit(cap).lean(),
         Seat.countDocuments({ libraryId: L, ...branchCond(p), status: 'occupied' }),
-        Seat.find({ libraryId: L, ...branchCond(p), status: 'occupied' }).populate({ path: 'studentId', select: 'name mobile expiryDate', match: { expiryDate: { $lte: in7 } } }).limit(1000).lean(),
+        Seat.find({ libraryId: L, ...branchCond(p), status: 'occupied' }).populate({ path: 'studentId', select: 'name mobile expiryDate', match: { expiryDate: { $lte: in7 } } }).populate({ path: 'coOccupants.studentId', select: 'name mobile expiryDate', match: { expiryDate: { $lte: in7 } } }).limit(1000).lean(),
         Seat.countDocuments({ libraryId: L, ...branchCond(p), status: 'available' })
     ]);
-    const vacant = vacList.filter((s) => s.studentId).sort((a, b) => a.studentId.expiryDate - b.studentId.expiryDate);
+    // A shared seat gives one row per student whose membership is ending
+    const vacant = vacList.flatMap((s) => [s.studentId, ...(s.coOccupants || []).map((c) => c.studentId)].filter(Boolean).map((st) => ({ ...s, studentId: st }))).sort((a, b) => a.studentId.expiryDate - b.studentId.expiryDate);
     return {
         asOf: toISTString(new Date()),
         actions: [

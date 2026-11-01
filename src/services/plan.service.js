@@ -151,7 +151,9 @@ const updatePlanById = async (id, libraryId, body) => {
     const plan = await getPlanById(id, libraryId);
     const data = pick(body, PLAN_FIELDS);
     if (data.name && data.name.trim().toLowerCase() !== plan.name.toLowerCase()) await assertUniqueName(libraryId, data.name, plan._id);
+    const shiftChanged = ['shiftStart', 'shiftEnd'].some((k) => data[k] !== undefined && (data[k] || '') !== (plan[k] || ''));
     Object.assign(plan, data);
+    if (shiftChanged) await require('./seat.service').assertShiftChangeSafe(libraryId, plan);
     if (plan.durationType === 'custom' && !(Number(plan.durationDays) > 0)) {
         throw new ApiError(400, 'durationDays is required for custom plans');
     }

@@ -10,6 +10,7 @@ const config       = require('../config/config');
 const pick         = require('../utils/pick');
 const escapeRegex  = require('../utils/escapeRegex');
 const { normalizeMobile } = require('../utils/mobile');
+const { istDateKey } = require('../utils/time');
 const { invalidateAuthCacheForLibrary } = require('../middlewares/auth.middleware');
 const { getSubscriptionState } = require('./subscriptionState.service');
 const { SUSPEND_REASON } = require('../utils/subscriptionLifecycle');
@@ -135,7 +136,7 @@ exports.getLibraryById = async (id) => {
   };
 };
 
-// pending/rejected -> active. Provisions the trial and an in-app owner notification.
+// pending/rejected -> active. Provisions the trial and notifies the owner.
 // If provisioning throws, the claim is rolled back so the library stays pending/rejected and can be approved again
 // (instead of being left active without a trial window).
 exports.approveLibrary = async (id, userId, ip) => {
@@ -210,7 +211,8 @@ exports.reinstateLibrary = async (id, userId, ip) => {
   if (!lib) throw err('Library not found or not suspended', 404);
   invalidateAuthCacheForLibrary(lib._id);
   await logAudit('library_reinstated', lib._id, userId, { libraryName: lib.name, extendedTo }, ip);
-  require('./notification.service').notifyLibraryStatus(lib, 'reinstated').catch(() => {});
+  // a lapsed library is only back for the short extension: the next step is to renew, not just to log in
+  require('./notification.service').notifyLibraryStatus(lib, 'reinstated', '', extendedTo ? { nextStep: `renew your plan by ${istDateKey(extendedTo)} to keep your access.` } : {}).catch(() => {});
   return lib;
 };
 
@@ -258,6 +260,7 @@ exports.assignPlan = async (id, planId, subscriptionExpiry, userId, ip, { isTria
   }
   invalidateAuthCacheForLibrary(lib._id);
   await logAudit('library_plan_assigned', lib._id, userId, { planName: plan.name, planId: plan._id, expiry, isTrial: !!isTrial, reinstated }, ip);
+  if (reinstated) require('./notification.service').notifyLibraryStatus(lib, 'reinstated').catch(() => {});
   return { lib, planName: plan.name };
 };
 
@@ -304,6 +307,8 @@ exports.updateLibrary = async (id, body, userId, ip, { file = null, removeImage 
       await Library.findOne({ mobile: update.mobile, _id: { $ne: id }, isDeleted: false })) {
     throw err('A library with this mobile number already exists', 409);
   }
+  // the owner account mirrors this number
+  if (update.mobile && owner && update.mobile !== owner.mobile) await require('./admin.service').assertMobileFree(update.mobile, owner._id);
   if (update.email && owner && update.email !== owner.email &&
       await Admin.findOne({ email: update.email, _id: { $ne: owner._id } })) {
     throw err('An account with this email already exists', 409);
@@ -317,6 +322,7 @@ exports.updateLibrary = async (id, body, userId, ip, { file = null, removeImage 
   if (owner) {
     const adminUpdate = pick(update, ['email', 'mobile', 'alternativeMobileNumber', 'address', 'city', 'state', 'country', 'pincode']);
     if (update.ownerName) adminUpdate.name = update.ownerName;
+    if (update.email && update.email !== owner.email) adminUpdate.emailIsPlaceholder = false; // a real address replaced the generated one
     // owner photo: a new upload replaces the old one; "remove" clears it
     if (file) { adminUpdate.profileImage = String(file.path).replace(/\\/g, '/'); removeUpload(owner.profileImage); }
     else if (removeImage && owner.profileImage) { adminUpdate.profileImage = ''; removeUpload(owner.profileImage); }

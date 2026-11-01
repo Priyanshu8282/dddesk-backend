@@ -155,7 +155,7 @@ const TEMPLATES = {
     'library-status': {
         audience: 'admins', type: 'approval',
         title: 'Library {{status}}',
-        body: 'Your library {{libraryName}} has been {{status}}.{{reasonSuffix}}'
+        body: 'Your library {{libraryName}} has been {{status}}.{{reasonSuffix}}{{nextStep}}'
     },
     'payment-adjusted': {
         audience: 'students', type: 'payment_alert',
@@ -306,7 +306,9 @@ const ALL_CHANNELS = ['inapp', 'push', 'email', 'sms', 'whatsapp'];
  *   variables: { amount, dueDate },// merged into the template
  *   data: { ... },                 // payload stored with the notification and sent with push
  *   channels: ['inapp','push'],    // default inapp + push
- *   title, message                 // override the template
+ *   title, message,                // override the template
+ *   accountNotice: true            // about the owner's own DDdesk account: reaches email/SMS whatever the library's
+ *                                  // channel switches say (those govern what the library sends its students and staff)
  * })
  * Resolves with { recipients, deliveries } and never throws.
  */
@@ -322,6 +324,7 @@ const notifyEvent = async (eventName, libraryId, payload = {}) => {
         const Library = require('../models/library.model');
         const lib = await Library.findById(libId).select('name notificationPrefs').lean();
         const libPrefs = (lib && lib.notificationPrefs) || {};
+        const channelPrefs = payload.accountNotice ? { ...libPrefs, email: true, sms: true } : libPrefs;
         // Library-level opt-outs for owner alerts / reminders
         const PREF_KEY = { enquiry: 'newEnquiry', 'complaint-new': 'newComplaint', 'fee-due': 'feeReminders', 'membership-expiry': 'expiryReminders' };
         if (PREF_KEY[eventName] && libPrefs[PREF_KEY[eventName]] === false) {
@@ -378,7 +381,7 @@ const notifyEvent = async (eventName, libraryId, payload = {}) => {
 
         // Push: one batched send for everyone, then map results back per recipient
         const pushResult = {};
-        const pushRecipients = prepared.filter((r) => channels.includes('push') && channelAllowed(libPrefs, r.doc.notificationPrefs, 'push'));
+        const pushRecipients = prepared.filter((r) => channels.includes('push') && channelAllowed(channelPrefs, r.doc.notificationPrefs, 'push'));
         if (pushRecipients.length) {
             const { sendToTokens } = require('./firebase.service');
             // group identical (title, message) so common broadcasts go in one multicast
@@ -410,12 +413,13 @@ const notifyEvent = async (eventName, libraryId, payload = {}) => {
             const deliveries = [{ channel: 'inapp', status: 'sent' }];
             for (const ch of channels) {
                 if (ch === 'inapp') continue;
-                if (!channelAllowed(libPrefs, r.doc.notificationPrefs, ch)) {
+                if (!channelAllowed(channelPrefs, r.doc.notificationPrefs, ch)) {
                     deliveries.push({ channel: ch, status: 'opted_out' });
                 } else if (ch === 'push') {
                     deliveries.push({ channel: 'push', ...(pushResult[r.doc._id] || { status: 'skipped' }) });
                 } else if (ch === 'email') {
-                    deliveries.push({ channel: 'email', ...(await sendEmail(r.doc.email, r.title, r.message)) });
+                    // a mobile-only owner's login e-mail is a generated placeholder: it is never mailed
+                    deliveries.push({ channel: 'email', ...(await sendEmail(r.doc.emailIsPlaceholder ? null : r.doc.email, r.title, r.message)) });
                 } else {
                     deliveries.push({ channel: ch, ...(await sendViaProvider(ch, r.doc.mobile, r.title, r.message)) });
                 }
@@ -438,11 +442,26 @@ const notifyEvent = async (eventName, libraryId, payload = {}) => {
     return summary;
 };
 
+// What the owner should do after each status change. Rejected and suspended owners cannot log in, so they are sent to support.
+const LIBRARY_NEXT_STEP = {
+    approved: () => 'log in to DDdesk and set up your profile, seats and plans.',
+    rejected: (support) => `fix the issue and contact support${support} to have your application reviewed again.`,
+    suspended: (support) => `contact support${support} to resolve this and restore access.`,
+    reinstated: () => 'log in to DDdesk to carry on where you left off.'
+};
+const supportContact = async () => {
+    const settings = require('./platformSettings.service');
+    await settings.ensureFresh();
+    const contact = settings.supportContact();
+    return contact ? ` at ${contact}` : '';
+};
+
 /**
- * Tell the library owner about a status change (approved | rejected | suspended | reinstated).
- * Never throws. Pass ownerId when known to avoid the lookup.
+ * Tell the library owner about a status change (approved | rejected | suspended | reinstated) in the inbox and by
+ * push, email and SMS, with what to do next. Never throws. Callers do not await it, so a slow provider cannot hold them.
+ * Pass ownerId when known to avoid the lookup, nextStep to replace the default next step.
  */
-const notifyLibraryStatus = async (library, status, reason = '', { ownerId, data } = {}) => {
+const notifyLibraryStatus = async (library, status, reason = '', { ownerId, data, nextStep } = {}) => {
     try {
         const libId = library._id || library;
         let owner = ownerId;
@@ -453,8 +472,12 @@ const notifyLibraryStatus = async (library, status, reason = '', { ownerId, data
         }
         if (!owner) return { recipients: 0 };
         return await notifyEvent('library-status', libId, {
-            adminIds: [owner], channels: ['inapp', 'push', 'email'],
-            variables: { status, reasonSuffix: reason ? ` Reason: ${reason}` : '' },
+            adminIds: [owner], channels: ['inapp', 'push', 'email', 'sms'], accountNotice: true,
+            variables: {
+                status,
+                reasonSuffix: reason ? ` Reason: ${reason}${/[.!?]$/.test(reason) ? '' : '.'}` : '',
+                nextStep: ` Next: ${nextStep || LIBRARY_NEXT_STEP[status](await supportContact())}`
+            },
             data: { type: `library_${status}`, ...(data || {}) },
             dedupeKey: `status:${status}:${Date.now() - (Date.now() % 60000)}`
         });

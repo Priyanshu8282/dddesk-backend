@@ -95,7 +95,7 @@ exports.attendanceChanged = ({ libraryId, branchId = null } = {}) => quiet(() =>
     const now = new Date();
     const [present, insideNow, total] = await Promise.all([
       Attendance.distinct('studentId', { libraryId: libId, ...scope, date: { $gte: startOfDayIST(now), $lte: endOfDayIST(now) }, status: 'present' }),
-      Attendance.countDocuments({ libraryId: libId, ...scope, open: true }),
+      Attendance.countInside(libId, scope),
       Student.countDocuments({ libraryId: libId, ...scope, isDeleted: false, status: 'active', planStatus: 'active' }),
     ]);
     toLibrary(libraryId, branchId, 'attendance:checkin', { present: present.length, total, insideNow });

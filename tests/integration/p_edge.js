@@ -215,6 +215,8 @@ module.exports = (H) => {
     const otherReceipt = await api('GET', P(`/payments/my/receipts/${ctx.ids.adjCharge}`), { token: T('stu') });
     assert.ok([403, 404].includes(otherReceipt.status), "another student's receipt: " + msg(otherReceipt));
     ok(await api('GET', P('/attendance/my'), { token: T('stu') }), 'own attendance');
+    const stuMe = await api('GET', P('/me'), { token: T('stu') }); ok(stuMe, 'student me');
+    assert.equal(stuMe.body.library.subscription, undefined, 'students are not told the library billing state');
     const cm = await api('POST', P('/complaints'), { token: T('stu'), body: { title: 'Fan not working', description: 'Seat fan is broken', category: 'fan' } });
     ok(cm, 'student complaint');
     const cmOther = await api('POST', P('/complaints'), { token: T('stu'), body: { title: 'Forged', description: 'on behalf of someone', studentId: ctx.ids.s5 } });

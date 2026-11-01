@@ -38,6 +38,7 @@ in `integration.test.js` always run because later parts depend on their data); `
 | `p_ops.js` | upload validation + protected documents, Aadhaar migration script, seed script idempotency |
 | `p_realtime.js` | socket auth, room isolation, events, disconnect on revocation |
 | `p_legal.js` | dynamic legal pages: XSS sanitiser suite, draft/publish/schedule lifecycle, immutability, restore/compare, access control, ETag/304, rate limit, consent versions |
+| `p_admin_mobile.js` | one owner/staff mobile, one account: refused duplicates, library choice after password or OTP, duplicate report |
 
 The smoke tests write the full route tables (`route-smoke-private.md`, `route-smoke-public.md`) to the run's temp folder.
 

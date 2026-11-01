@@ -1640,6 +1640,7 @@ module.exports = {
     applyPlanChangeToOldCharge,
     membershipWarning,
     buildReceiptTax,
+    snapshotTax,
     isChargeOverdue,
     hasPermission,
     PERM_KEYS,

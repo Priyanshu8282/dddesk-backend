@@ -148,4 +148,39 @@ module.exports = (H) => {
     console.log('send-otp for an already registered owner mobile ->', dupMobile.status);
     ctx.ids.library3 = id3;
   });
+
+  test('44b /me carries the subscription state for the dashboard banner; 402 and 403 bodies stay as the web expects', async () => {
+    const { clearAuthCache } = require(SRC + '/middlewares/auth.middleware');
+    const col = L.state.mongoose.connection.db.collection('libraries');
+    const lid = new (L.state.mongoose.Types.ObjectId)(ctx.ids.library2);
+    const before = await col.findOne({ _id: lid });
+    const set = async (fields) => { await col.updateOne({ _id: lid }, { $set: fields }); clearAuthCache(); };
+    const me = async () => { const r = await api('GET', P('/me'), { token: T('owner2') }); ok(r, 'me'); return r.body.library; };
+    const daysAgo = (n) => new Date(Date.now() - n * 86400000);
+    try {
+      await set({ status: 'active', statusReason: null, subscriptionExpiry: daysAgo(-10), subscriptionIsTrial: false });
+      assert.equal((await me()).subscription.state, 'active');
+
+      await set({ subscriptionExpiry: daysAgo(2) });
+      const grace = await me();
+      assert.equal(grace.subscription.state, 'grace');
+      assert.ok(grace.subscription.graceEndsAt && grace.subscription.graceDaysLeft > 0, 'grace end is given');
+
+      await set({ subscriptionExpiry: daysAgo(30) });
+      assert.equal((await me()).subscription.state, 'expired');
+      const write = await api('POST', P('/notices'), { token: T('owner2'), body: { title: 'Holiday', description: 'Closed on Friday.', type: 'holiday', sendTo: 'all' } });
+      expectStatus(write, 402, 'an expired library is read-only');
+      assert.equal(write.body.libraryStatus, 'subscription_expired');
+
+      await set({ status: 'suspended', statusReason: 'Subscription expired' });
+      const suspended = await me();
+      assert.equal(suspended.status, 'suspended');
+      assert.equal(suspended.statusReason, 'Subscription expired');
+      const read = await api('GET', P('/notices'), { token: T('owner2') });
+      expectStatus(read, 403, 'suspended library');
+      assert.equal(read.body.statusReason, 'Subscription expired');
+    } finally {
+      await set({ status: before.status, statusReason: before.statusReason ?? null, subscriptionExpiry: before.subscriptionExpiry, subscriptionIsTrial: before.subscriptionIsTrial });
+    }
+  });
 };

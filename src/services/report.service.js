@@ -178,7 +178,9 @@ exports.getSeatReport = async (L, q) => {
     let potential = 0;
     counts.forEach((c) => { if (sm[c._id] !== undefined) sm[c._id] = c.count; total += c.count; potential += c.price || 0; });
     const bookable = total - sm.blocked - sm.maintenance;
+    const shifts = await require('./seat.service').getShiftCounts(L, match);
     return {
+        partlyFreeSeats: shifts.partlyFree, sharedSeats: shifts.shared,
         totalSeats: total, occupied: sm.occupied, available: sm.available, reserved: sm.reserved, maintenance: sm.maintenance, blocked: sm.blocked,
         bookableSeats: bookable, occupancyRate: pct(sm.occupied, bookable), monthlyRevenuePotential: potential,
         floorWiseBreakdown: locAgg.map((f) => ({

@@ -138,7 +138,7 @@ exports.create = async (req, { name, email, mobile, password }) => {
   const mob = normalizeMobile(mobile);
   const mail = String(email).trim().toLowerCase();
   if (await Admin.findOne({ email: mail }).select('_id').lean()) throw err('An account with this email already exists', 409);
-  if (await Admin.findOne({ mobile: mob, userType: 'superadmin' }).select('_id').lean()) throw err('A super admin with this mobile number already exists', 409);
+  await require('./admin.service').assertMobileFree(mob);
   const role = await Role.findOne({ name: 'Super Admin', $or: [{ libraryId: null }, { libraryId: { $exists: false } }] }).select('_id').lean();
   if (!role) throw err('The Super Admin role is missing. Run the permission sync first.', 500);
   const user = await Admin.create({ name: String(name).trim(), email: mail, mobile: mob, password, userType: 'superadmin', roleId: role._id, status: true, createdBy: req.user._id });
@@ -155,7 +155,10 @@ exports.update = async (req, id, body) => {
     if (mail !== a.email && await Admin.findOne({ email: mail, _id: { $ne: a._id } }).select('_id').lean()) throw err('An account with this email already exists', 409);
     set.email = mail;
   }
-  if (body.mobile !== undefined) set.mobile = normalizeMobile(body.mobile);
+  if (body.mobile !== undefined) {
+    set.mobile = normalizeMobile(body.mobile);
+    if (set.mobile !== a.mobile) await require('./admin.service').assertMobileFree(set.mobile, a._id);
+  }
   if (!Object.keys(set).length) throw err('Nothing to update', 400);
   set.updatedBy = req.user._id;
   await Admin.updateOne({ _id: a._id }, { $set: set });

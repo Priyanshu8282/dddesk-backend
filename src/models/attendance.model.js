@@ -57,4 +57,11 @@ attendanceSchema.index({ libraryId: 1, open: 1 });
 // One open session per student
 attendanceSchema.index({ studentId: 1, open: 1 }, { unique: true, partialFilterExpression: { open: true } });
 
+// Students inside right now. A student made inactive mid-session stays open until it closes, but no longer counts
+attendanceSchema.statics.countInside = async function (libraryId, scope = {}) {
+    const ids = await this.distinct('studentId', { libraryId, ...scope, open: true });
+    if (!ids.length) return 0;
+    return mongoose.model('Student').countDocuments({ _id: { $in: ids }, status: 'active' });
+};
+
 module.exports = mongoose.model('Attendance', attendanceSchema);

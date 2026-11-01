@@ -302,7 +302,7 @@ const buildLibrary = async (libId, scope, flags, range, now = new Date()) => {
     flags.students ? Student.countDocuments({ ...sBase, createdAt: { $lt: start7 } }) : none,
     flags.attendance ? Student.countDocuments({ ...sBase, status: 'active', planStatus: 'active' }) : none,
     flags.attendance ? Attendance.distinct('studentId', { libraryId: libId, ...scope, date: { $gte: todayStart, $lte: todayEnd }, status: 'present' }) : none,
-    flags.attendance ? Attendance.countDocuments({ libraryId: libId, ...scope, open: true }) : none,
+    flags.attendance ? Attendance.countInside(libId, scope) : none,
     flags.students ? Student.countDocuments({ ...sBase, planStatus: 'active', expiryDate: { $gte: todayStart, $lte: in7 } }) : none,
     flags.students ? Student.find({ ...sBase, planStatus: 'active', expiryDate: { $gte: todayStart, $lte: in7 } })
       .sort({ expiryDate: 1 }).limit(5).select('name registrationNumber profileImage expiryDate').lean() : none,
@@ -335,7 +335,8 @@ const buildLibrary = async (libId, scope, flags, range, now = new Date()) => {
     let total = 0;
     seatCounts.forEach((s) => { counts[M.normalizeSeatStatus(s._id)] += s.n; total += s.n; });
     occupiedSeats = { occupied: counts.occupied, total, percent: M.percentOf(counts.occupied, total) };
-    seatLayout = { total, truncated: total > seatList.length, counts, rows: M.groupSeatsIntoRows(seatList) };
+    const partlyFree = counts.occupied ? (await require('./seat.service').getShiftCounts(libId, scope)).partlyFree : 0;
+    seatLayout = { total, truncated: total > seatList.length, counts, partlyFree, rows: M.groupSeatsIntoRows(seatList) };
   }
 
   // Attendance

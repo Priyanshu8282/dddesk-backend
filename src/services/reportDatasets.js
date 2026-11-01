@@ -245,13 +245,17 @@ REG.seats = { columns: [
     if (q.room) f.room = q.room;
     if (q.type) f.type = q.type;
     Object.assign(f, branchCond(q));
-    if (q.search) f.$or = [{ seatNumber: searchRegex(q.search) }, { studentId: { $in: await studentIdsBySearch(L, q.search) } }];
+    if (q.search) {
+        const ids = await studentIdsBySearch(L, q.search);
+        f.$or = [{ seatNumber: searchRegex(q.search) }, { studentId: { $in: ids } }, { 'coOccupants.studentId': { $in: ids } }];
+    }
+    const sitters = (s) => [s.studentId, ...(s.coOccupants || []).map((c) => c.studentId)].filter(Boolean);
     return {
         kind: 'find', model: Seat, filter: f, sort: { floor: 1, room: 1, seatNumber: 1 },
-        populate: [{ path: 'studentId', select: 'name mobile expiryDate' }], totalsGroup: { revenuePotential: { $sum: '$price' } },
+        populate: [{ path: 'studentId', select: 'name mobile expiryDate' }, { path: 'coOccupants.studentId', select: 'name mobile' }], totalsGroup: { revenuePotential: { $sum: '$price' } },
         row: (s) => ({
             seatNumber: s.seatNumber, floor: s.floor || '', room: s.room || '', type: s.type === 'custom' ? (s.customType || 'custom') : s.type, status: s.status,
-            price: num(s.price), student: s.studentId?.name || '', mobile: s.studentId?.mobile || '', assignedAt: d(s.assignedAt), expiryDate: d(s.studentId?.expiryDate)
+            price: num(s.price), student: sitters(s).map((x) => x.name).join(', '), mobile: sitters(s).map((x) => x.mobile).join(', '), assignedAt: d(s.assignedAt), expiryDate: d(s.studentId?.expiryDate)
         })
     };
 } };
@@ -288,13 +292,17 @@ REG.attendance_student = { columns: [
     { key: 'rollNumber', label: 'Roll Number' }, { key: 'name', label: 'Student Name' }, { key: 'seatNumber', label: 'Seat' },
     { key: 'daysPresent', label: 'Days Present' }, { key: 'totalHours', label: 'Total Hours' }, { key: 'attendancePct', label: 'Attendance %' }
 ], build: async (L, q) => {
-    const days = q.start && q.end ? Math.max(1, Math.ceil((Math.min(q.end, new Date()) - q.start) / 86400000)) : 1;
+    // Finished days of the range; today joins the count only for a student who came today (never as missed)
+    const todayStart = startOfDayIST(new Date());
+    const ranged = q.start && q.end;
+    const finishedDays = ranged ? Math.max(0, Math.ceil((Math.min(q.end, todayStart) - q.start) / 86400000)) : 1;
+    const days = ranged && q.end >= todayStart ? { $max: [1, { $add: [finishedDays, '$cameToday'] }] } : Math.max(1, finishedDays);
     return {
         kind: 'aggregate', model: Attendance,
         pipeline: [
             { $match: await ATT_BASE(L, q, true) },
             { $group: { _id: { s: '$studentId', day: istDayExpr('$checkIn') }, minutes: { $sum: '$duration' } } },
-            { $group: { _id: '$_id.s', daysPresent: { $sum: 1 }, minutes: { $sum: '$minutes' } } },
+            { $group: { _id: '$_id.s', daysPresent: { $sum: 1 }, cameToday: { $sum: { $cond: [{ $eq: ['$_id.day', istDateKey(todayStart)] }, 1, 0] } }, minutes: { $sum: '$minutes' } } },
             { $lookup: { from: Student.collection.name, localField: '_id', foreignField: '_id', as: 's' } },
             { $unwind: { path: '$s', preserveNullAndEmptyArrays: true } },
             { $match: { 's.libraryId': L } },

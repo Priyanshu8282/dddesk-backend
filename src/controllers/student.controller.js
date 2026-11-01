@@ -224,7 +224,7 @@ exports.getMyProfile = catchAsync(async (req, res) => {
         Library.findOne({ _id: req.libraryId, isDeleted: { $ne: true } })
             .select('name logo address city state pincode mobile email workingHours weeklyHolidays mapLocation socialLinks rules terms')
             .lean(),
-        Seat.findOne({ libraryId: req.libraryId, studentId: student._id, isDeleted: { $ne: true } })
+        Seat.findOne({ libraryId: req.libraryId, $or: [{ studentId: student._id }, { 'coOccupants.studentId': student._id }], isDeleted: { $ne: true } })
             .select('seatNumber floor room type status').lean(),
         student.branchId ? Branch.findOne({ _id: student.branchId, libraryId: req.libraryId }).select('name address phone').lean() : null
     ]);

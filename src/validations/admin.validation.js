@@ -82,4 +82,6 @@ const resetStaffPassword = z.object({
         .refine((b) => b.newPassword === b.confirmPassword, { message: 'Passwords do not match', path: ['confirmPassword'] })
 });
 
-module.exports = { createStaff, updateStaff, updateStatus, resetStaffPassword, idParam, objectId };
+const assignableQuery = z.object({ query: z.object({ libraryId: objectId.optional() }).strict() });
+
+module.exports = { createStaff, updateStaff, updateStatus, resetStaffPassword, idParam, objectId, assignableQuery };

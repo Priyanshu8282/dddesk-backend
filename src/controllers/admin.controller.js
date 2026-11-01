@@ -73,6 +73,11 @@ exports.getAdmins = catchAsync(async (req, res) => {
   });
 });
 
+exports.getAssignableStaff = catchAsync(async (req, res) => {
+  const data = await svc.listAssignableStaff(req);
+  res.status(200).json({ success: true, message: 'Assignable staff retrieved successfully', data });
+});
+
 exports.getLibraries = catchAsync(async (req, res) => {
   const result = await svc.listStaff(req, { ...req.query, userType: 'admin' });
   res.status(200).json({

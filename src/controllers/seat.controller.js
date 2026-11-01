@@ -134,8 +134,8 @@ exports.assignSeat = catchAsync(async (req, res) => {
 
 exports.releaseSeat = catchAsync(async (req, res) => {
     await guardSeat(req, req.params.id);
-    const seat = await seatService.releaseSeat(req.params.id, lib(req), seatService.actorOf(req), { reason: req.body?.reason });
-    audit(req, 'seat.release', 'Seat', seat._id, { reason: req.body?.reason });
+    const seat = await seatService.releaseSeat(req.params.id, lib(req), seatService.actorOf(req), { reason: req.body?.reason, studentId: req.body?.studentId });
+    audit(req, 'seat.release', 'Seat', seat._id, { reason: req.body?.reason, studentId: req.body?.studentId });
     res.status(200).json({ success: true, message: 'Seat released successfully', data: seat });
 });
 

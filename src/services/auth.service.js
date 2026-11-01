@@ -62,7 +62,7 @@ const appendFcmToken = async (user, fcmToken) => {
   }
 };
 
-// Optional tenant hint (libraryId) for accounts that can exist in several libraries
+// Optional tenant hint (libraryId) for accounts that exist in several libraries (students, and admins from before mobiles were unique)
 const resolveTenantHint = async ({ libraryId }) => libraryId || null;
 
 // Throws a 403 carrying libraryStatus when the library cannot be used
@@ -78,6 +78,38 @@ const assertLibraryUsable = (user) => {
   }
 };
 
+// Throws when this account may not sign in right now (disabled account, unusable library)
+const assertAccountUsable = (user, role) => {
+  if (role === 'ADMIN') {
+    if (!user.status) throw fail(403, 'Your account has been disabled. Contact your library owner.');
+    if (user.userType !== 'superadmin') assertLibraryUsable(user);
+  } else {
+    if (user.status !== 'active') throw fail(403, 'Account is inactive');
+    assertLibraryUsable(user);
+  }
+};
+
+const isAccountUsable = (user, role) => {
+  try { assertAccountUsable(user, role); return true; } catch (_) { return false; }
+};
+
+// `proven`: accounts whose password or OTP was just verified. Accounts that cannot sign in are never offered, and more than one
+// usable library means the client must pick: only then are names shown, and only those of accounts holding this credential.
+const resolveProvenAccount = (proven, role) => {
+  const usable = proven.filter((u) => isAccountUsable(u, role));
+  const libraries = new Map();
+  for (const u of usable) if (u.libraryId?._id) libraries.set(String(u.libraryId._id), u.libraryId.name || 'Library');
+  if (libraries.size > 1) {
+    throw fail(409, 'This account is in more than one library. Choose your library to continue.', {
+      errorCode: 'LIBRARY_CHOICE_REQUIRED',
+      data: { libraries: [...libraries].map(([id, name]) => ({ id, name })) },
+    });
+  }
+  const user = usable[0] || proven[0];
+  assertAccountUsable(user, role); // none usable: the first account's reason (library status included) is the answer
+  return user;
+};
+
 const adminPopulate = [
   { path: 'roleId', populate: { path: 'permissionIds' } },
   { path: 'libraryId' },
@@ -88,7 +120,7 @@ const findCandidates = async (role, { email, mobile, libraryId }, { withSecrets 
   const query = {};
   if (email) query.email = String(email).toLowerCase();
   else if (mobile) query.mobile = mobile;
-  if (role === 'STUDENT' && libraryId) query.libraryId = libraryId;
+  if (libraryId) query.libraryId = libraryId;
   const Model = role === 'STUDENT' ? Student : Admin;
   let q = Model.find({ ...query, isDeleted: { $ne: true } });
   if (withSecrets.length) q = q.select(withSecrets.map((s) => `+${s}`).join(' '));
@@ -120,15 +152,15 @@ exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken
     throw fail(429, `Too many failed sign-in attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}, or sign in with an OTP.`);
   }
 
-  // Compare against every candidate (a student mobile can exist in several libraries); constant-ish work when none
-  let user = null;
+  // Compare against every candidate (a mobile can exist in several libraries); constant-ish work when none
+  const proven = [];
   if (!candidates.length) {
     await bcrypt.compare(password, DUMMY_HASH);
   }
   for (const c of candidates) {
-    if (c.password && await bcrypt.compare(password, c.password)) { user = c; break; }
+    if (c.password && await bcrypt.compare(password, c.password)) proven.push(c);
   }
-  if (!user) {
+  if (!proven.length) {
     // Count the failure atomically; the 10th one starts the lock
     for (const c of candidates) {
       const upd = await AccountModel.findOneAndUpdate({ _id: c._id }, { $inc: { failedLogins: 1 } }, { new: true, projection: { failedLogins: 1 } });
@@ -139,13 +171,7 @@ exports.login = async ({ identifier, email, mobile, password, userRole, fcmToken
     throw fail(401, 'Invalid credentials');
   }
 
-  if (role === 'ADMIN') {
-    if (!user.status) throw fail(403, 'Your account has been disabled. Contact your library owner.');
-    if (user.userType !== 'superadmin') assertLibraryUsable(user);
-  } else {
-    if (user.status !== 'active') throw fail(403, 'Account is inactive');
-    assertLibraryUsable(user);
-  }
+  const user = resolveProvenAccount(proven, role);
 
   // Targeted update (not save()): older accounts may lack fields the schema now requires (e.g. mobile),
   // and a successful login must never fail on unrelated validation.
@@ -237,7 +263,7 @@ const checkOtp = async (user, otp) => {
 
 const clearOtp = (user) => setOtpFields(user, { otp: null, otpExpires: null, otpAttempts: 0 });
 
-// Single account for an OTP flow; ambiguity (same student mobile in many libraries) must be resolved by the caller
+// Single account for an OTP flow; ambiguity (same mobile in many libraries) must be resolved by the caller
 const findOtpAccount = async ({ email, mobile, userRole, libraryId }, { allowMany = false } = {}) => {
   const tenant = await resolveTenantHint({ libraryId });
   const normMobile = mobile ? normalizeMobile(mobile) : '';
@@ -249,8 +275,8 @@ const findOtpAccount = async ({ email, mobile, userRole, libraryId }, { allowMan
       { withSecrets: ['otp', 'otpExpires', 'otpAttempts'] });
     if (list.length === 1) return { user: list[0], role };
     if (list.length > 1) {
-      // Student OTP login only: the caller resolves it after the code is verified (see sendOTP / verifyOTP)
-      if (allowMany && role === 'STUDENT') return { user: null, many: list, role };
+      // OTP login only: the caller resolves it after the code is verified (see sendOTP / verifyOTP)
+      if (allowMany) return { user: null, many: list, role };
       throw fail(409, 'This number is registered in more than one library. Please specify the library.');
     }
   }
@@ -266,7 +292,7 @@ exports.sendOTP = async ({ identifier, email, mobile, userRole, libraryId }) => 
   const found = await findOtpAccount({ ...target, userRole: userRole || 'ADMIN', libraryId }, { allowMany: true });
   const usable = (u) => u && u.status !== false && u.status !== 'inactive';
   if (found.many) {
-    // same student mobile in several libraries: one code for all of them, the library is chosen after verification
+    // same mobile in several libraries: one code for all of them, the library is chosen after verification
     const live = found.many.filter(usable);
     if (!live.length) return noAccountOtp(channel, target);
     return issueOtp(live[0], { channel, purpose: 'login', target, siblings: live.slice(1) });
@@ -282,32 +308,19 @@ exports.verifyOTP = async ({ identifier, email, mobile, otp, userRole, fcmToken,
   const found = await findOtpAccount({ ...target, userRole: role, libraryId }, { allowMany: true });
   let user = found.user;
   if (found.many) {
-    // Several libraries share this student mobile. Only a correct code reveals the choice (library names are never shown
-    // before that), and the code is NOT consumed: the app repeats this call with the chosen libraryId.
+    // Several libraries share this mobile. Only a correct code reveals the choice (library names are never shown
+    // before that), and the code is NOT consumed: the client repeats this call with the chosen libraryId.
     const matches = [];
     let lastError = null;
     for (const candidate of found.many) {
       try { await checkOtp(candidate, otp); matches.push(candidate); } catch (e) { lastError = e; }
     }
     if (!matches.length) throw lastError || fail(400, 'Invalid OTP');
-    if (matches.length > 1) {
-      throw fail(409, 'This number is registered in more than one library. Choose your library to continue.', {
-        errorCode: 'LIBRARY_CHOICE_REQUIRED',
-        data: { libraries: matches.map((m) => ({ id: String(m.libraryId?._id || m.libraryId), name: m.libraryId?.name || 'Library' })) },
-      });
-    }
-    user = matches[0];
+    user = resolveProvenAccount(matches, role);
   } else {
     if (!user) throw fail(400, 'Invalid OTP');
     await checkOtp(user, otp);
-  }
-
-  if (role === 'ADMIN') {
-    if (!user.status) throw fail(403, 'Your account has been disabled. Contact your library owner.');
-    if (user.userType !== 'superadmin') assertLibraryUsable(user);
-  } else {
-    if (user.status !== 'active') throw fail(403, 'Account is inactive');
-    assertLibraryUsable(user);
+    assertAccountUsable(user, role);
   }
 
   const update = { $set: { lastLogin: new Date(), otp: null, otpExpires: null, otpAttempts: 0 } };

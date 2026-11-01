@@ -222,6 +222,34 @@ module.exports = (H) => {
     denied(await api('GET', P('/notifications')), 'anonymous list');
   });
 
+  test('119b assignable staff: id + name only, no staff.view needed, tenant scoped; assign works from it', async () => {
+    const path = P('/staff/assignable');
+    const rec = await api('GET', path, { token: T('recA') });
+    ok(rec, 'receptionist (enquiries.view, no staff.view)');
+    const rows = data(rec);
+    assert.ok(rows.length >= 2, 'lists the people of the library: ' + rec.text.slice(0, 300));
+    for (const r of rows) assert.deepEqual(Object.keys(r).sort(), ['_id', 'name'], 'nothing but id and name');
+    const mine = await api('GET', path, { token: T('mgr') });
+    ok(mine, 'manager');
+    denied(await api('GET', path, { token: T('acct') }), 'accountant has no enquiry or complaint rights');
+    denied(await api('GET', path, { token: T('stu') }), 'student');
+    denied(await api('GET', path), 'anonymous');
+    expectStatus(await api('GET', `${path}?foo=1`, { token: T('mgr') }), 400, 'unknown query');
+    const other = await api('GET', path, { token: T('owner2') });
+    ok(other, 'other library');
+    const mineIds = new Set(data(mine).map((r) => r._id));
+    assert.ok(data(other).length > 0 && data(other).every((r) => !mineIds.has(r._id)), 'never another library');
+
+    const c = await api('POST', P('/complaints'), { token: T('owner'), body: { title: 'Fan rattles', description: 'The fan near the door rattles', category: 'fan' } });
+    ok(c, 'ticket');
+    const cid = id(c);
+    denied(await api('PATCH', P(`/complaints/${cid}/assign`), { token: T('recA'), body: { assignedTo: rows[0]._id } }), 'receptionist cannot assign');
+    const done = await api('PATCH', P(`/complaints/${cid}/assign`), { token: T('mgr'), body: { assignedTo: rows[0]._id } });
+    ok(done, 'manager assigns from the list');
+    assert.equal(data(done).status, 'assigned');
+    assert.equal(data(done).assignedTo.name, rows[0].name);
+  });
+
   test('119 settings and sidebar: read for owner, write only for superadmin, menu follows the role', async () => {
     ok(await api('GET', P('/settings'), { token: T('owner') }), 'owner reads settings');
     denied(await api('POST', P('/settings'), { token: T('owner'), body: { key: 'site.name', value: 'hack' } }), 'owner cannot write platform settings');

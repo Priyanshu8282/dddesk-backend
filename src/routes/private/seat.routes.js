@@ -28,7 +28,7 @@ router.get('/:id', requirePermission(...VIEW), seatController.getSeatById);
 router.get('/:id/history', requirePermission(...VIEW), seatController.getSeatHistory);
 router.put('/:id', requirePermission(...MANAGE), validate(seatValidation.updateSeat), seatController.updateSeat);
 router.patch('/:id/assign', requirePermission(...ASSIGN), validate(seatValidation.assignSeat), seatController.assignSeat);
-router.patch('/:id/release', requirePermission(...ASSIGN), seatController.releaseSeat);
+router.patch('/:id/release', requirePermission(...ASSIGN), validate(seatValidation.releaseSeat), seatController.releaseSeat);
 router.post('/:id/reserve', requirePermission(...BLOCK), validate(seatValidation.reserveSeat), seatController.reserveSeat);
 router.patch('/:id/status', requirePermission(...BLOCK), validate(seatValidation.setSeatStatus), seatController.setSeatStatus);
 router.delete('/:id', requirePermission(...MANAGE), seatController.deleteSeat);

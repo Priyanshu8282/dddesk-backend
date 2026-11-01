@@ -8,6 +8,7 @@ const pick    = require('../utils/pick');
 const escapeRegex = require('../utils/escapeRegex');
 const audit   = require('../utils/audit');
 const { normalizeMobile } = require('../utils/mobile');
+const { tenantId } = require('../middlewares/access.middleware');
 
 const err = (message, status = 400) => Object.assign(new Error(message), { status });
 const idOf = (v) => String(v && v._id ? v._id : v);
@@ -107,13 +108,16 @@ const validateBranchIds = async (branchIds, tenant) => {
   return ids;
 };
 
-// A mobile number may be used by one person of a library only
-const assertMobileFree = async (mobile, tenant, exceptId = null) => {
+// A mobile signs in to one account, so it may belong to one Admin across ALL libraries (soft-deleted accounts free it).
+// Checked here and not by a unique index: existing data has duplicates (scripts/report_duplicate_mobiles.js lists them).
+// Callers run this only when the mobile changes, so an account that is already a duplicate can still edit its other fields.
+const assertMobileFree = async (mobile, exceptId = null) => {
   if (!mobile) return;
-  const filter = { mobile, libraryId: tenant, isDeleted: false };
+  const filter = { mobile, isDeleted: false };
   if (exceptId) filter._id = { $ne: exceptId };
-  if (await Admin.findOne(filter)) throw err('This mobile number is already used by someone in your team', 400);
+  if (await Admin.findOne(filter).select('_id').lean()) throw err('This mobile number is already used by another account. Please use a different number.', 409);
 };
+exports.assertMobileFree = assertMobileFree;
 
 // ── Staff / Employee ──────────────────────────────────────────────────────────
 
@@ -126,7 +130,7 @@ exports.createStaff = async (req) => {
 
   const email = String(body.email).toLowerCase();
   if (await Admin.findOne({ email })) throw err('Email already exists', 400);
-  await assertMobileFree(normalizeMobile(body.mobile), tenant);
+  await assertMobileFree(normalizeMobile(body.mobile));
 
   // Plan limit (spec 12 / platform plan maxStaff)
   const maxStaff = library.planLimits?.maxStaff;
@@ -170,6 +174,7 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
 
   if (await Admin.findOne({ email })) throw err('An account with this email already exists', 409);
   if (await Library.findOne({ mobile, isDeleted: false })) throw err('A library with this mobile number already exists', 409);
+  await assertMobileFree(mobile);
 
   // Role is always resolved server side - never trusted from the client
   const adminRole = await Role.findOne({ name: 'Admin', libraryId: null });
@@ -246,6 +251,14 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
   });
 
   return { library, admin };
+};
+
+// Active owner and staff of one library, for pickers. Id and name only: no contact details, roles or branches.
+exports.listAssignableStaff = async (req) => {
+  const libraryId = tenantId(req);
+  if (!libraryId) return [];
+  return Admin.find({ libraryId, userType: { $in: ['staff', 'admin'] }, status: true, isDeleted: false })
+    .select('name').sort({ name: 1, _id: 1 }).limit(500).lean();
 };
 
 exports.listStaff = async (req, query = req.query) => {
@@ -341,13 +354,14 @@ exports.updateAdmin = async (req, id) => {
   const update = pick(body, allowed);
   if (update.mobile) update.mobile = normalizeMobile(update.mobile);
   if (update.alternativeMobileNumber) update.alternativeMobileNumber = normalizeMobile(update.alternativeMobileNumber);
-  if (update.mobile && update.mobile !== target.mobile && tenant) await assertMobileFree(update.mobile, tenant, target._id);
+  if (update.mobile && update.mobile !== target.mobile) await assertMobileFree(update.mobile, target._id);
 
   if (update.email) {
     update.email = String(update.email).toLowerCase();
     if (update.email !== target.email && await Admin.findOne({ email: update.email, _id: { $ne: target._id } })) {
       throw err('Email already exists', 400);
     }
+    if (update.email !== target.email) update.emailIsPlaceholder = false; // a real address replaced the generated one
   }
 
   // Role / branch / status: only on others, never self-service (no self-escalation)

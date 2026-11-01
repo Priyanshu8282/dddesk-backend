@@ -201,8 +201,12 @@ const releaseNoShowSeats = async (now = new Date()) => {
 
     for (const lib of libraries) {
         const graceMs = (lib.attendanceRules?.noShowGraceMinutes ?? 60) * MIN;
-        const seats = await Seat.find({ libraryId: lib._id, status: 'occupied', studentId: { $ne: null }, assignedAt: { $lt: todayStart } })
-            .populate('studentId', 'planStatus planStartDate status').lean();
+        const taken = await Seat.find({ libraryId: lib._id, status: 'occupied', studentId: { $ne: null } })
+            .populate('studentId', 'planStatus planStartDate status')
+            .populate('coOccupants.studentId', 'planStatus planStartDate status').lean();
+        // One entry per student: sharers of a seat are judged, and released, on their own
+        const seats = taken.flatMap((s) => [{ _id: s._id, studentId: s.studentId, assignedAt: s.assignedAt }, ...(s.coOccupants || []).map((c) => ({ _id: s._id, studentId: c.studentId, assignedAt: c.assignedAt }))])
+            .filter((s) => s.assignedAt && new Date(s.assignedAt) < todayStart);
         const candidates = seats.filter((s) => {
             const st = s.studentId;
             if (!st || st.planStatus !== 'active' || st.status !== 'active') return false;
@@ -222,7 +226,7 @@ const releaseNoShowSeats = async (now = new Date()) => {
             const last = lastMap.get(String(s.studentId._id));
             if (last && new Date(last) >= since) continue; // has attended since start
             try {
-                await seatService.releaseSeat(s._id, lib._id, null, { reason: 'No-show: auto released', action: 'auto_released' });
+                await seatService.releaseSeat(s._id, lib._id, null, { reason: 'No-show: auto released', action: 'auto_released', studentId: s.studentId._id });
                 released++;
                 await notifyMultipleStudents([s.studentId._id], 'Seat released', 'Your seat was released because you have not visited yet. Contact the library to get a seat again.', {}, 'plan_alert');
             } catch (e) { console.error('[cron] no-show release failed:', e.message); }

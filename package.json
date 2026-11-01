@@ -29,6 +29,7 @@
     "morgan": "^1.10.1",
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
+    "nodemailer": "10.3.1",
     "razorpay": "^2.9.6",
     "sanitize-html": "2.18.1",
     "soap": "^1.8.0",

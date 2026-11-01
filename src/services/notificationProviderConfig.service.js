@@ -37,6 +37,18 @@ const envValue = (name) => (name && process.env[name] ? process.env[name] : unde
  * Effective configuration used by the notification service (contains resolved secrets - internal use only,
  * never send it to a client). Falls back to the legacy SMTP_* env variables.
  */
+// SMTP_* and the older EMAIL_* names are both accepted. TLS-on-connect only works on 465; 587 upgrades with STARTTLS,
+// so "secure" set on 587 (a common slip) would fail every send with an SSL version error.
+const smtpFromEnv = (env) => {
+    const host = env.SMTP_HOST || env.EMAIL_HOST;
+    const port = parseInt(env.SMTP_PORT || env.EMAIL_PORT, 10) || 587;
+    const user = env.SMTP_USER || env.EMAIL_USER;
+    return {
+        source: host ? 'env' : 'none', host, port, secure: port === 465,
+        user, pass: env.SMTP_PASS || env.EMAIL_PASSWORD, from: env.SMTP_FROM || env.EMAIL_FROM || user
+    };
+};
+
 const effectiveConfig = () => {
     const s = getStoredConfig();
     const e = s.email || {};
@@ -45,9 +57,7 @@ const effectiveConfig = () => {
         source: 'settings', host: e.host, port: e.port || 587, secure: !!e.secure,
         user: e.user || undefined, pass: envValue(e.passwordEnvVar), from: e.from || e.user
     } : {
-        source: process.env.SMTP_HOST ? 'env' : 'none', host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT, 10) || 587, secure: process.env.SMTP_SECURE === 'true',
-        user: process.env.SMTP_USER, pass: process.env.SMTP_PASS, from: process.env.SMTP_FROM || process.env.SMTP_USER
+        ...smtpFromEnv(process.env)
     };
     const sms = s.sms || {};
     const wa = s.whatsapp || {};

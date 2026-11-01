@@ -18,6 +18,9 @@ router.post('/', requireStaff, blockImpersonation, requirePermission('staff.crea
 router.post('/create-admin', requireStaff, blockImpersonation, requirePermission('staff.create', 'CREATE_ADMIN'), upload.any(), validate(adminValidation.createStaff), adminController.createAdmin);
 router.get('/get-admins', requireStaff, requirePermission('staff.view', 'VIEW_ADMINS'), adminController.getAdmins);
 
+// Id + name only, for "handled by" and assignee pickers: people who assign work do not need staff.view
+router.get('/assignable', requireStaff, requirePermission('staff.view', 'VIEW_ADMINS', 'complaints.assign', 'enquiries.view', 'enquiries.edit'), validate(adminValidation.assignableQuery), adminController.getAssignableStaff);
+
 // Library admin (platform level, superadmin only)
 router.post('/create-library', requireSuperAdmin, upload.any(), validate(superCreateLibrary), adminController.createLibrary);
 router.get('/get-libraries', requireSuperAdmin, adminController.getLibraries);
