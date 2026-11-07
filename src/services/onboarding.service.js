@@ -207,8 +207,12 @@ const completeRegistration = async ({ token, body, ip, issueSession }) => {
                 subscriptionPlan: plan, billingCycle: claimed.billingCycle, registrationConsent: consent,
             }, null, null);
         } catch (e) {
-            if (e && (e.code === 11000 || (e.status === 409 && /email/i.test(e.message || '')))) throw coded(409, 'EMAIL_TAKEN', 'An account with this e-mail already exists. Use another e-mail or leave it blank.');
-            if (e && e.status === 409) throw coded(409, 'ALREADY_REGISTERED', 'This number is already registered. Please sign in.');
+            // Only blame the e-mail when the clash really is on the e-mail the owner typed (not the placeholder, not another index)
+            const dupKey = e && e.code === 11000 ? Object.keys(e.keyPattern || e.keyValue || {}) : [];
+            const emailClash = data.email && (dupKey.includes('email') || (e && e.status === 409 && /email/i.test(e.message || '')));
+            if (emailClash) throw coded(409, 'EMAIL_TAKEN', 'An account with this e-mail already exists. Use another e-mail or leave it blank.');
+            if (dupKey.includes('mobile') || (e && e.status === 409 && !dupKey.length)) throw coded(409, 'ALREADY_REGISTERED', 'This number is already registered. Please sign in.');
+            if (dupKey.length) console.error('[register] duplicate key on', dupKey.join(','), e.message);
             throw e;
         }
 

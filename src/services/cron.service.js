@@ -241,7 +241,10 @@ const releaseNoShowSeats = async (now = new Date()) => {
 const migrateLegacyIndexes = async () => {
     const targets = [
         { model: Student, legacy: ['mobile_1'] },
-        { model: Seat, legacy: ['libraryId_1_seatNumber_1'] }
+        { model: Seat, legacy: ['libraryId_1_seatNumber_1'] },
+        // slug was removed from Library; its old non-sparse unique index lets only ONE library lack a slug, so every
+        // later sign-up failed with E11000. mobile_1 is recreated as unique among non-deleted libraries only.
+        { model: Library, legacy: ['slug_1', 'mobile_1'] }
     ];
     for (const { model, legacy } of targets) {
         try {
