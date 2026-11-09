@@ -9,7 +9,7 @@ const { syncLibrarySidebar } = require('./librarySidebar');
 
 // Idempotent master seed. It never deletes permissions, menus, roles or accounts:
 //  1. base sidebar menus are upserted (matched by title + parent + userType)
-//  2. operational menus (sidebarSeed) are upserted
+//  2. the library sidebar menus (librarySidebar.js) are synced
 //  3. the permission catalog and system roles (Super Admin, Admin, Staff, Receptionist, Accountant, Manager) are synced
 //  4. the platform Super Admin account is created if no superadmin exists (SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD)
 
