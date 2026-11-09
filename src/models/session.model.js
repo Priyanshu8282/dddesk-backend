@@ -9,6 +9,7 @@ const sessionSchema = new mongoose.Schema({
     refreshHash: { type: String, default: null },       // current refresh token (hash); null for support (impersonation) sessions
     prevRefreshHash: { type: String, default: null },   // previous token, kept briefly to tell a parallel tab from a stolen token
     rotatedAt: { type: Date, default: null },
+    recoveries: { type: Number, default: 0 },            // lost-reply recoveries after the grace window (session.service refresh)
     impersonatedBy: { type: mongoose.Schema.Types.ObjectId, default: null },
     persistent: { type: Boolean, default: true },        // "remember me": cookie survives browser restarts
     ip: { type: String, default: null },

@@ -17,6 +17,7 @@ const IDLE_MS = Number(process.env.REFRESH_IDLE_DAYS || 7) * DAY;
 const ABSOLUTE_MS = Number(process.env.REFRESH_ABSOLUTE_DAYS || 30) * DAY;
 const SESSION_ONLY_IDLE_MS = 1 * DAY;       // "don't remember me": the cookie dies with the browser, the row after a day idle
 const ROTATION_GRACE_MS = 20 * 1000;        // a parallel tab may still present the previous token for a few seconds
+const MAX_LATE_RECOVERIES = 3;              // lost-reply recoveries after the grace window, per session (see nextSecretFor)
 const MAX_SESSIONS_PER_USER = Number(process.env.MAX_SESSIONS_PER_USER || 10);
 const ACTIVE_CACHE_TTL_MS = Number(process.env.SESSION_CACHE_TTL_MS ?? 5000);
 
@@ -27,6 +28,22 @@ const safeEq = (a, b) => {
     return x.length > 0 && x.length === y.length && crypto.timingSafeEqual(x, y);
 };
 const fail = (status, message, extra = {}) => Object.assign(new Error(message), { status, statusCode: status, ...extra });
+
+// Each rotated refresh secret is derived from the one it replaces with a server-only key. When a browser shows up with the
+// PREVIOUS secret (the reply that carried the new cookie was lost: page reload mid-request, laptop asleep, wifi dropped), the
+// server can work out the current cookie and send it again instead of treating it as theft. Without the key nobody can
+// derive the next secret. Theft is still caught: once a stolen and the real cookie are both used, one of them is a reuse.
+let rotationKeyCache = null;
+const rotationKey = () => {
+    if (!rotationKeyCache) {
+        rotationKeyCache = process.env.REFRESH_ROTATION_SECRET
+            || crypto.createHmac('sha256', String(config.jwt.secret)).update('refresh-rotation').digest('hex');
+    }
+    return rotationKeyCache;
+};
+// Same browser and OS, ignoring version numbers (browsers update themselves during a long session)
+const sameBrowser = (a, b) => !!a && !!b && String(a).replace(/[\d._]+/g, '') === String(b).replace(/[\d._]+/g, '');
+const nextSecretFor = (sid, secret) => crypto.createHmac('sha256', rotationKey()).update(`${sid}.${secret}`).digest('base64url');
 
 // ---------------------------------------------------------------------------
 // "Is this session still alive?" - checked on every API call, cached for a few seconds per process.
@@ -263,9 +280,26 @@ const refresh = async (req, res) => {
 
     const presented = sha256(secret);
     let parallel = false;
+    let resend = null; // the current secret, when the browser never received it
     if (!safeEq(presented, session.refreshHash)) {
         if (session.prevRefreshHash && safeEq(presented, session.prevRefreshHash)) {
-            if (session.rotatedAt && now - session.rotatedAt < ROTATION_GRACE_MS) parallel = true;
+            const current = nextSecretFor(session._id, secret);
+            const derived = safeEq(sha256(current), session.refreshHash);
+            const inGrace = !!session.rotatedAt && now - session.rotatedAt < ROTATION_GRACE_MS;
+            // Late (laptop asleep, wifi dropped): a few times per session, and only from the browser that signed in.
+            // Each catch-up of a stolen copy uses one, so a thief and the owner taking turns still end in a reuse.
+            const lateOk = derived && !inGrace && (session.recoveries || 0) < MAX_LATE_RECOVERIES
+                && !!session.userAgent && sameBrowser(session.userAgent, describeRequest(req).userAgent);
+            if (derived && (inGrace || lateOk)) {
+                // the last rotation's reply never reached this browser (or a parallel tab is a moment behind): give it the
+                // current cookie again. No new rotation, so a tab that already holds the current cookie stays valid.
+                parallel = true;
+                resend = current;
+                if (lateOk) {
+                    await Session.updateOne({ _id: session._id }, { $inc: { recoveries: 1 } });
+                    securityLog.record(req, { type: 'session_refresh', outcome: 'success', reason: 'lost_reply_recovered', userId: session.userId, userType: session.userType, libraryId: session.libraryId });
+                }
+            } else if (inGrace) parallel = true;
             else {
                 // an old refresh token was replayed after it had been rotated: treat as theft and end the whole session
                 await revokeSession(session._id, 'refresh_reuse');
@@ -287,18 +321,21 @@ const refresh = async (req, res) => {
         return reject('credentials_changed');
     }
 
-    let newSecret = null;
+    const idle = session.persistent ? IDLE_MS : SESSION_ONLY_IDLE_MS;
+    const expiresAt = new Date(Math.min(now.getTime() + idle, session.absoluteExpiresAt.getTime()));
     if (!parallel) {
-        newSecret = crypto.randomBytes(48).toString('base64url');
-        const idle = session.persistent ? IDLE_MS : SESSION_ONLY_IDLE_MS;
-        const expiresAt = new Date(Math.min(now.getTime() + idle, session.absoluteExpiresAt.getTime()));
+        const newSecret = nextSecretFor(session._id, secret);
         const upd = await Session.findOneAndUpdate(
             { _id: session._id, refreshHash: session.refreshHash, revokedAt: null },
             { $set: { prevRefreshHash: session.refreshHash, refreshHash: sha256(newSecret), rotatedAt: now, lastUsedAt: now, expiresAt } },
             { new: true }
         );
-        if (!upd) parallel = true; // lost a race against another tab: it holds the new cookie
-        else setRefreshCookie(req, res, session._id, newSecret, session.persistent, expiresAt);
+        // lost a race against another tab of this browser: both derive the same next secret, so the cookie is the same
+        setRefreshCookie(req, res, session._id, newSecret, session.persistent, expiresAt);
+        if (!upd) parallel = true;
+    } else if (resend) {
+        await Session.updateOne({ _id: session._id, revokedAt: null }, { $set: { lastUsedAt: now, expiresAt } });
+        setRefreshCookie(req, res, session._id, resend, session.persistent, expiresAt);
     }
 
     return {
