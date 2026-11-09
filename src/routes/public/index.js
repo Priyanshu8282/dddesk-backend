@@ -16,6 +16,9 @@ router.use('/website', websiteRoutes);
 // Privacy / terms / refund text managed by the super admin: /v1/public/legal[/:type[/versions/:n]]
 router.use('/legal', require('./legal.routes'));
 
+// Student ID card QR check (live status): /v1/public/verify/student/:code
+router.use('/verify', require('./verify.routes'));
+
 // Health check: /v1/public/health
 router.use('/health', require('./health.routes'));
 

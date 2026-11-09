@@ -89,6 +89,15 @@ router.get('/payment-history/:id', requirePermission(...FEES_VIEW), studentContr
 // Per-student resources
 router.get('/:id/ledger', requirePermission(...FEES_VIEW), studentController.getLedger);
 router.get('/:id/memberships', requirePermission(...VIEW), studentController.getMemberships);
+// Signed code for the QR on the printed ID card (scanning it opens the public /verify page)
+router.get('/:id/id-card-code', requirePermission(...VIEW), async (req, res, next) => {
+    try {
+        const code = await require('../../services/idCardVerify.service').codeFor(req.libraryId, req.params.id);
+        if (!code) return res.status(404).json({ success: false, message: 'Student not found' });
+        res.set('Cache-Control', 'no-store');
+        return res.status(200).json({ success: true, data: { code } });
+    } catch (e) { return next(e); }
+});
 router.post('/:id/change-plan', requirePermission(...EDIT), validate(studentValidation.changePlan), studentController.changePlan);
 router.post('/:id/renew', requirePermission(...EDIT), validate(studentValidation.renew), studentController.renew);
 router.post('/:id/membership/pause', requirePermission(...EDIT), validate(studentValidation.pauseMembership), studentController.pauseMembership);

@@ -193,9 +193,18 @@ exports.getMe = catchAsync(async (req, res) => {
   // Owners and staff both need this (staff cannot read the billing routes) for the renew / contact-your-owner banner
   let subscription = null;
   if (lib && req.userType !== 'student') {
-    const plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId).select('graceDays').lean() : null;
+    const plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId).select('name graceDays monthlyPrice annualPrice trialDays').lean() : null;
     const s = getSubscriptionState(lib, plan);
-    subscription = { state: s.state, expiresAt: s.expiresAt, graceEndsAt: s.graceEndsAt, graceDaysLeft: s.graceDaysLeft };
+    const cycle = lib.billingCycle || 'monthly';
+    // The header shows the plan name to everyone, and a countdown for paid plans and trials.
+    // periodDays is the length of the running period, so the countdown ring can show how much of it is left.
+    subscription = {
+      state: s.state, expiresAt: s.expiresAt, graceEndsAt: s.graceEndsAt, graceDaysLeft: s.graceDaysLeft,
+      planName: plan?.name || lib.subscriptionPlan || null,
+      billingCycle: cycle,
+      isFree: plan ? !(plan.monthlyPrice > 0) && !(plan.annualPrice > 0) : !s.expiresAt,
+      periodDays: s.state === 'trial' ? (plan?.trialDays || 14) : cycle === 'annual' ? 365 : 30,
+    };
   }
   const profileData = {
     id: user._id,

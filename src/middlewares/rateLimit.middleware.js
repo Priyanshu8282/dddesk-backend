@@ -62,8 +62,16 @@ const accountOtpVerifyLimiter = make(10 * 60 * 1000, 12, 'Too many OTP attempts 
 const generalLimiter = make(60 * 1000, 100, 'Too many requests. Please slow down.', { name: 'general' });
 // Whole API, per client IP: generous, only stops floods and scrapers
 const apiLimiter = make(60 * 1000, Number(process.env.API_RATE_LIMIT_PER_MIN || 600), 'Too many requests. Please slow down.', { name: 'api' });
-// Cookie endpoints (refresh/logout)
-const refreshLimiter = make(60 * 1000, 30, 'Too many requests. Please slow down.', { name: 'refresh' });
+// Cookie endpoints (refresh/logout): limited per session (the id part of the refresh cookie), not per IP. Staff of one
+// library usually share one internet connection, and a per-IP limit made their refreshes fail together (429).
+const refreshSessionKey = (req) => {
+    const m = /(?:^|;\s*)dd_rt=([a-fA-F0-9]{24})\./.exec(String(req.headers.cookie || ''));
+    return m ? 's:' + m[1] : ipKeyGenerator(req.ip);
+};
+const refreshSessionLimiter = make(60 * 1000, 30, 'Too many requests. Please slow down.', { name: 'refresh', keyGenerator: refreshSessionKey });
+// ...plus a loose per-IP ceiling so made-up session ids cannot be used to dodge the limit
+const refreshIpLimiter = make(60 * 1000, Number(process.env.REFRESH_IP_LIMIT_PER_MIN || 300), 'Too many requests. Please slow down.', { name: 'refresh-ip' });
+const refreshLimiter = (req, res, next) => refreshIpLimiter(req, res, (err) => (err ? next(err) : refreshSessionLimiter(req, res, next)));
 
 // Library owner registration: few per hour per IP
 const registerLimiter = make(60 * 60 * 1000, 5, 'Too many registration attempts. Please try again later.', { name: 'register' });
