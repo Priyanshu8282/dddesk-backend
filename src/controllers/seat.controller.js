@@ -32,7 +32,7 @@ const lib = (req) => {
 
 exports.createSeat = catchAsync(async (req, res) => {
     const libraryId = lib(req);
-    const branchId = await branchForCreate(req, libraryId, req.body.branchId);
+    const branchId = await branchForCreate(req, libraryId, req.body.branchId, { mainByDefault: true });
     const seat = await seatService.createSeat(libraryId, req.body, req.user._id, branchId);
     audit(req, 'seat.create', 'Seat', seat._id, { seatNumber: seat.seatNumber });
     res.status(201).json({ success: true, message: 'Seat created successfully', data: seat });
@@ -49,7 +49,7 @@ exports.bulkCreateSeats = catchAsync(async (req, res) => {
     }
     if (!Array.isArray(seats) || seats.length === 0) throw new ApiError(400, 'seats array or valid count is required');
 
-    const branchId = await branchForCreate(req, libraryId, req.body.branchId);
+    const branchId = await branchForCreate(req, libraryId, req.body.branchId, { mainByDefault: true });
     const result = await seatService.bulkCreateSeats(libraryId, seats, req.user._id, branchId);
     audit(req, 'seat.bulk_create', 'Seat', null, { created: result.createdCount, skipped: result.skippedCount });
     res.status(201).json({

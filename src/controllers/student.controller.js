@@ -35,7 +35,8 @@ exports.createStudent = catchAsync(async (req, res) => {
             type: req.body.documentType || 'other', name: f.originalname, url: f.path, uploadedAt: new Date()
         }));
     }
-    data.branchId = await branchForCreate(req, lib(req), data.branchId);
+    // with a seat and no branch picked, the seat's branch is used (registerStudent); otherwise the main branch
+    data.branchId = await branchForCreate(req, lib(req), data.branchId, { mainByDefault: !data.seatId });
     const result = await studentService.registerStudent(lib(req), data, req);
     ok(res, 'Student registered successfully', result.student, {
         credentials: result.credentials,
@@ -48,7 +49,7 @@ exports.createStudent = catchAsync(async (req, res) => {
 exports.importStudents = catchAsync(async (req, res) => {
     const libraryId = lib(req);
     const { rows, dryRun, branchId, consentConfirmed } = req.body;
-    const branch = await branchForCreate(req, libraryId, branchId);
+    const branch = await branchForCreate(req, libraryId, branchId, { mainByDefault: true });
     const result = await studentService.importStudents(libraryId, rows, req, { dryRun: !!dryRun, branchId: branch, consentConfirmed: !!consentConfirmed });
     const { summary } = result;
     ok(res, dryRun

@@ -78,12 +78,15 @@ const resolveBranch = async (libraryId, branchId, { required = false } = {}) => 
 
 // Branch to stamp on a new record created by the request user: explicit (validated) or,
 // for a staff limited to exactly one branch, that branch.
-const branchForCreate = async (req, libraryId, explicit) => {
+// { mainByDefault: true } (students, seats): an unrestricted user who picks no branch gets the main branch, so the record
+// is never left without a branch. Content (notices, banners, stories) keeps null, which there means "every branch".
+const branchForCreate = async (req, libraryId, explicit, { mainByDefault = false } = {}) => {
     const id = await resolveBranch(libraryId, explicit);
     const allowed = allowedBranchIds(req);
     if (id) { assertBranchAccess(req, id); return id; }
     if (allowed && allowed.length === 1) return toOid(allowed[0]);
     if (allowed) throw new ApiError(400, 'branchId is required for branch-limited staff');
+    if (mainByDefault) return require('../services/branch.service').mainBranchId(libraryId);
     return null;
 };
 

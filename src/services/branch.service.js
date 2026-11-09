@@ -132,6 +132,35 @@ exports.createBranch = async (libraryId, body) => {
   });
 };
 
+/**
+ * The first branch of a new library, made at sign-up: named after its city ("Udaipur"), with the library's address,
+ * contact and hours. Does nothing when the library already has a branch.
+ */
+exports.createMainBranch = async (library) => {
+  if (await Branch.exists({ libraryId: library._id, isDeleted: false })) return null;
+  const hours = library.workingHours || {};
+  const open = hours.openingTime || '06:00 AM';
+  const close = hours.closingTime || '11:00 PM';
+  // the library's hours when they are real times in order; otherwise the branch defaults (06:00 AM - 11:00 PM)
+  const o = toMin(open), c = toMin(close);
+  const times = o !== null && c !== null && c > o ? { openingTime: open, closingTime: close } : {};
+  const email = library.email && !/@noemail\.dddesk\.invalid$/i.test(library.email) ? library.email : '';
+  return Branch.create({
+    libraryId: library._id,
+    name: String(library.city || '').trim() || 'Main branch',
+    address: library.address || '', city: library.city || '', state: library.state || '', pincode: library.pincode || '',
+    mobile: library.mobile || '', email,
+    ...times,
+    isMain: true,
+  });
+};
+
+/** Id of the library's main branch, or null when it has none */
+exports.mainBranchId = async (libraryId) => {
+  const b = await Branch.findOne({ libraryId, isMain: true, isDeleted: false, isActive: true }).select('_id').lean();
+  return b ? b._id : null;
+};
+
 exports.updateBranch = async (id, libraryId, body) => {
   const update = pick(body, UPDATE_FIELDS);
   if (body.managerId !== undefined) update.managerId = await assertManager(body.managerId || null, libraryId);

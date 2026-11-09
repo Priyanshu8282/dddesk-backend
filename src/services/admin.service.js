@@ -241,6 +241,10 @@ exports.createLibraryWithAdmin = async (input, files, requestingUser) => {
   // the library's own copy of the basic roles (Staff, Receptionist, Accountant, Manager); never blocks sign-up
   try { await require('./libraryRoles.service').provisionDefaultRoles(library._id, admin._id); } catch (e) { console.error('default roles were not created:', e.message); }
 
+  // Every library starts with its main branch, named after the city chosen at sign-up, so students, seats and staff
+  // always belong to a branch (a record with no branch is invisible to staff limited to a branch). Never blocks sign-up.
+  try { await require('./branch.service').createMainBranch(library); } catch (e) { console.error('main branch was not created:', e.message); }
+
   if (bySuper) {
     const { provisionLibrary } = require('./libraryProvision.service');
     const r = await provisionLibrary(library, { approvedBy: requestingUser._id });

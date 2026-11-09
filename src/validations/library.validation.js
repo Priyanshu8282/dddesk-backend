@@ -80,7 +80,7 @@ const profileBody = z.object({
     name: z.string().trim().min(2).max(120),
     description: z.string().trim().max(2000),
     alternativeMobileNumber: z.union([z.literal(''), mobile]), // '' clears it
-    email: z.string().trim().toLowerCase().email(),
+    email: z.union([z.literal(''), z.string().trim().toLowerCase().email('Enter a valid email address')]), // optional: '' clears it
     address: z.string().trim().max(300),
     city: z.string().trim().max(80),
     state: z.string().trim().max(80),

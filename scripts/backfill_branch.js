@@ -12,12 +12,14 @@
  *      membership history) -> that student's branch (after step 1 every student has one).
  *   3. seat history -> the branch of its seat.
  *   Notices / stories / banners are NOT touched: null already means "all branches".
- * Libraries with no branches are skipped (everything stays null = single-branch behaviour).
+ * A library with no branch first gets its main branch, named after its city (like a new sign-up, see
+ * branch.service createMainBranch), then the rules above run for it.
  *
  * Usage (from backend/):
  *   node scripts/backfill_branch.js            # DRY RUN: only prints what would change
  *   node scripts/backfill_branch.js --apply    # writes the changes
  *   node scripts/backfill_branch.js --apply --library=<libraryId>   # one library only
+ *   node scripts/backfill_branch.js --apply --skip-existing         # only libraries that had no branch yet
  */
 const mongoose = require('mongoose');
 require('dotenv').config();
@@ -37,6 +39,7 @@ const SeatHistory = require('../src/models/seatHistory.model');
 
 const APPLY = process.argv.includes('--apply');
 const ONLY = (process.argv.find((a) => a.startsWith('--library=')) || '').split('=')[1];
+const SKIP_EXISTING = process.argv.includes('--skip-existing');
 const CHUNK = 2000;
 
 const NO_BRANCH = { $or: [{ branchId: null }, { branchId: { $exists: false } }] };
@@ -56,16 +59,34 @@ const run = async () => {
     console.log(`Connected. Mode: ${APPLY ? 'APPLY (writing)' : 'DRY RUN (no writes)'}`);
 
     const libFilter = ONLY ? { _id: new mongoose.Types.ObjectId(ONLY) } : {};
-    const libraries = await mongoose.connection.collection('libraries').find(libFilter, { projection: { _id: 1, name: 1 } }).toArray();
+    const libraries = await mongoose.connection.collection('libraries').find({ ...libFilter, isDeleted: { $ne: true } }).toArray();
+    const { createMainBranch } = require('../src/services/branch.service');
 
     const totals = {};
     const add = (k, n) => { totals[k] = (totals[k] || 0) + n; };
 
     for (const lib of libraries) {
         const branches = await Branch.find({ libraryId: lib._id, isDeleted: false }).sort({ isMain: -1, createdAt: 1 }).lean();
-        if (!branches.length) { console.log(`- ${lib.name || lib._id}: no branches, skipped`); continue; }
-        const main = branches[0];
-        console.log(`- ${lib.name || lib._id}: main branch "${main.name}" (${main._id})`);
+        let main = branches[0];
+        if (!main) {
+            const name = String(lib.city || '').trim() || 'Main branch';
+            add('branchesCreated', 1);
+            if (!APPLY) {
+                // dry run: count what would move into the branch about to be made
+                console.log(`- ${lib.name || lib._id}: would create main branch "${name}"`);
+                for (const [label, Model] of [['students', Student], ['seats', Seat], ['expenses', Expense], ['enquiries', Enquiry], ['complaints', Complaint], ['attendance', Attendance], ['payments', Payment], ['transactions', PaymentTransaction], ['membershipHistory', MembershipHistory], ['seatHistory', SeatHistory]]) {
+                    add(label, await count(Model, { libraryId: lib._id, ...NO_BRANCH }));
+                }
+                continue;
+            }
+            main = await createMainBranch(lib);
+            console.log(`- ${lib.name || lib._id}: created main branch "${main.name}" (${main._id})`);
+        } else if (SKIP_EXISTING) {
+            console.log(`- ${lib.name || lib._id}: already has main branch "${main.name}", skipped (--skip-existing)`);
+            continue;
+        } else {
+            console.log(`- ${lib.name || lib._id}: main branch "${main.name}" (${main._id})`);
+        }
 
         // 1. entities with no student link -> main branch
         for (const [label, Model] of [['students', Student], ['seats', Seat], ['expenses', Expense], ['enquiries', Enquiry], ['complaints', Complaint]]) {
