@@ -95,9 +95,10 @@ const markManual = catchAsync(async (req, res) => {
     throw new ApiError(403, 'You do not have permission to perform this action');
   }
   const result = await attendanceService.manualMark({
-    libraryId: req.libraryId, library: req.library, studentId, type, time, markedBy: req.user._id
+    libraryId: req.libraryId, library: req.library, studentId, type, time, markedBy: req.user._id,
+    allowWithoutPlan: req.body.allowWithoutPlan === true
   });
-  audit(req, `attendance.manual_${type}`, 'Attendance', result.attendance._id, { studentId });
+  audit(req, `attendance.manual_${type}`, 'Attendance', result.attendance._id, { studentId, ...(req.body.allowWithoutPlan === true ? { withoutPlan: true } : {}) });
   ApiResponse.created(res, result, type === 'in' ? 'Checked in successfully' : 'Checked out successfully');
 });
 

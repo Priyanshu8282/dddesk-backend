@@ -131,7 +131,7 @@ const publishDueNotices = async () => {
 
 // ─── Staff operations ────────────────────────────────────────────────────────
 const createNotice = async (libraryId, body, file, creatorId) => {
-    const data = pick(body, ['title', 'description', 'type', 'isPinned', 'showOnWebsite', 'targetStudents', 'targetBranchIds', 'targetPlanIds', 'branchId']); // branchId validated by the controller
+    const data = pick(body, ['title', 'description', 'type', 'isPinned', 'targetStudents', 'targetBranchIds', 'targetPlanIds', 'branchId']); // branchId validated by the controller
     data.sendTo = normAudience(body.sendTo);
     data.startDate = body.startDate ? new Date(body.startDate) : new Date();
     const end = body.endDate || body.expiryDate;
@@ -212,7 +212,7 @@ const updateNotice = async (id, libraryId, body, file) => {
     const existing = await Notice.findOne({ _id: id, libraryId });
     if (!existing) return null;
 
-    const set = pick(body, ['title', 'description', 'type', 'isPinned', 'showOnWebsite', 'isActive', 'targetStudents', 'targetBranchIds', 'targetPlanIds', 'branchId']); // branchId validated by the controller
+    const set = pick(body, ['title', 'description', 'type', 'isPinned', 'isActive', 'targetStudents', 'targetBranchIds', 'targetPlanIds', 'branchId']); // branchId validated by the controller
     if (body.sendTo) set.sendTo = normAudience(body.sendTo);
     if (body.startDate !== undefined) { // null clears it
         set.startDate = body.startDate ? new Date(body.startDate) : null;

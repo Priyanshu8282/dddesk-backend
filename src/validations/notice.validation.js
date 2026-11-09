@@ -46,7 +46,6 @@ const fields = {
     endDate: clearableDate,
     expiryDate: isoDate, // legacy alias of endDate
     isPinned: bool,
-    showOnWebsite: bool,
     isActive: bool,
     removeImage: bool,
     branchId: z.preprocess((v) => (v === '' || v === 'null' ? null : v), objectId.nullish()) // null = all branches
@@ -64,7 +63,6 @@ const createNotice = z.object({
         targetBranchIds: fields.targetBranchIds.optional(),
         targetPlanIds: fields.targetPlanIds.optional(),
         isPinned: fields.isPinned.optional(),
-        showOnWebsite: fields.showOnWebsite.optional(),
         isActive: fields.isActive.optional(),
         removeImage: fields.removeImage.optional(),
         branchId: fields.branchId.optional()

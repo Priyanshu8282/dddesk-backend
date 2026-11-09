@@ -24,9 +24,6 @@ const noticeSchema = new mongoose.Schema({
     endDate: { type: Date, default: null },
     publishDate: { type: Date, default: Date.now }, // legacy mirror of startDate
 
-    // Public audience: show on the library's public website (default: students only)
-    showOnWebsite: { type: Boolean, default: false },
-
     isPinned: { type: Boolean, default: false },
     views: { type: Number, default: 0 },
     seenBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Student' }], // unique views

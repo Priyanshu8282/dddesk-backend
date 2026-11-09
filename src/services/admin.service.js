@@ -128,8 +128,10 @@ exports.createStaff = async (req) => {
   const library = await Library.findOne({ _id: tenant, isDeleted: false });
   if (!library) throw err('Library not found', 404);
 
-  const email = String(body.email).toLowerCase();
-  if (await Admin.findOne({ email })) throw err('Email already exists', 400);
+  // Email is optional: without one the account gets a hidden placeholder (like an owner who registered by mobile) and signs in with the mobile number
+  const emailIsPlaceholder = !body.email;
+  const email = emailIsPlaceholder ? `m${normalizeMobile(body.mobile)}@noemail.dddesk.invalid` : String(body.email).toLowerCase();
+  if (!emailIsPlaceholder && await Admin.findOne({ email })) throw err('Email already exists', 400);
   await assertMobileFree(normalizeMobile(body.mobile));
 
   // Plan limit (spec 12 / platform plan maxStaff)
@@ -150,6 +152,7 @@ exports.createStaff = async (req) => {
     ...pick(body, STAFF_FIELDS.filter((k) => k !== 'email')),
     mobile: normalizeMobile(body.mobile),
     email,
+    emailIsPlaceholder,
     password: body.password,       // hashed by pre-save hook
     userType: 'staff',
     roleId: role._id,
@@ -160,7 +163,7 @@ exports.createStaff = async (req) => {
     createdBy: req.user._id,
   }).catch((e) => { if (e && e.code === 11000) throw err('Email already exists', 400); throw e; });
 
-  await audit(req, 'staff.create', 'Admin', staff._id, { email, roleId: role._id, roleName: role.name, branchIds });
+  await audit(req, 'staff.create', 'Admin', staff._id, { email: emailIsPlaceholder ? null : email, roleId: role._id, roleName: role.name, branchIds });
   return Admin.findById(staff._id).populate('roleId', 'name').populate('branchIds', 'name');
 };
 

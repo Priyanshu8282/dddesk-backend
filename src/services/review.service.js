@@ -97,59 +97,6 @@ exports.listReviews = async (libraryId, query = {}) => {
     return { data, total, page, totalPages: Math.ceil(total / limit), limit };
 };
 
-/**
- * Approved public reviews for the library website (only when the website shows reviews).
- * Never exposes student ids or contact data.
- */
-exports.getPublicReviews = async (libraryId) => {
-    const LibraryWebsite = require('../models/libraryWebsite.model');
-    const site = await LibraryWebsite.findOne({ libraryId }).select('showReviews').lean();
-    if (site && site.showReviews === false) {
-        return { summary: { averageRating: 0, totalReviews: 0, ratingDistribution: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 }, aspectAverages: {} }, reviews: [] };
-    }
-
-    const reviews = await Review.find({ libraryId, status: 'approved', type: 'public' })
-        .sort({ isFeatured: -1, rating: -1, createdAt: -1 }).limit(100)
-        .populate('studentId', 'name profileImage');
-
-    let sumRating = 0;
-    const distribution = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
-    const aspectKeys = ['cleanliness', 'wifi', 'comfort', 'ambience', 'staff'];
-    const aspectSums = {}; const aspectCounts = {};
-    aspectKeys.forEach((k) => { aspectSums[k] = 0; aspectCounts[k] = 0; });
-
-    const sanitized = reviews.map((r) => {
-        sumRating += r.rating;
-        const star = Math.min(5, Math.max(1, Math.floor(r.rating)));
-        distribution[star] += 1;
-        aspectKeys.forEach((k) => { if (r.aspects && r.aspects[k]) { aspectSums[k] += r.aspects[k]; aspectCounts[k] += 1; } });
-        return {
-            _id: r._id,
-            rating: r.rating,
-            review: r.review,
-            aspects: r.aspects,
-            isFeatured: r.isFeatured,
-            authorName: r.isAnonymous ? 'Verified Member' : (r.studentId?.name || r.studentName || 'Member'),
-            authorImage: r.isAnonymous ? null : (r.studentId?.profileImage || null),
-            ownerReply: r.ownerReply?.text ? { text: r.ownerReply.text, repliedAt: r.ownerReply.repliedAt } : null,
-            createdAt: r.createdAt
-        };
-    });
-
-    const totalCount = reviews.length;
-    const aspectAverages = {};
-    aspectKeys.forEach((k) => {
-        aspectAverages[k] = aspectCounts[k] > 0 ? Math.round((aspectSums[k] / aspectCounts[k]) * 10) / 10 : null;
-    });
-    return {
-        summary: {
-            averageRating: totalCount > 0 ? Math.round((sumRating / totalCount) * 10) / 10 : 0,
-            totalReviews: totalCount, ratingDistribution: distribution, aspectAverages
-        },
-        reviews: sanitized
-    };
-};
-
 // Student's own reviews (public + internal)
 exports.getMyReview = async (studentId, libraryId) =>
     Review.find({ studentId, libraryId }).populate('ownerReply.repliedBy', 'name').sort({ createdAt: -1 });

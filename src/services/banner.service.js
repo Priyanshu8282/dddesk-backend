@@ -138,7 +138,9 @@ const getActiveBanners = async (libraryId, location, branchId) => {
     const filter = {
         libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now }
     };
-    if (location === 'website' || location === 'app') filter.displayLocation = { $in: [location, 'both'] };
+    // The student app shows every banner except website-only ones; older banners saved without a location count as app banners
+    if (location === 'app') filter.displayLocation = { $ne: 'website' };
+    else if (location === 'website') filter.displayLocation = { $in: ['website', 'both'] };
     if (branchId !== undefined) filter.$and = [branchVisibility(branchId)];
     return Banner.find(filter)
         .select('title description bannerType image ctaText ctaUrl redirectUrl displayLocation priority displayOrder startDate endDate')

@@ -15,7 +15,6 @@ const couponValidation = require('./coupon.validation');
 const reviewValidation = require('./review.validation');
 const reportValidation = require('./report.validation');
 const aiValidation = require('./ai.validation');
-const websiteValidation = require('./website.validation');
 
 module.exports = {
     authValidation,
@@ -34,6 +33,5 @@ module.exports = {
     couponValidation,
     reviewValidation,
     reportValidation,
-    aiValidation,
-    websiteValidation
+    aiValidation
 };

@@ -40,7 +40,8 @@ const strongPassword = z.string('Password is required').min(8, 'Password must be
 const createStaff = z.object({
     body: z.object({
         ...commonFields,
-        email: z.string().trim().toLowerCase().email('Valid email is required'),
+        // optional: without one the staff member signs in with their mobile number
+        email: emptyToUndef(z.string().trim().toLowerCase().email('That email address does not look right').optional()),
         password: strongPassword,
         confirmPassword: z.string('Please confirm the password'),
         roleId: emptyToUndef(objectId.optional()),
@@ -53,7 +54,7 @@ const updateStaff = z.object({
     params: z.object({ id: objectId }),
     body: z.object({
         ...commonFields,
-        email: z.string().trim().toLowerCase().email().optional(),
+        email: emptyToUndef(z.string().trim().toLowerCase().email().optional()),
         roleId: emptyToUndef(objectId.optional()),
         branchIds: idList.optional(),
         status: z.preprocess((v) => (v === 'true' || v === 'active' ? true : v === 'false' || v === 'inactive' ? false : v), z.boolean().optional()),

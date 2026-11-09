@@ -30,7 +30,8 @@ const manualMark = z.object({
     body: z.object({
         studentId: objectId,
         type: z.enum(['in', 'out']),
-        time: isoDate.optional()
+        time: isoDate.optional(),
+        allowWithoutPlan: z.boolean().optional()
     })
 });
 

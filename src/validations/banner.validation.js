@@ -44,7 +44,7 @@ const createBanner = z.object({
         startDate: z.string().min(1, 'Start date is required').pipe(isoDate),
         endDate: z.string().min(1, 'End date is required').pipe(isoDate),
         bannerType: base.bannerType.default('OTHER'),
-        displayLocation: base.displayLocation.default('both')
+        displayLocation: base.displayLocation.default('app')
     }).strip().superRefine(dateOrder)
 });
 

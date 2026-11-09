@@ -75,7 +75,6 @@ const GROUPS = [
   // Settings: Manage selected operational settings
   P('Manage Settings', 'settings.manage', 'SETTINGS', 'Manage library profile and operational settings'),
   P('Manage Branches', 'branches.manage', 'SETTINGS', 'Edit branch details'),
-  P('Manage Website', 'website.manage', 'SETTINGS', 'Edit the public library website'),
   P('Manage Support Tickets', 'support.manage', 'SETTINGS', 'Create and reply to support tickets with the platform team'),
   P('Use AI Assistant', 'ai.use', 'AI', 'Use the AI owner assistant (answers are limited to data the user may see)'),
   // Enquiries
@@ -138,7 +137,7 @@ const ROLE_TEMPLATES = {
     'seats.view', 'seats.manage', 'seats.assign', 'seats.transfer', 'seats.block',
     'attendance.view', 'attendance.checkin', 'attendance.checkout', 'attendance.correct',
     'fees.view', 'fees.collect', 'fees.allocate', 'reports.view', 'reports.export', 'expenses.view', 'expenses.manage',
-    'website.manage', 'ai.use', 'content.view', 'content.create', 'content.publish',
+    'ai.use', 'content.view', 'content.create', 'content.publish',
     'enquiries.view', 'enquiries.create', 'enquiries.edit', 'enquiries.convert',
     'complaints.view', 'complaints.assign', 'complaints.resolve',
   ],

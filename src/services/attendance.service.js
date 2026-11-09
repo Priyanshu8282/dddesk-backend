@@ -126,6 +126,8 @@ const getStudentInLibrary = async (studentId, libraryId) => {
     return student;
 };
 
+const hasActivePlan = (s) => s.planStatus === 'active' && !(s.expiryDate && new Date(s.expiryDate) < new Date());
+
 // Throws when the student cannot use the library. Returns non-blocking warnings.
 const assertEligible = (student, libraryId, library, { strictMembership = true } = {}) => {
     if (String(idOf(student.libraryId)) !== String(libraryId)) {
@@ -407,11 +409,11 @@ const studentScan = async ({ student, library, token, action, source = 'qr' }) =
     if (token) payload = verifyQR(token, libraryId);
     else if (!rules.allowSelfCheckWithoutQR) throw new ApiError(400, 'Please scan the library QR code to continue');
 
-    // Inactive students are rejected before the code is claimed
-    const warnings = assertEligible(student, libraryId, library, { strictMembership: true });
-
     const open = await findOpenSession(student._id, libraryId);
     const direction = open ? 'out' : 'in';
+    // Inactive students are rejected before the code is claimed. Check-in needs an active plan; check-out never does:
+    // a plan that ran out while the student was inside must not lock them in.
+    const warnings = assertEligible(student, libraryId, library, { strictMembership: direction === 'in' });
     if (action && action !== direction) {
         throw new ApiError(409, direction === 'out' ? 'You are already checked in' : 'You are not checked in');
     }
@@ -433,9 +435,17 @@ const studentScan = async ({ student, library, token, action, source = 'qr' }) =
 };
 
 // Staff manual check-in/out
-const manualMark = async ({ libraryId, library, studentId, type, time, markedBy }) => {
+const manualMark = async ({ libraryId, library, studentId, type, time, markedBy, allowWithoutPlan = false }) => {
     const student = await getStudentInLibrary(studentId, libraryId);
     if (student.status !== 'active') throw new ApiError(400, 'Student account is not active');
+    // Staff may let in a student without a running plan (trial day, paying at the desk), but only on purpose
+    if (type === 'in' && !allowWithoutPlan && !hasActivePlan(student)) {
+        const err = new ApiError(409, student.planStatus === 'none' || !student.planStatus
+            ? `${student.name} has no plan yet. Assign a plan, or confirm to check in anyway.`
+            : `${student.name}'s plan is not active (${student.planStatus === 'active' ? 'expired' : student.planStatus}). Renew it, or confirm to check in anyway.`);
+        err.errorCode = 'NO_ACTIVE_PLAN';
+        throw err;
+    }
     const warnings = assertEligible(student, libraryId, library, { strictMembership: false });
     const at = time ? new Date(time) : new Date();
     if (Number.isNaN(at.getTime())) throw new ApiError(400, 'Invalid time');
@@ -573,7 +583,7 @@ const markAbsentees = async ({ date = new Date(), libraryId } = {}) => {
 };
 
 // ─── Queries ─────────────────────────────────────────────────────────────────
-const STUDENT_FIELDS = 'name mobile rollNumber profileImage seatNumber';
+const STUDENT_FIELDS = 'name mobile rollNumber profileImage seatNumber planStatus expiryDate';
 
 // `scope` = branch filter fragment from utils/branchScope.branchFilter(req) ({} = all branches)
 const getToday = async (libraryId, query = {}, scope = {}) => {
@@ -600,7 +610,8 @@ const getToday = async (libraryId, query = {}, scope = {}) => {
         const sessions = list.filter((r) => r.status === 'present');
         const base = {
             studentId: String(s._id), name: s.name, mobile: s.mobile || '', rollNumber: s.rollNumber || '',
-            profileImage: s.profileImage || null, seatNumber: s.seatNumber || null, date: today
+            profileImage: s.profileImage || null, seatNumber: s.seatNumber || null, date: today,
+            planActive: hasActivePlan(s), planStatus: s.planStatus || 'none'
         };
         if (sessions.length) {
             const last = sessions[sessions.length - 1];

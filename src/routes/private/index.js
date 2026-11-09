@@ -23,7 +23,6 @@ const bannerRoutes = require('./banner.routes');
 const notificationRoutes = require('./notification.routes');
 const permissionRoutes = require('./permission.routes');
 const settingRoutes = require('./setting.routes');
-const websiteRoutes = require('./website.routes');
 const branchRoutes = require('./branch.routes');
 const sidebarRoutes = require('./sidebar.routes');
 const complaintRoutes = require('./complaint.routes');
@@ -97,7 +96,6 @@ router.use('/banners', bannerRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/permissions', permissionRoutes);
 router.use('/settings', settingRoutes);
-router.use('/website', websiteRoutes);
 router.use('/branches', branchRoutes);
 router.use('/sidebar', sidebarRoutes);
 

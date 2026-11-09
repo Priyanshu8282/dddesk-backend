@@ -52,7 +52,7 @@ test('banners', () => {
   const base = { title: 'Admission open', startDate: day(-1), endDate: day(30) };
   const d = ok(s, { body: base });
   assert.equal(d.body.bannerType, 'OTHER');
-  assert.equal(d.body.displayLocation, 'both');
+  assert.equal(d.body.displayLocation, 'app'); // banners go to the student app
   bad(s, { body: { ...base, startDate: '' } }, 'start date required');
   bad(s, { body: { ...base, startDate: day(10), endDate: day(1) } }, 'end before start');
   bad(s, { body: { ...base, ctaUrl: 'javascript:alert(1)' } }, 'javascript: URL');

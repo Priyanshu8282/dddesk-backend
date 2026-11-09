@@ -13,7 +13,6 @@
 const FEATURE_KEYS = Object.freeze({
     ai: 'ai',                       // AI assistant (/ai, /assistant)
     reports: 'reports',             // reports & BI
-    website: 'website',             // public library website
     multiBranch: 'multiBranch',     // more than one branch
     onlinePayments: 'onlinePayments',
     sms: 'sms',
