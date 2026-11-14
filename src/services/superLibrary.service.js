@@ -338,7 +338,11 @@ exports.deleteLibrary = async (id, userId, ip) => {
   if (!lib) throw err('Library not found', 404);
 
   await Library.updateOne({ _id: id }, { isDeleted: true, status: 'rejected', statusReason: 'Deleted by superadmin' });
-  await Admin.updateMany({ libraryId: id, isDeleted: false }, { $set: { isDeleted: true, status: false } });
+  // free every e-mail of the deleted library (kept in deletedEmail), so its owner and staff can sign up again
+  await Admin.updateMany({ libraryId: id, isDeleted: false }, [{ $set: {
+    isDeleted: true, status: false, deletedEmail: '$email',
+    email: { $concat: ['deleted-', { $toString: '$_id' }, '@deleted.dddesk.invalid'] },
+  } }]);
   invalidateAuthCacheForLibrary(id);
   await logAudit('library_deleted', lib._id, userId, { libraryName: lib.name }, ip);
 };

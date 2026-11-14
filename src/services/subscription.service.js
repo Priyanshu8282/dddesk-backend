@@ -391,7 +391,7 @@ exports.handleCaptured = async (pay) => {
     const record = await PlatformPayment.findOne({ razorpayOrderId: pay.order_id });
     if (!record) return;
     if (record.status === 'paid') { await repairPayment(record); return; }
-    if (pay.amount !== Math.round(record.amount * 100)) {
+    if (pay.amount !== Math.round(record.amount * 100) || (pay.currency && pay.currency !== 'INR')) {
         await markFailed(record, 'Captured amount does not match the order', { needsReview: true });
         return;
     }

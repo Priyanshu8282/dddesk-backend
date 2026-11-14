@@ -46,6 +46,8 @@ router.get('/daily', authorize, paused, async (req, res, next) => {
     await run('subscriptionLifecycle', () => require('../services/subscriptionCron.service').runSubscriptionLifecycle());
     await run('membershipExpiry', async () => ({ expired: await core.expireMemberships(), resumed: await core.autoResumePaused() }));
     await run('feeJobs', () => require('../services/feeCron.service').runFeeJobs());
+    await run('paymentRecovery', () => require('../services/feeLedger.service').reconcileStuckTransactions());
+    await run('onlineRenewals', () => require('../services/selfRenewal.service').sweep());
     res.json({ success: Object.values(out).every((r) => r.ok), data: out });
 });
 

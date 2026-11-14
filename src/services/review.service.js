@@ -63,11 +63,22 @@ exports.submitReview = async (student, libraryId, data) => {
     }
 
     try {
-        return await Review.create({
+        const created = await Review.create({
             libraryId, studentId: student._id, studentName: student.name || 'Student', type,
             rating: data.rating, review: text, textHash, isAnonymous: !!data.isAnonymous,
             aspects: data.aspects, status: 'pending'
         });
+        // tell the owner and staff a new review is waiting (inbox + push); never fails the submit
+        try {
+            Promise.resolve(require('./notification.service').notifyEvent('review-new', libraryId, {
+                variables: {
+                    rating: data.rating, fromName: data.isAnonymous ? 'A student' : (student.name || 'A student'),
+                    comment: text ? String(text).slice(0, 120) : 'No comment',
+                },
+                data: { type: 'review_new', reviewId: String(created._id) }
+            })).catch(() => {});
+        } catch (_) { /* ignore */ }
+        return created;
     } catch (e) {
         if (e.code === 11000) throw new ApiError(409, 'You have already submitted a review');
         throw e;
@@ -139,6 +150,13 @@ exports.replyToReview = async (id, libraryId, replyText, adminUser) => {
     if (!review) throw new ApiError(404, 'Review not found');
     review.ownerReply = { text: replyText, repliedBy: adminUser._id, repliedAt: new Date() };
     await review.save();
+    // tell the student their review got an answer (inbox + push)
+    try {
+        Promise.resolve(require('./notification.service').notifyEvent('review-reply', libraryId, {
+            studentId: review.studentId, variables: { reply: String(replyText).slice(0, 200) },
+            data: { type: 'review_reply', reviewId: String(review._id) }
+        })).catch(() => {});
+    } catch (_) { /* ignore */ }
     return exports.getReviewById(id, libraryId);
 };
 

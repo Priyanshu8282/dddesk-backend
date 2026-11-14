@@ -5,6 +5,7 @@ const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
 const { branchVisibility } = require('../utils/branchScope');
 const { startOfDayIST, endOfDayIST } = require('../utils/time');
+const { removeUploadedFile } = require('../utils/fileCleanup');
 
 // 'YYYY-MM-DD' (date-only) means the whole IST day; full timestamps are kept as given
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
@@ -106,9 +107,11 @@ const updateBannerById = async (id, libraryId, body, file) => {
     if (body.endDate) set.endDate = parseEnd(body.endDate);
     checkDates(set.startDate || banner.startDate, set.endDate || banner.endDate);
     const image = imagePath(file);
+    const oldImage = image && banner.image !== image ? banner.image : null;
     if (image) set.image = image;
     banner.set(set);
     await banner.save();
+    if (oldImage) removeUploadedFile(oldImage).catch(() => {});
     return banner;
 };
 

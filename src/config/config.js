@@ -11,6 +11,8 @@ const envVars = {
     // Access tokens are short-lived; the refresh cookie (see services/session.service.js) keeps the user signed in.
     // JWT_EXPIRATION is the legacy name of this setting; anything longer than 1 hour is ignored on purpose.
     ACCESS_TOKEN_TTL: process.env.ACCESS_TOKEN_TTL || '30m',
+    // native apps' long-lived revocable token (read below); was missing here, so the setting was silently ignored
+    MOBILE_ACCESS_TOKEN_TTL: process.env.MOBILE_ACCESS_TOKEN_TTL,
 };
 
 if (!envVars.JWT_SECRET) {
@@ -65,6 +67,12 @@ const productionProblems = (env = process.env) => {
     if (!String(env.RAZORPAY_WEBHOOK_SECRET || '').trim() && String(env.RAZORPAY_KEY_ID || '').trim()) {
         problems.push('RAZORPAY_WEBHOOK_SECRET is not set while Razorpay keys are configured');
     }
+    // Aadhaar numbers are kept only as a keyed hash: tied to JWT_SECRET, rotating that secret would break every duplicate check
+    if (String(env.AADHAAR_HASH_SECRET || '').trim().length < 32) problems.push('AADHAAR_HASH_SECRET must be set (32+ characters) and never changed');
+    // ID card QR codes are signed with this key: without it they fall back to a key derived from JWT_SECRET, so rotating JWT_SECRET would silently invalidate every printed card
+    if (!String(env.ID_CARD_SECRET || '').trim()) problems.push('ID_CARD_SECRET must be set and never changed (otherwise ID card QR codes are keyed off JWT_SECRET)');
+    // OTPs are never shown in production, so without an SMS gateway no student can sign in by OTP and no owner can verify a mobile
+    if (!String(env.SMS_API_URL || '').trim()) problems.push('SMS_API_URL is not set: OTP codes could not be delivered');
     if (env.DISABLE_SECURITY_STARTUP_CHECKS === 'true') return [];
     return problems;
 };
@@ -73,6 +81,7 @@ const productionProblems = (env = process.env) => {
 const productionWarnings = (env = process.env) => {
     const w = [];
     const hp = String(env.HUMAN_CHECK_PROVIDER || '').trim().toLowerCase();
+    if (!String(env.FIREBASE_SERVICE_ACCOUNT || '').trim()) w.push('FIREBASE_SERVICE_ACCOUNT is not set: no push notifications to the mobile app.');
     if (hp !== 'recaptcha' && hp !== 'turnstile' && hp !== 'hcaptcha') w.push('HUMAN_CHECK_PROVIDER is not recaptcha/turnstile/hcaptcha: the built-in proof-of-work check is used. Set HUMAN_CHECK_PROVIDER=recaptcha (Google reCAPTCHA v2 checkbox) for stronger bot protection.');
     return w;
 };

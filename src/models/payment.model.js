@@ -152,6 +152,16 @@ const paymentSchema = new mongoose.Schema({
     overdueSince: { type: Date },
 
     remarks: { type: String },
+    // A renewal the student started in the app: the membership is renewed only once this charge is fully paid
+    // (see services/selfRenewal.service.js). Cleared when the renewal is activated; activatedAt records when.
+    pendingActivation: {
+        planId: { type: mongoose.Schema.Types.ObjectId, ref: 'Plan' },
+        kind: { type: String, enum: ['renewal'] },
+        requestedAt: { type: Date },
+        claimedAt: { type: Date },        // set while one server is activating it (stops a double renewal)
+        failedReason: { type: String },
+    },
+    activatedAt: { type: Date },
     paymentType: {
         type: String,
         enum: ['new', 'renewal', 'partial', 'advance'],
@@ -170,6 +180,8 @@ const paymentSchema = new mongoose.Schema({
 
 paymentSchema.index({ libraryId: 1, studentId: 1, paymentStatus: 1 });
 paymentSchema.index({ libraryId: 1, paymentStatus: 1, dueDate: 1 });
+// newest-first payment lists and date-range reports of one library
+paymentSchema.index({ libraryId: 1, createdAt: -1 });
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 

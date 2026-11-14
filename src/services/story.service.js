@@ -7,6 +7,7 @@ const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
 const { branchVisibility } = require('../utils/branchScope');
 const { startOfDayIST, endOfDayIST } = require('../utils/time');
+const { removeUploadedFile, removeUploadedFiles } = require('../utils/fileCleanup');
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const STORY_SORTS = {
@@ -185,7 +186,10 @@ const updateStory = async (id, libraryId, body, media) => {
         set.expiresAt = new Date(publishAt.getTime() + hours * HOUR);
         if (set.expiresAt > new Date()) { set.archived = false; set.archivedAt = undefined; } // re-opened
     }
-    return Story.findOneAndUpdate({ _id: id, libraryId }, { $set: set }, { new: true, runValidators: true });
+    const oldUrl = ('url' in set) && existing.url && existing.url !== set.url ? existing.url : null;
+    const updated = await Story.findOneAndUpdate({ _id: id, libraryId }, { $set: set }, { new: true, runValidators: true });
+    if (oldUrl) removeUploadedFile(oldUrl).catch(() => {});
+    return updated;
 };
 
 const toggleActive = async (id, libraryId) => {
@@ -195,7 +199,9 @@ const toggleActive = async (id, libraryId) => {
 
 const deleteStory = async (id, libraryId) => {
     assertId(id);
-    return Story.findOneAndDelete({ _id: id, libraryId });
+    const deleted = await Story.findOneAndDelete({ _id: id, libraryId });
+    if (deleted && deleted.url) removeUploadedFile(deleted.url).catch(() => {});
+    return deleted;
 };
 
 // ─── Student interactions (always tenant + liveness scoped) ──────────────────
@@ -303,7 +309,10 @@ const archiveExpiredStories = async () => {
         { $set: { archived: true, archivedAt: now } }
     );
     const purgeBefore = new Date(Date.now() - ARCHIVE_RETENTION_DAYS * 24 * HOUR);
-    const purged = await Story.deleteMany({ archived: true, archivedAt: { $lte: purgeBefore } });
+    const purgeFilter = { archived: true, archivedAt: { $lte: purgeBefore } };
+    const toPurge = await Story.find(purgeFilter).select('url').lean();
+    const purged = await Story.deleteMany(purgeFilter);
+    if (toPurge.length) removeUploadedFiles(toPurge.map((s) => s.url)).catch(() => {});
     return { archived: archived.modifiedCount, purged: purged.deletedCount };
 };
 

@@ -1,4 +1,5 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Admin = require('../models/admin.model');
 const Role = require('../models/role.model');
@@ -94,13 +95,14 @@ const masterSeed = async () => {
         const existing = await Admin.findOne({ userType: 'superadmin' });
         if (!existing) {
             const email = (process.env.SEED_ADMIN_EMAIL || 'admin@mgibasket.com').toLowerCase();
-            const password = process.env.SEED_ADMIN_PASSWORD;
-            if (!password && process.env.NODE_ENV === 'production') throw new Error('Set SEED_ADMIN_PASSWORD to create the first super admin in production');
+            if (!process.env.SEED_ADMIN_PASSWORD && process.env.NODE_ENV === 'production') throw new Error('Set SEED_ADMIN_PASSWORD to create the first super admin in production');
+            // No hardcoded fallback password, even outside production: a guessable default on a shared staging DB is a real credential, not just a dev convenience.
+            const password = process.env.SEED_ADMIN_PASSWORD || crypto.randomBytes(12).toString('base64url');
             await Admin.create({
-                name: 'Super Admin', email, password: password || 'admin123', // hashed once by the Admin pre-save hook
+                name: 'Super Admin', email, password, // hashed once by the Admin pre-save hook
                 userType: 'superadmin', roleId: superRole._id, mobile: '1234567890', status: true,
             });
-            console.log(`Super Admin created: ${email}${password ? '' : ' (default dev password - change it)'}`);
+            console.log(`Super Admin created: ${email}${process.env.SEED_ADMIN_PASSWORD ? '' : ` (generated password: ${password} - save this now, it will not be shown again)`}`);
         } else {
             console.log('A super admin already exists; account left untouched.');
         }

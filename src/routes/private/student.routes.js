@@ -28,6 +28,13 @@ router.get('/me', requireStudent, studentController.getMyProfile);
 router.put('/me', requireStudent, validate(studentValidation.updateMyProfile), studentController.updateMyProfile);
 router.post('/me/renew-request', requireStudent, validate(studentValidation.renewRequest), studentController.requestRenewal);
 router.post('/me/logout-all', requireStudent, studentController.logoutAll);
+// Renew online: choose a plan, apply an offer, pay; the membership renews once the bill is paid
+router.get('/me/renewal', requireStudent, studentController.myRenewalOptions);
+router.post('/me/renewal/quote', requireStudent, validate(studentValidation.selfRenewal), studentController.myRenewalQuote);
+router.post('/me/renewal', requireStudent, validate(studentValidation.selfRenewal), studentController.startMyRenewal);
+router.delete('/me/renewal', requireStudent, studentController.cancelMyRenewal);
+// Digital ID card with the signed verify QR
+router.get('/me/id-card', requireStudent, studentController.myIdCard);
 router.put('/change-password', requireStudent, validate(studentValidation.changePassword), studentController.changePassword);
 
 // ---------------------------------------------------------------------------

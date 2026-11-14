@@ -6,7 +6,9 @@ const receiptCounterSchema = new mongoose.Schema({
     // Legacy single sequence (receipts issued before financial-year numbering)
     seq: { type: Number, default: 0 },
     // Per financial-year sequence (Apr-Mar IST), key "2627" -> last number used in that year
-    fySeq: { type: mongoose.Schema.Types.Mixed }
+    fySeq: { type: mongoose.Schema.Types.Mixed },
+    // Refunds have their own per financial-year series, so receipt numbers stay unbroken (key "2627" -> last refund number)
+    refundSeq: { type: mongoose.Schema.Types.Mixed }
 }, { timestamps: true, minimize: false });
 
 module.exports = mongoose.model('ReceiptCounter', receiptCounterSchema);

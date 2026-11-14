@@ -12,8 +12,6 @@ const ApiError = require('../utils/ApiError');
 const pick = require('../utils/pick');
 const escapeRegex = require('../utils/escapeRegex');
 const audit = require('../utils/audit');
-const fs = require('fs');
-const path = require('path');
 const bcrypt = require('bcryptjs');
 const { deriveAadhaar, isValidAadhaar } = require('../utils/aadhaar');
 const dpdp = require('../utils/dpdp');
@@ -133,6 +131,13 @@ const LEDGER_METHODS = ['cash', 'upi', 'online', 'bank_transfer', 'other'];
 const ledgerMethod = (m) => (LEDGER_METHODS.includes(m) ? m : 'other');
 
 const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+// Tell the student about a membership change made by the library (inbox + push). Never blocks or fails the change.
+const notifyMember = (event, libraryId, studentId, variables, data, dedupeKey) => {
+    try {
+        Promise.resolve(require('./notification.service').notifyEvent(event, libraryId, { studentId, variables, data, ...(dedupeKey ? { dedupeKey } : {}) })).catch(() => {});
+    } catch (_) { /* ignore */ }
+};
+const dayText = (d) => (d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : '');
 
 /** First/last day of a membership started on startDate. Must mirror activateMembership(). */
 const membershipWindow = (plan, startDate) => {
@@ -506,6 +511,7 @@ const assignPlan = async (studentId, libraryId, { planId, joiningDate, dueDate, 
     }
 
     if (!skipAudit && req) audit(req, 'student.assign_plan', 'Student', student._id, { planId: plan._id, amount });
+    notifyMember('plan-assigned', libraryId, student._id, { planName: plan.name, paySuffix: amount > 0 ? ` Please pay Rs. ${amount} to start it.` : '' }, { type: 'plan_assigned', planId: String(plan._id) });
     return { student: updated, pendingCharge, charge, amount };
 };
 
@@ -735,6 +741,7 @@ const changePlan = async (studentId, libraryId, { planId, startDate, reason, pai
     if (req) audit(req, 'student.change_plan', 'Student', student._id, {
         from: student.planId, to: plan._id, reason, credit, waivedOld: split.waiveOld, cancelledOld: split.cancelOld, laterChargesSettled: laterCharges.length, discountNew: newDiscount, creditLeftover
     });
+    notifyMember('plan-changed', libraryId, student._id, { planName: plan.name, paySuffix: charge && charge.dueAmount > 0 ? ` Rs. ${charge.dueAmount} is due.` : '' }, { type: 'plan_changed', planId: String(plan._id) });
     return {
         ...result, pendingCharge, charge, payment, warnings,
         proration: { ...proration, credit, cancelledOld: split.cancelOld, waivedFromOld: split.waiveOld, discountOnNew: newDiscount, creditLeftover, newCharge: chargeAmount }
@@ -857,6 +864,7 @@ const pauseMembership = async (studentId, libraryId, { reason }, req) => {
         await seatService.releaseSeatForStudent(student._id, libraryId, { actor: seatService.actorOf(req), reason: 'Membership paused' });
     }
     if (req) audit(req, 'membership.pause', 'Student', student._id, { reason });
+    notifyMember('membership-paused', libraryId, student._id, { reasonSuffix: reason ? ` Reason: ${reason}.` : '' }, { type: 'membership_paused' });
     return updated;
 };
 
@@ -898,6 +906,7 @@ const resumeMembership = async (studentId, libraryId, { reason } = {}, req, { po
         } catch (e) { seatNote = `previous seat not available: ${e.message}`; }
     }
     if (req) audit(req, 'membership.resume', 'Student', student._id, { reason, pausedDays, credited });
+    notifyMember('membership-resumed', libraryId, student._id, { expirySuffix: updated.expiryDate ? `, until ${dayText(updated.expiryDate)}` : '' }, { type: 'membership_resumed' });
     return { student: updated, pausedDays, creditedDays: credited, seatNote };
 };
 
@@ -926,6 +935,7 @@ const extendMembership = async (studentId, libraryId, { days, reason }, req) => 
         await liveHist.save();
     }
     if (req) audit(req, 'membership.extend', 'Student', student._id, { days, reason, previous, newExpiry });
+    notifyMember('membership-extended', libraryId, student._id, { days, expiryDate: dayText(newExpiry) }, { type: 'membership_extended' }, `extend:${student._id}:${new Date(newExpiry).toISOString().slice(0, 10)}`);
     return updated;
 };
 
@@ -1136,6 +1146,10 @@ const updateStudentById = async (id, libraryId, body, req) => {
     }
     if (data.branchId !== undefined) data.branchId = data.branchId ? await validateBranch(data.branchId, libraryId) : null;
 
+    // A new profile image / Aadhaar upload replaces the old one; capture what's being replaced before overwriting
+    const oldProfileImage = ('profileImage' in data) && data.profileImage !== student.profileImage ? student.profileImage : null;
+    const oldAadhaarImages = ('aadhaarCardImage' in data) ? (student.aadhaarCardImage || []).filter(Boolean) : [];
+
     Object.assign(student, data);
     clearing.forEach((k) => { student[k] = undefined; });
     try {
@@ -1144,6 +1158,8 @@ const updateStudentById = async (id, libraryId, body, req) => {
         if (e && e.code === 11000) throw new ApiError(409, 'A student with this mobile number already exists in this library');
         throw e;
     }
+    if (oldProfileImage) removeUploadedFile(oldProfileImage).catch(() => {});
+    oldAadhaarImages.forEach((p) => removeUploadedFile(p).catch(() => {}));
     return getStudentById(id, libraryId);
 };
 
@@ -1174,20 +1190,7 @@ const deleteStudentById = async (id, libraryId, req) => {
 // students from every query, and erasure/retention must work on exactly those records.
 // ---------------------------------------------------------------------------
 const oid = (v) => new mongoose.Types.ObjectId(String(v));
-
-/** Delete an uploaded file (path as stored on the student) - only ever inside the uploads / temp upload folders. */
-const removeUploadedFile = async (p) => {
-    if (!p || typeof p !== 'string') return false;
-    const full = path.resolve(path.isAbsolute(p) ? p : path.join(process.cwd(), p));
-    const roots = [path.resolve(process.cwd(), 'uploads'), path.resolve(require('os').tmpdir())];
-    if (!roots.some((r) => full === r || full.startsWith(r + path.sep))) return false;
-    try {
-        await fs.promises.unlink(full);
-        return true;
-    } catch (e) {
-        return false;
-    }
-};
+const { removeUploadedFile } = require('../utils/fileCleanup');
 
 /**
  * Erase a student's personal data (owner-only, reason required). Name, contact details, date of birth, address,
@@ -1512,7 +1515,9 @@ module.exports = {
     getStudentLedger,
     exportStudentsCsv,
     getPolicy,
-    generateTempPassword
+    generateTempPassword,
+    // building blocks for student self-service renewal (services/selfRenewal.service.js)
+    _internal: { loadStudent, loadPlan, planAmount, membershipWindow, createPlanCharge, notifyMembership }
 };
 
 // ---- Live dashboards: tell connected dashboards that student data changed (no-op without sockets, never throws) ----

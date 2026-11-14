@@ -281,6 +281,17 @@ const initCronJobs = () => {
         });
     }, TZ);
 
+    // Every 10 minutes: undo desk payments left half-done by a server crash, flag stuck refunds for review
+    cron.schedule('*/10 * * * *', () => {
+        const bucket = Math.floor(Date.now() / (10 * MIN));
+        return withLock(`payment-recovery:${bucket}`, 9 * MIN, async () => {
+            const r = await require('./feeLedger.service').reconcileStuckTransactions();
+            if (r.rolledBack || r.refundsFlagged) console.log(`[cron] payment recovery: ${r.rolledBack} interrupted collection(s) undone, ${r.refundsFlagged} refund(s) flagged for review`);
+            const sr = await require('./selfRenewal.service').sweep();
+            if (sr.activated || sr.dropped) console.log(`[cron] online renewals: ${sr.activated} activated, ${sr.dropped} unpaid dropped`);
+        });
+    }, TZ);
+
     // Hourly (at :05): expire memberships, free seats, close history, auto-resume long pauses
     cron.schedule('5 * * * *', () => {
         const hour = slot().slice(0, 13);

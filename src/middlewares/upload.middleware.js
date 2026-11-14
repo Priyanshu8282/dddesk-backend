@@ -3,20 +3,57 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
+const sharp = require('sharp');
 const ApiError = require('../utils/ApiError');
 
 const MB = 1024 * 1024;
 
+// Re-encode at a high enough quality that no difference is visible, and only shrink dimensions that are
+// larger than anything the UI ever displays full-size. GIF is left untouched (sharp would collapse an
+// animated GIF to its first frame).
+const OPTIMIZE_MAX_DIMENSION = 2000;
+const OPTIMIZE = {
+    jpeg: (img) => img.jpeg({ quality: 85, mozjpeg: true }),
+    png: (img) => img.png({ compressionLevel: 9, adaptiveFiltering: true, palette: false }),
+    webp: (img) => img.webp({ quality: 85 }),
+};
+
+/**
+ * Re-encodes an image file in place (same path, same format) at a visually-lossless quality and caps its
+ * longest edge at OPTIMIZE_MAX_DIMENSION. Never makes the file bigger than the original, and any failure
+ * (corrupt-but-passed-detection file, unsupported edge case) just keeps the original bytes.
+ */
+const optimizeImageInPlace = async (filePath, typeKey) => {
+    const encode = OPTIMIZE[typeKey];
+    if (!encode) return null;
+    try {
+        const original = fs.statSync(filePath).size;
+        const image = sharp(filePath, { failOn: 'none' }).rotate() // auto-orient from EXIF, then strip it
+            .resize({ width: OPTIMIZE_MAX_DIMENSION, height: OPTIMIZE_MAX_DIMENSION, fit: 'inside', withoutEnlargement: true });
+        const optimized = await encode(image).toBuffer();
+        if (!optimized.length || optimized.length >= original) return null;
+        // Write to a sibling temp file and rename over the original: on Windows, writing back to the same
+        // path sharp just read from can collide with its still-open source handle (EBUSY/UNKNOWN).
+        const tmp = `${filePath}.opt_${crypto.randomBytes(6).toString('hex')}.tmp`;
+        fs.writeFileSync(tmp, optimized);
+        fs.renameSync(tmp, filePath);
+        return optimized.length;
+    } catch (e) {
+        console.error('Image optimization skipped for', filePath, '-', e.message);
+        return null;
+    }
+};
+
 // Allowed types, identified by file CONTENT (magic bytes), never by client name/extension.
 // svg / html / js and anything else are rejected.
 const TYPES = {
-    jpeg: { ext: '.jpg', mime: 'image/jpeg', kind: 'image' },
-    png: { ext: '.png', mime: 'image/png', kind: 'image' },
-    webp: { ext: '.webp', mime: 'image/webp', kind: 'image' },
-    gif: { ext: '.gif', mime: 'image/gif', kind: 'image' },
-    mp4: { ext: '.mp4', mime: 'video/mp4', kind: 'video' },
-    webm: { ext: '.webm', mime: 'video/webm', kind: 'video' },
-    pdf: { ext: '.pdf', mime: 'application/pdf', kind: 'pdf' }
+    jpeg: { key: 'jpeg', ext: '.jpg', mime: 'image/jpeg', kind: 'image' },
+    png: { key: 'png', ext: '.png', mime: 'image/png', kind: 'image' },
+    webp: { key: 'webp', ext: '.webp', mime: 'image/webp', kind: 'image' },
+    gif: { key: 'gif', ext: '.gif', mime: 'image/gif', kind: 'image' },
+    mp4: { key: 'mp4', ext: '.mp4', mime: 'video/mp4', kind: 'video' },
+    webm: { key: 'webm', ext: '.webm', mime: 'video/webm', kind: 'video' },
+    pdf: { key: 'pdf', ext: '.pdf', mime: 'application/pdf', kind: 'pdf' }
 };
 const SIZE_LIMITS = { image: 5 * MB, video: 25 * MB, pdf: 10 * MB };
 const ALLOWED_MIMES = new Set(Object.values(TYPES).map((t) => t.mime));
@@ -138,14 +175,15 @@ class SecureDiskStorage {
                 const finalName = `${prefix}_${crypto.randomBytes(16).toString('hex')}${type.ext}`;
                 const finalPath = path.join(targetDir, finalName);
 
-                fs.rename(tempFilePath, finalPath, (renameErr) => {
+                fs.rename(tempFilePath, finalPath, async (renameErr) => {
                     if (renameErr) return fail(renameErr);
+                    const optimizedSize = type.kind === 'image' ? await optimizeImageInPlace(finalPath, type.key) : null;
                     cb(null, {
                         destination: targetDir,
                         filename: finalName,
                         // Standardized web-friendly relative path (forward slashes)
                         path: path.relative(process.cwd(), finalPath).replace(/\\/g, '/'),
-                        size: out.bytesWritten,
+                        size: optimizedSize || out.bytesWritten,
                         mimetype: type.mime,
                         mediaKind: type.kind
                     });
@@ -238,3 +276,4 @@ const cleanupUploadsOnError = (req, res) => {
 module.exports = upload;
 module.exports.detectType = detectType;
 module.exports.cleanupUploadsOnError = cleanupUploadsOnError;
+module.exports.optimizeImageInPlace = optimizeImageInPlace;

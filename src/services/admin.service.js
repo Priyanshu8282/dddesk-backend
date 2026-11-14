@@ -437,14 +437,18 @@ exports.softDelete = async (req, id) => {
     const mine = req.permissions || [];
     if (!['staff.delete', 'DELETE_ADMIN'].some((k) => mine.includes(k))) throw err('You do not have permission to perform this action', 403);
   }
+  const originalEmail = target.email;
   target.isDeleted = true;
   target.status = false;
   target.updatedBy = req.user._id;
+  // the e-mail is unique across all accounts: free it, so the same person can be added again later
+  target.deletedEmail = originalEmail;
+  target.email = `deleted-${target._id}@deleted.dddesk.invalid`;
   await target.save();
   // Free up branch manager slots held by this person
   await Branch.updateMany({ managerId: target._id }, { $set: { managerId: null } });
   await require('./session.service').revokeAllForUser(target._id, 'account_deleted');
-  await audit(req, 'staff.delete', 'Admin', target._id, { email: target.email, userType: target.userType });
+  await audit(req, 'staff.delete', 'Admin', target._id, { email: originalEmail, userType: target.userType });
 };
 
 // Owner (or superadmin) sets a new password for a staff member

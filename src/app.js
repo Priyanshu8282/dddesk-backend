@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const morgan = require("morgan");
 const httpStatus = require("http-status");
 const ApiError = require("./utils/ApiError");
 const helmet = require("helmet");
@@ -7,12 +8,16 @@ const publicRoutes = require('./routes/public');
 const privateRoutes = require('./routes/private');
 const errorHandler = require('./middlewares/error.middleware');
 const { sanitizeInput, parameterPollutionGuard, extraHeaders } = require('./middlewares/security.middleware');
-const { apiLimiter } = require('./middlewares/rateLimit.middleware');
+const { apiLimiter, webhookLimiter } = require('./middlewares/rateLimit.middleware');
 
 const app = express();
 
 // Behind Vercel/proxies: real client IP for rate limiting and audit logs
 app.set('trust proxy', 1);
+
+// Access log for incident response. Morgan's built-in formats never print the Authorization header or body,
+// only method/path/status/size/timing, so there is nothing to redact.
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Exact-origin CORS (config/cors.js): ALLOWED_ORIGINS + FRONTEND_URL + the frontend URL saved in Platform Settings
 const { corsOptions } = require('./config/cors');
@@ -74,9 +79,10 @@ app.get("/", (req, res) => {
     });
 });
 
-// Razorpay webhook endpoint (root level)
+// Razorpay webhook endpoint (root level, outside the /v1 apiLimiter so a real payment callback is never
+// dropped) still gets a high per-IP floor so an unauthenticated flood can't hammer the signature check forever.
 const razorpayController = require('./controllers/razorpay.controller');
-app.post('/webhook/razorpay', razorpayController.webhookHandler);
+app.post('/webhook/razorpay', webhookLimiter, razorpayController.webhookHandler);
 
 // Maintenance gate for public routes (private routes are decided after sign-in; the webhook above is never blocked)
 app.use('/v1', require('./middlewares/maintenance.middleware'));

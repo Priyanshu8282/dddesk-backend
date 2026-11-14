@@ -546,11 +546,21 @@ const markLeave = async ({ libraryId, studentId, date, reason, userId }) => {
         throw new ApiError(409, 'Student is already marked present on this date');
     }
     const branchId = await resolveBranchId(student);
-    return Attendance.findOneAndUpdate(
+    const row = await Attendance.findOneAndUpdate(
         { studentId: student._id, libraryId, date: day, status: { $in: ['leave', 'absent'] } },
         { $set: { status: 'leave', leaveReason: reason, markedBy: userId, source: 'manual', duration: 0, branchId } },
         { upsert: true, new: true, setDefaultsOnInsert: true }
     );
+    // let the student know (inbox + push); never fails the request
+    try {
+        const dayKey = new Date(day.getTime() + 330 * 60000).toISOString().slice(0, 10);
+        Promise.resolve(require('./notification.service').notifyEvent('leave-marked', libraryId, {
+            studentId: student._id,
+            variables: { date: new Date(day).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }), reasonSuffix: reason ? ` Reason: ${reason}.` : '' },
+            data: { type: 'attendance_leave', date: dayKey }, dedupeKey: `leave:${student._id}:${dayKey}`
+        })).catch(() => {});
+    } catch (_) { /* ignore */ }
+    return row;
 };
 
 // Cron helper: creates 'absent' records for active students with no record on `date` (default today).

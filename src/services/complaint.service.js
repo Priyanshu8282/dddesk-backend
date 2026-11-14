@@ -6,6 +6,7 @@ const Student = require('../models/student.model');
 const ApiError = require('../utils/ApiError');
 const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
+const { removeUploadedFiles } = require('../utils/fileCleanup');
 
 const isStudentUser = (user) => user.userType === 'student';
 const oid = (v) => new mongoose.Types.ObjectId(String(v));
@@ -212,8 +213,18 @@ exports.updateComplaint = async (id, libraryId, body, user, files = []) => {
     }
     if (files.length) {
         const { images, videos } = splitFiles(files);
-        if (images.length) complaint.images = [...complaint.images, ...images].slice(-10);
-        if (videos.length) complaint.videos = [...complaint.videos, ...videos].slice(-5);
+        if (images.length) {
+            const merged = [...complaint.images, ...images];
+            complaint.images = merged.slice(-10);
+            const dropped = merged.slice(0, merged.length - complaint.images.length);
+            if (dropped.length) removeUploadedFiles(dropped).catch(() => {});
+        }
+        if (videos.length) {
+            const merged = [...complaint.videos, ...videos];
+            complaint.videos = merged.slice(-5);
+            const dropped = merged.slice(0, merged.length - complaint.videos.length);
+            if (dropped.length) removeUploadedFiles(dropped).catch(() => {});
+        }
     }
     await complaint.save();
     return exports.getComplaintById(id, libraryId, user);

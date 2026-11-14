@@ -9,13 +9,15 @@ const { branchFilter, assertBranchAccess, isValidId } = require('../utils/branch
 
 // Branch-limited staff may only touch charges / students of their own branches
 const guardPayment = async (req, paymentId) => {
-    if (req.userType !== 'staff' || !isValidId(paymentId)) return;
+    if (!isValidId(paymentId)) throw new ApiError(400, 'Invalid payment id');
+    if (req.userType !== 'staff') return;
     const p = await Payment.findOne({ _id: paymentId, libraryId: req.libraryId }).select('branchId').lean();
     if (p) assertBranchAccess(req, p.branchId);
 };
 // A receipt id may be a charge (Payment) id or a receipt/refund (PaymentTransaction) id: check both
 const guardReceipt = async (req, id) => {
-    if (req.userType !== 'staff' || !isValidId(id)) return;
+    if (!isValidId(id)) throw new ApiError(400, 'Invalid receipt id');
+    if (req.userType !== 'staff') return;
     await guardPayment(req, id);
     const t = await PaymentTransaction.findOne({ _id: id, libraryId: req.libraryId }).select('branchId studentId').lean();
     if (!t) return;
@@ -23,7 +25,8 @@ const guardReceipt = async (req, id) => {
     else await guardStudent(req, t.studentId);
 };
 const guardStudent = async (req, studentId) => {
-    if (req.userType !== 'staff' || !isValidId(studentId)) return;
+    if (!isValidId(studentId)) throw new ApiError(400, 'Invalid student id');
+    if (req.userType !== 'staff') return;
     const s = await Student.findOne({ _id: studentId, libraryId: req.libraryId }).select('branchId').lean();
     if (s) assertBranchAccess(req, s.branchId);
 };

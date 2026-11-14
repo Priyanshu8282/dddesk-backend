@@ -8,6 +8,7 @@ const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
 const { branchVisibility } = require('../utils/branchScope');
 const { startOfDayIST, endOfDayIST } = require('../utils/time');
+const { removeUploadedFile } = require('../utils/fileCleanup');
 
 const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const NOTICE_SORTS = {
@@ -236,7 +237,10 @@ const updateNotice = async (id, libraryId, body, file) => {
         set.imageUrl = '';
     }
     if (set.isActive === true && !existing.isActive) set.publishedAt = new Date();
-    return Notice.findOneAndUpdate({ _id: id, libraryId }, { $set: set }, { new: true, runValidators: true }).select('-seenBy');
+    const oldImage = ('imageUrl' in set) && existing.imageUrl && existing.imageUrl !== set.imageUrl ? existing.imageUrl : null;
+    const updated = await Notice.findOneAndUpdate({ _id: id, libraryId }, { $set: set }, { new: true, runValidators: true }).select('-seenBy');
+    if (oldImage) removeUploadedFile(oldImage).catch(() => {});
+    return updated;
 };
 
 // Publish / unpublish. Publishing a never-delivered notice delivers it (once).
@@ -253,7 +257,9 @@ const setPublished = async (id, libraryId, published) => {
 
 const deleteNotice = async (id, libraryId) => {
     assertId(id);
-    return Notice.findOneAndDelete({ _id: id, libraryId });
+    const deleted = await Notice.findOneAndDelete({ _id: id, libraryId });
+    if (deleted && deleted.imageUrl) removeUploadedFile(deleted.imageUrl).catch(() => {});
+    return deleted;
 };
 
 // ─── Student operations ──────────────────────────────────────────────────────

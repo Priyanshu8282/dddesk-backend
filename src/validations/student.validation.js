@@ -192,6 +192,14 @@ const updateMyProfile = z.object({
 });
 
 // Student portal: ask the library to renew (staff completes it and collects the fee)
+// Student renews online: the price is always computed on the server
+const selfRenewal = z.object({
+    body: z.object({
+        planId: objectId,
+        couponCode: z.preprocess(emptyToUndef, z.string().trim().max(40).optional())
+    })
+});
+
 const renewRequest = z.object({
     body: z.object({
         planId: z.preprocess(emptyToUndef, objectId.optional()),
@@ -271,6 +279,7 @@ const changePassword = z.object({
 });
 
 module.exports = {
+    selfRenewal,
     createStudent,
     importStudents,
     updateStudent,

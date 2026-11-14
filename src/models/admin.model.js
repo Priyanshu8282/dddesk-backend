@@ -74,6 +74,8 @@ const adminSchema = new mongoose.Schema({
     },
     // true when the owner registered with only a mobile number (e-mail below is a generated placeholder, never mailed)
     emailIsPlaceholder: { type: Boolean, default: false },
+    // a deleted account gives its e-mail back (so it can be used again); the original is kept here for the records
+    deletedEmail: { type: String, default: null },
     libraryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Library' }, // Links user to the library institution
     tenantId: { type: mongoose.Schema.Types.ObjectId }, // For future SaaS scalability
     

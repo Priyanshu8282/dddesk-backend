@@ -341,3 +341,31 @@ exports.getDashboard = catchAsync(async (req, res) => {
 
     ok(res, 'Student dashboard data retrieved successfully', { metrics, notices, stories, banners, recentPayments });
 });
+
+// ---------------------------------------------------------------------------
+// Student: renew online and digital ID card (services/selfRenewal.service.js, services/idCardVerify.service.js)
+// ---------------------------------------------------------------------------
+const selfRenewal = () => require('../services/selfRenewal.service');
+
+exports.myRenewalOptions = catchAsync(async (req, res) => {
+    ok(res, 'Renewal options', await selfRenewal().options(req.user._id, lib(req)));
+});
+
+exports.myRenewalQuote = catchAsync(async (req, res) => {
+    ok(res, 'Renewal price', await selfRenewal().quote(req.user._id, lib(req), req.body));
+});
+
+exports.startMyRenewal = catchAsync(async (req, res) => {
+    const r = await selfRenewal().start(req.user._id, lib(req), req.body, req);
+    ok(res, r.activated ? 'Membership renewed' : 'Renewal started. Complete the payment to renew.', r);
+});
+
+exports.cancelMyRenewal = catchAsync(async (req, res) => {
+    ok(res, 'Renewal cancelled', await selfRenewal().cancel(req.user._id, lib(req)));
+});
+
+exports.myIdCard = catchAsync(async (req, res) => {
+    const card = await require('../services/idCardVerify.service').cardFor(lib(req), req.user._id);
+    if (!card) throw new ApiError(404, 'Student not found');
+    ok(res, 'ID card', card);
+});

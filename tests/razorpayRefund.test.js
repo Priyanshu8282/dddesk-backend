@@ -61,7 +61,9 @@ PaymentTransaction.updateOne = async (q, upd, opts) => {
 };
 let seq = 0;
 // receipt numbers are per financial year now: fySeq[<yyyy>] holds the last number used
-ReceiptCounter.findOneAndUpdate = async () => { seq += 1; return { seq, fySeq: new Proxy({}, { get: () => seq }) }; };
+ReceiptCounter.findOneAndUpdate = async () => { seq += 1; return { seq, fySeq: new Proxy({}, { get: () => seq }), refundSeq: new Proxy({}, { get: () => seq }) }; };
+// refunds have their own series; this year's refund counter already exists, so no seeding from old refunds
+ReceiptCounter.exists = async () => true;
 Library.findById = () => ({ select: () => ({ lean: async () => ({ receipt: { prefix: 'RCPT' } }) }) });
 WebhookEvent.create = async () => ({});
 WebhookEvent.deleteOne = async () => ({});

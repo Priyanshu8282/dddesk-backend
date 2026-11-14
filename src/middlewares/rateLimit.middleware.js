@@ -92,11 +92,14 @@ const refundLimiter = make(60 * 60 * 1000, 20, 'Too many refunds in the last hou
 const exportLimiter = make(5 * 60 * 1000, 10, 'Too many export requests. Please wait a few minutes.', { name: 'export', keyGenerator: userKey });
 // Staff messaging every student
 const broadcastLimiter = make(60 * 60 * 1000, 10, 'Too many broadcasts in the last hour. Please try again later.', { name: 'broadcast', keyGenerator: userKey });
+// Razorpay webhook sits outside the main /v1 apiLimiter so a real payment callback is never dropped;
+// this is just a high floor per IP so an unauthenticated flood can't spin the signature check forever.
+const webhookLimiter = make(60 * 1000, Number(process.env.WEBHOOK_RATE_LIMIT_PER_MIN || 1000), 'Too many requests. Please slow down.', { name: 'webhook' });
 
 module.exports = {
     limiter, accountKey, userKey,
     loginLimiter, accountLoginLimiter, otpLimiter, accountOtpLimiter, otpVerifyLimiter, accountOtpVerifyLimiter,
     generalLimiter, apiLimiter, refreshLimiter,
     registerLimiter, enquiryLimiter, studentLoginLimiter, aiLimiter, reviewLimiter,
-    paymentWriteLimiter, refundLimiter, exportLimiter, broadcastLimiter,
+    paymentWriteLimiter, refundLimiter, exportLimiter, broadcastLimiter, webhookLimiter,
 };

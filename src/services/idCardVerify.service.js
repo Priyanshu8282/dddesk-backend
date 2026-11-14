@@ -65,4 +65,48 @@ exports.verify = async (code) => {
     };
 };
 
+// Where the QR points: the public /verify/<code> page of the web app
+const verifyBase = () => {
+    const first = [process.env.FRONTEND_URL, ...String(process.env.ALLOWED_ORIGINS || '').split(',')]
+        .map((s) => String(s || '').trim()).find(Boolean);
+    return (first || 'http://localhost:3000').replace(/\/+$/, '');
+};
+
+/** The student's own digital ID card: what the printed card shows, the live status and the signed verify link. */
+exports.cardFor = async (libraryId, studentId) => {
+    const s = await Student.findOne({ _id: studentId, libraryId, isDeleted: { $ne: true }, erasedAt: null })
+        .select('name profileImage registrationNumber rollNumber mobile status planStatus expiryDate joiningDate planId seatNumber seatId branchId libraryId')
+        .populate('planId', 'name shiftName shiftStart shiftEnd')
+        .lean();
+    if (!s) return null;
+    const lib = await Library.findById(libraryId).select('name logo address city state pincode mobile email').lean();
+    let branch = null;
+    if (s.branchId) {
+        branch = await require('../models/branch.model').findOne({ _id: s.branchId, libraryId }).select('name').lean();
+    }
+    const expired = !!s.expiryDate && new Date(s.expiryDate).getTime() < Date.now();
+    const state = expired ? 'expired' : s.status === 'active' && s.planStatus === 'active' ? 'active' : 'inactive';
+    const code = makeCode(s._id);
+    const p = s.planId || null;
+    const shift = p && (p.shiftName || (p.shiftStart && p.shiftEnd ? `${p.shiftStart} - ${p.shiftEnd}` : null));
+    return {
+        code,
+        verifyUrl: `${verifyBase()}/verify/${code}`,
+        state,
+        student: {
+            name: s.name, photo: s.profileImage || null, idNo: s.registrationNumber || s.rollNumber || null,
+            mobile: s.mobile ? String(s.mobile).replace(/^(\+?91)?/, '').slice(-10) : null,
+            joinedOn: s.joiningDate || null,
+        },
+        plan: p ? { name: p.name, shift: shift || null } : null,
+        seat: s.seatNumber || null,
+        branch: branch ? branch.name : null,
+        validTill: s.expiryDate || null,
+        library: lib ? {
+            name: lib.name, logo: lib.logo || null, phone: lib.mobile || null,
+            address: [lib.address, lib.city, lib.state, lib.pincode].filter(Boolean).join(', ') || null,
+        } : null,
+    };
+};
+
 exports._test = { makeCode, readCode };

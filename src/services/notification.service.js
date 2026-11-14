@@ -107,11 +107,6 @@ const deleteRead = async (userId, userType) => {
 // Variables use {{name}} and are substituted per recipient. {{studentName}} and
 // {{libraryName}} are filled automatically.
 const TEMPLATES = {
-    'approval': {
-        audience: 'students', type: 'approval',
-        title: 'Registration approved',
-        body: 'Hi {{studentName}}, your registration at {{libraryName}} has been approved. Welcome!'
-    },
     'fee-due': {
         audience: 'students', type: 'fee_alert',
         title: 'Fee due',
@@ -203,6 +198,48 @@ const TEMPLATES = {
         audience: 'students', type: 'announcement',
         title: '{{title}}',
         body: '{{message}}'
+    },
+    // Membership changes made by the library (student side)
+    'plan-assigned': {
+        audience: 'students', type: 'plan_alert',
+        title: 'New plan: {{planName}}',
+        body: 'Hi {{studentName}}, the plan "{{planName}}" was assigned to you.{{paySuffix}}'
+    },
+    'plan-changed': {
+        audience: 'students', type: 'plan_alert',
+        title: 'Plan changed to {{planName}}',
+        body: 'Hi {{studentName}}, your plan was changed to "{{planName}}".{{paySuffix}}'
+    },
+    'membership-paused': {
+        audience: 'students', type: 'plan_alert',
+        title: 'Membership paused',
+        body: 'Hi {{studentName}}, your membership at {{libraryName}} is paused.{{reasonSuffix}} The paused days are added back when it resumes.'
+    },
+    'membership-resumed': {
+        audience: 'students', type: 'plan_alert',
+        title: 'Membership resumed',
+        body: 'Hi {{studentName}}, your membership is active again{{expirySuffix}}.'
+    },
+    'membership-extended': {
+        audience: 'students', type: 'plan_alert',
+        title: 'Membership extended',
+        body: 'Hi {{studentName}}, your membership was extended by {{days}} day(s), until {{expiryDate}}.'
+    },
+    'leave-marked': {
+        audience: 'students', type: 'attendance_alert',
+        title: 'Leave noted',
+        body: 'Hi {{studentName}}, you are marked on leave for {{date}}.{{reasonSuffix}}'
+    },
+    // Reviews
+    'review-reply': {
+        audience: 'students', type: 'review_alert',
+        title: '{{libraryName}} replied to your review',
+        body: '{{reply}}'
+    },
+    'review-new': {
+        audience: 'admins', type: 'review_alert',
+        title: 'New review: {{rating}}★',
+        body: '{{fromName}}: {{comment}}'
     }
 };
 

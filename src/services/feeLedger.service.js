@@ -11,6 +11,7 @@
 const mongoose = require('mongoose');
 const Payment = require('../models/payment.model');
 const PaymentTransaction = require('../models/paymentTransaction.model');
+const escapeRx = require('../utils/escapeRegex');
 const ReceiptCounter = require('../models/receiptCounter.model');
 const Student = require('../models/student.model');
 const Plan = require('../models/plan.model');
@@ -99,6 +100,21 @@ const isChargeOverdue = (charge, graceDays = 0, now = new Date()) => {
 const nextReceiptNo = async (libraryId, kind = 'receipt', when = new Date()) => {
     const lib = await Library.findById(libraryId).select('receipt').lean();
     const fy = fiscalYearKey(when);
+    if (kind === 'refund') {
+        // Separate series: a refund never takes a number out of the receipt series (no gaps for the accountant / GST audit)
+        const rpath = `refundSeq.${fy}`;
+        if (!(await ReceiptCounter.exists({ libraryId, [rpath]: { $exists: true } }))) {
+            // first refund of this year in the new series: continue after refunds numbered from the old shared counter
+            const marker = `-R-${fy}-`;
+            const old = await PaymentTransaction.find({ libraryId, type: 'refund', receiptNumber: { $regex: escapeRx(marker) } }).select('receiptNumber').lean();
+            const base = old.reduce((m, t) => Math.max(m, Number(String(t.receiptNumber).split(marker)[1]) || 0), 0);
+            // $max: concurrent first refunds agree on the same starting point
+            await ReceiptCounter.updateOne({ libraryId }, { $max: { [rpath]: base } }, { upsert: true }).catch((e) => { if (e.code !== 11000) throw e; });
+        }
+        const rc = await ReceiptCounter.findOneAndUpdate({ libraryId }, { $inc: { [rpath]: 1 } }, { new: true, upsert: true });
+        const prefix = (lib && lib.receipt && lib.receipt.prefix) || 'RCPT';
+        return `${prefix}-R-${fy}-${String(rc.refundSeq[fy]).padStart(6, '0')}`;
+    }
     const path = `fySeq.${fy}`;
     let c = await ReceiptCounter.findOneAndUpdate({ libraryId, [path]: { $exists: true } }, { $inc: { [path]: 1 } }, { new: true });
     if (!c) {
@@ -466,6 +482,44 @@ const rollbackApplied = async (applied, libraryId, txnId) => {
     }
 };
 
+/**
+ * Crash recovery for desk collections. A collection is "processing" only while recordPayment runs (a second or two); one
+ * still processing after STUCK_AFTER_MS means the server stopped mid-payment. Whatever was already put on the student's
+ * charges is taken off again and the transaction is marked failed + needsReview, so staff record it again.
+ * Online attempts are not touched here (their own claim/retry flow handles them). Stuck refunds are only flagged for
+ * review: the money may already have left, so a person decides.
+ */
+const STUCK_AFTER_MS = 15 * 60 * 1000;
+const reconcileStuckTransactions = async (now = new Date()) => {
+    const before = new Date(now.getTime() - STUCK_AFTER_MS);
+    const stuck = await PaymentTransaction.find({
+        type: 'collection', status: 'processing', razorpayOrderId: { $exists: false },
+        $or: [{ processingAt: { $lt: before } }, { processingAt: null, createdAt: { $lt: before } }]
+    }).select('_id libraryId').limit(200).lean();
+    let rolledBack = 0;
+    for (const t of stuck) {
+        // claim it first, so two servers never undo the same payment twice
+        const claimed = await PaymentTransaction.findOneAndUpdate(
+            { _id: t._id, status: 'processing' },
+            { $set: { status: 'failed', needsReview: true, failureReason: 'Interrupted before the receipt was issued. Nothing was kept; please record this payment again.' } },
+            { new: true }
+        );
+        if (!claimed) continue;
+        const charges = await Payment.find({ libraryId: t.libraryId, 'allocations.transactionId': t._id }).select('_id allocations').lean();
+        const applied = charges.map((c) => ({
+            paymentId: c._id,
+            amount: r2(c.allocations.filter((a) => String(a.transactionId) === String(t._id)).reduce((s, a) => s + (a.allocatedAmount || 0), 0))
+        })).filter((a) => a.amount > 0);
+        await rollbackApplied(applied, t.libraryId, t._id);
+        rolledBack += 1;
+    }
+    const flagged = await PaymentTransaction.updateMany(
+        { type: 'refund', status: 'processing', needsReview: { $ne: true }, $or: [{ processingAt: { $lt: before } }, { processingAt: null, createdAt: { $lt: before } }] },
+        { $set: { needsReview: true } }
+    );
+    return { rolledBack, refundsFlagged: flagged.modifiedCount || 0 };
+};
+
 const recordPayment = async ({
     libraryId, studentId, amount, method = 'cash', reference, receivedBy, allocations, paymentDate, note, req,
     receivedByType, attempt, source = 'manual', razorpayPaymentId, razorpaySignature, trustedAllocation = false,
@@ -591,6 +645,8 @@ const recordPayment = async ({
 
     // Side effects (never fail the payment). Dues are re-read from the DB, not derived from the pre-write snapshot.
     const remainingDue = await refreshStudentPaymentStatus(libraryId, studentId);
+    // A renewal the student started in the app is activated as soon as its bill is fully paid (online or at the desk)
+    await require('./selfRenewal.service').activatePaid(libraryId, studentId).catch((e) => console.error('self-renewal activation:', e.message));
     auditEvent(req, libraryId, studentId, 'payment.collect', 'PaymentTransaction', txn._id, {
         studentId, amount: amt, method, receiptNumber: txn.receiptNumber, allocations: plan.map((p) => ({ paymentId: p.paymentId, amount: p.amount })), source
     });
@@ -1629,6 +1685,7 @@ module.exports = {
     getStudentLedger,
     buildReceipt,
     nextReceiptNo,
+    reconcileStuckTransactions,
     getPolicy,
     refreshStudentPaymentStatus,
     findCollectionByRequestId,

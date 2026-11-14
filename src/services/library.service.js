@@ -6,6 +6,7 @@ const ApiError = require('../utils/ApiError');
 const pick = require('../utils/pick');
 const audit = require('../utils/audit');
 const { getSubscriptionState } = require('./subscriptionState.service');
+const { removeUploadedFile, removeUploadedFiles } = require('../utils/fileCleanup');
 
 // Library profile & settings (spec section 7). Only these keys can ever be written by an owner.
 const FLAT_FIELDS = [
@@ -82,6 +83,14 @@ exports.updateProfile = async (req, libraryId) => {
     { $set },
     { new: true, runValidators: true }
   );
+
+  // Clean up whatever file(s) this update just replaced or removed
+  if ('logo' in $set && library.logo && library.logo !== $set.logo) removeUploadedFile(library.logo).catch(() => {});
+  if ('coverImage' in $set && library.coverImage && library.coverImage !== $set.coverImage) removeUploadedFile(library.coverImage).catch(() => {});
+  if ('photos' in $set) {
+    const dropped = (library.photos || []).filter((p) => !$set.photos.includes(p));
+    if (dropped.length) removeUploadedFiles(dropped).catch(() => {});
+  }
 
   await audit(req, 'library.profile_update', 'Library', library._id, { fields: Object.keys($set) });
   return updated;
