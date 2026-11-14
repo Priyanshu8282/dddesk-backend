@@ -59,6 +59,9 @@ router.use('/super/subscriptions', require('./subscription.routes').superAdmin);
 router.use('/super/revenue', require('./revenue.routes'));
 router.use('/super/users', require('./platformUser.routes'));
 router.use('/super/platform-settings', require('./platformSettings.routes'));
+// Account deletion requests (mounted before /libraries and /super/libraries so those cannot swallow them)
+router.use('/libraries/deletion-request', require('./deletionRequest.routes').owner);
+router.use('/super/libraries/deletion-requests', require('./deletionRequest.routes').superAdmin);
 router.use('/libraries', libraryRoutes);
 router.use('/super/libraries', superLibraryRoutes);
 router.use('/super/platform-plans', platformPlanRoutes);
@@ -71,6 +74,9 @@ router.use('/announcements', require('./platformAdmin.routes').active);
 router.use('/super/announcements', require('./platformAdmin.routes').announcements);
 router.use('/super/notification-providers', require('./platformAdmin.routes').providers);
 router.use('/super/system-events', require('./platformAdmin.routes').systemEvents);
+// Mounted before /students so its own router can't swallow these more specific paths
+router.use('/students/me/deletion-request', require('./deletionRequest.routes').student);
+router.use('/students/deletion-requests', require('./deletionRequest.routes').staffReview);
 router.use('/students', studentRoutes);
 router.use('/plans', planRoutes);
 router.use('/payments', paymentRoutes);
