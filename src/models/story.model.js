@@ -4,8 +4,8 @@ const STORY_TYPES = ['image', 'video', 'text', 'offer'];
 
 const storySchema = new mongoose.Schema({
     libraryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Library', required: true },
-    // null = all branches
-    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
+    // empty = all branches; otherwise the story is shown only for the listed branches
+    branchIds: { type: [mongoose.Schema.Types.ObjectId], ref: 'Branch', default: [], index: true },
     title: { type: String, required: true, trim: true, maxlength: 100 },
     description: { type: String, trim: true, maxlength: 500 },
     // image/video are derived from the uploaded file; text/offer can be media-less

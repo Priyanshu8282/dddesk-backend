@@ -6,6 +6,21 @@ const idParam = z.object({ params: z.object({ id: objectId }) });
 
 const bool = z.preprocess((v) => (v === 'true' || v === true ? true : v === 'false' || v === false ? false : v), z.boolean());
 
+// Accepts an array, a JSON array string or a comma separated string
+const idList = z.preprocess((v) => {
+    if (v === undefined) return undefined;
+    if (v === null || v === '') return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') {
+        try {
+            const parsed = JSON.parse(v);
+            if (Array.isArray(parsed)) return parsed;
+        } catch (_) { /* fall through */ }
+        return v.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return v;
+}, z.array(objectId).max(200));
+
 // Only http(s) links or app/site relative paths; blocks javascript:, data: etc.
 const safeUrl = z.string().trim().max(500).refine(
     (v) => v === '' || /^https?:\/\/[^\s]+$/i.test(v) || /^\/[^\s]*$/.test(v),
@@ -28,7 +43,7 @@ const base = {
     displayOrder: z.coerce.number().int().min(0).max(10000),
     priority: z.coerce.number().int().min(-1000).max(1000),
     isActive: bool,
-    branchId: z.preprocess((v) => (v === '' || v === 'null' ? null : v), objectId.nullish()) // null = all branches
+    branchIds: idList // empty = all branches
 };
 
 const dateOrder = (b, ctx) => {

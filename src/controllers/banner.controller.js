@@ -2,17 +2,17 @@ const bannerService = require('../services/banner.service');
 const catchAsync = require('../utils/catchAsync');
 const ApiResponse = require('../utils/ApiResponse');
 const audit = require('../utils/audit');
-const { branchFilter, branchForCreate } = require('../utils/branchScope');
+const { branchFilter, branchesForCreate } = require('../utils/branchScope');
 
 const createBanner = catchAsync(async (req, res) => {
-    req.body.branchId = await branchForCreate(req, req.libraryId, req.body.branchId);
+    req.body.branchIds = await branchesForCreate(req, req.libraryId, req.body.branchIds);
     const banner = await bannerService.createBanner(req.libraryId, req.body, req.file, req.user._id);
     audit(req, 'banner.create', 'Banner', banner._id);
     ApiResponse.created(res, banner, 'Banner created successfully');
 });
 
 const getBanners = catchAsync(async (req, res) => {
-    const result = await bannerService.queryBanners(req.libraryId, req.query, branchFilter(req));
+    const result = await bannerService.queryBanners(req.libraryId, req.query, branchFilter(req, 'branchIds'));
     ApiResponse.ok(res, result.results, 'Banners retrieved successfully', {
         results: result.results, page: result.page, limit: result.limit,
         totalPages: result.totalPages, totalResults: result.totalResults, summary: result.summary
@@ -31,7 +31,7 @@ const getBannerById = catchAsync(async (req, res) => {
 });
 
 const updateBanner = catchAsync(async (req, res) => {
-    if (req.body.branchId !== undefined) req.body.branchId = await branchForCreate(req, req.libraryId, req.body.branchId);
+    if (req.body.branchIds !== undefined) req.body.branchIds = await branchesForCreate(req, req.libraryId, req.body.branchIds);
     const banner = await bannerService.updateBannerById(req.params.id, req.libraryId, req.body, req.file);
     audit(req, 'banner.update', 'Banner', banner._id);
     ApiResponse.ok(res, banner, 'Banner updated successfully');

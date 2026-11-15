@@ -9,8 +9,8 @@ const bannerSchema = new mongoose.Schema(
         index: true
     },
 
-    // null = all branches
-    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
+    // empty = all branches; otherwise the banner is shown only for the listed branches
+    branchIds: { type: [mongoose.Schema.Types.ObjectId], ref: 'Branch', default: [], index: true },
 
     title: {
         type: String,

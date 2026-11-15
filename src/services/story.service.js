@@ -5,7 +5,7 @@ const Student = require('../models/student.model');
 const ApiError = require('../utils/ApiError');
 const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
-const { branchVisibility } = require('../utils/branchScope');
+const { branchIdsVisibility } = require('../utils/branchScope');
 const { startOfDayIST, endOfDayIST } = require('../utils/time');
 const { removeUploadedFile, removeUploadedFiles } = require('../utils/fileCleanup');
 
@@ -69,7 +69,7 @@ const createStory = async (libraryId, body, media, creatorId) => {
     if (expiresAt <= new Date()) throw new ApiError(400, 'Story would already be expired');
 
     return Story.create({
-        ...pick(body, ['title', 'description', 'textContent', 'branchId']), // branchId validated by the controller (null = all branches)
+        ...pick(body, ['title', 'description', 'textContent', 'branchIds']), // branchIds validated by the controller (empty = all branches)
         type, url, libraryId, publishAt, expiresAt, createdBy: creatorId
     });
 };
@@ -96,7 +96,7 @@ const queryStories = async (libraryId, { search, status, type, from, to, sort = 
         if (from) filter.publishAt.$gte = DATE_ONLY.test(String(from)) ? startOfDayIST(new Date(from)) : new Date(from);
         if (to) filter.publishAt.$lte = DATE_ONLY.test(String(to)) ? endOfDayIST(new Date(to)) : new Date(to);
     }
-    if (scope.branchId) filter.$and = [{ $or: [{ branchId: null }, scope] }];
+    if (scope.branchIds) filter.$and = [{ $or: [{ branchIds: { $size: 0 } }, scope] }];
 
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
@@ -114,7 +114,7 @@ const analytics = async (libraryId, scope = {}) => {
     const past24h = new Date(Date.now() - 24 * HOUR);
     const lib = new mongoose.Types.ObjectId(String(libraryId));
     const [agg] = await Story.aggregate([
-        { $match: { libraryId: lib, ...(scope.branchId ? { $or: [{ branchId: null }, scope] } : {}) } },
+        { $match: { libraryId: lib, ...(scope.branchIds ? { $or: [{ branchIds: { $size: 0 } }, scope] } : {}) } },
         { $group: {
             _id: null,
             totalStories: { $sum: 1 },
@@ -147,7 +147,7 @@ const topStories = (libraryId, n = 10) =>
  * Student feed: only live stories of the student's library. Hides other students' data.
  */
 const getActiveStudentStories = async (libraryId, studentId, branchId = null) => {
-    const stories = await Story.find({ ...liveFilter(libraryId), ...branchVisibility(branchId) }).sort({ publishAt: -1 }).lean();
+    const stories = await Story.find({ ...liveFilter(libraryId), ...branchIdsVisibility(branchId) }).sort({ publishAt: -1 }).lean();
     const sid = String(studentId);
     return stories.map((s) => ({
         _id: s._id, title: s.title, description: s.description, textContent: s.textContent, type: s.type,
@@ -168,7 +168,7 @@ const getStoryById = async (id, libraryId) => {
 
 const updateStory = async (id, libraryId, body, media) => {
     assertId(id);
-    const set = pick(body, ['title', 'description', 'textContent', 'isActive', 'branchId']);
+    const set = pick(body, ['title', 'description', 'textContent', 'isActive', 'branchIds']);
     const existing = await Story.findOne({ _id: id, libraryId });
     if (!existing) return null;
 

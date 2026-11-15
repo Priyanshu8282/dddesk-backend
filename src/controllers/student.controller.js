@@ -5,7 +5,7 @@ const audit = require('../utils/audit');
 const studentService = require('../services/student.service');
 const Student = require('../models/student.model');
 const { tenantId } = require('../middlewares/access.middleware');
-const { branchFilter, branchForCreate, assertBranchAccess, branchVisibility } = require('../utils/branchScope');
+const { branchFilter, branchForCreate, assertBranchAccess, branchVisibility, branchIdsVisibility } = require('../utils/branchScope');
 
 const lib = (req) => {
     const id = tenantId(req);
@@ -334,7 +334,7 @@ exports.getDashboard = catchAsync(async (req, res) => {
     const now = new Date();
     const [notices, banners, stories, recentPayments] = await Promise.all([
         Notice.find({ libraryId, isActive: true, ...branchVisibility(student.branchId) }).sort({ createdAt: -1 }).limit(3),
-        Banner.find({ libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now }, ...branchVisibility(student.branchId) }).sort({ startDate: -1 }),
+        Banner.find({ libraryId, isActive: true, startDate: { $lte: now }, endDate: { $gte: now }, ...branchIdsVisibility(student.branchId) }).sort({ startDate: -1 }),
         storyService.getActiveStudentStories(libraryId, studentId, student.branchId).catch(() => []),
         studentService.getStudentPayments(studentId, libraryId).then((p) => p.slice(0, 3)).catch(() => [])
     ]);

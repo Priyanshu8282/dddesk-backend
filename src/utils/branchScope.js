@@ -107,4 +107,37 @@ const branchVisibility = (branchId, field = 'branchId') => ({
     $or: [{ [field]: null }, ...(branchId ? [{ [field]: branchId._id || branchId }] : [])]
 });
 
-module.exports = { branchVisibility, paramGuard, branchFilter, assertBranchAccess, resolveBranch, branchForCreate, allowedBranchIds, isValidId };
+// Same as branchVisibility, but for a multi-branch array field (empty array = all branches).
+const branchIdsVisibility = (branchId, field = 'branchIds') => ({
+    $or: [{ [field]: { $size: 0 } }, ...(branchId ? [{ [field]: branchId._id || branchId }] : [])]
+});
+
+// Branches to stamp on content (banners, stories) that may target several branches at once.
+// - explicit list: validated against the library's own branches, and (for branch-limited staff) against their allowed set.
+// - no explicit list from a branch-limited staff: defaults to their own branches (never "all").
+// - no explicit list from an unrestricted user (owner/superadmin): [] = every branch.
+const branchesForCreate = async (req, libraryId, explicit) => {
+    const allowed = allowedBranchIds(req);
+    let ids = [];
+    if (Array.isArray(explicit) && explicit.length) {
+        const unique = [...new Set(explicit.map(String))];
+        if (!unique.every(isValidId)) throw new ApiError(400, 'Invalid branchIds');
+        const Branch = require('../models/branch.model');
+        const found = await Branch.find({ _id: { $in: unique }, libraryId, isDeleted: false }).select('_id').lean();
+        if (found.length !== unique.length) throw new ApiError(400, 'One or more branches were not found in this library');
+        ids = unique;
+    }
+    if (allowed) {
+        if (ids.length) {
+            if (!ids.every((id) => allowed.includes(id))) throw new ApiError(403, 'You do not have access to this branch');
+            return ids.map(toOid);
+        }
+        return allowed.map(toOid);
+    }
+    return ids.map(toOid);
+};
+
+module.exports = {
+    branchVisibility, branchIdsVisibility, paramGuard, branchFilter, assertBranchAccess,
+    resolveBranch, branchForCreate, branchesForCreate, allowedBranchIds, isValidId
+};

@@ -7,6 +7,21 @@ const idParam = z.object({ params: z.object({ id: objectId }) });
 // multipart fields arrive as strings
 const bool = z.preprocess((v) => (v === 'true' || v === true ? true : v === 'false' || v === false ? false : v), z.boolean());
 
+// Accepts an array, a JSON array string or a comma separated string
+const idList = z.preprocess((v) => {
+    if (v === undefined) return undefined;
+    if (v === null || v === '') return [];
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') {
+        try {
+            const parsed = JSON.parse(v);
+            if (Array.isArray(parsed)) return parsed;
+        } catch (_) { /* fall through */ }
+        return v.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    return v;
+}, z.array(objectId).max(200));
+
 const createStory = z.object({
     body: z.object({
         title: z.string().trim().min(2, 'Story title is required').max(100),
@@ -15,7 +30,7 @@ const createStory = z.object({
         type: z.enum(['image', 'video', 'text', 'offer']).optional(),
         publishAt: isoDate.optional(),
         expiresInHours: z.coerce.number().int().min(1).max(168).optional(),
-        branchId: z.preprocess((v) => (v === '' || v === 'null' ? null : v), objectId.nullish()).optional()
+        branchIds: idList.optional() // empty = all branches
     }).strip()
 });
 
@@ -28,7 +43,7 @@ const updateStory = z.object({
         publishAt: isoDate.optional(),
         expiresInHours: z.coerce.number().int().min(1).max(168).optional(),
         isActive: bool.optional(),
-        branchId: z.preprocess((v) => (v === '' || v === 'null' ? null : v), objectId.nullish()).optional()
+        branchIds: idList.optional() // empty = all branches
     }).strip()
 });
 

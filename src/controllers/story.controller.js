@@ -3,11 +3,11 @@ const ApiError = require('../utils/ApiError');
 const ApiResponse = require('../utils/ApiResponse');
 const audit = require('../utils/audit');
 const storyService = require('../services/story.service');
-const { branchFilter, branchForCreate } = require('../utils/branchScope');
+const { branchFilter, branchesForCreate } = require('../utils/branchScope');
 
 // ─── Staff ───────────────────────────────────────────────────────────────────
 exports.createStory = catchAsync(async (req, res) => {
-    req.body.branchId = await branchForCreate(req, req.libraryId, req.body.branchId);
+    req.body.branchIds = await branchesForCreate(req, req.libraryId, req.body.branchIds);
     const story = await storyService.createStory(req.libraryId, req.body, req.file || null, req.user._id);
     audit(req, 'story.create', 'Story', story._id, { type: story.type });
     // Push is non-blocking; scheduled stories are pushed by publishDueStories()
@@ -16,7 +16,7 @@ exports.createStory = catchAsync(async (req, res) => {
 });
 
 exports.getStories = catchAsync(async (req, res) => {
-    const result = await storyService.queryStories(req.libraryId, req.query, branchFilter(req));
+    const result = await storyService.queryStories(req.libraryId, req.query, branchFilter(req, 'branchIds'));
     ApiResponse.ok(res, result.results, 'Stories retrieved successfully', {
         results: result.results, page: result.page, limit: result.limit,
         totalResults: result.totalResults, summary: result.summary
@@ -25,7 +25,7 @@ exports.getStories = catchAsync(async (req, res) => {
 
 exports.getAnalytics = catchAsync(async (req, res) => {
     const [summary, top] = await Promise.all([
-        storyService.analytics(req.libraryId, branchFilter(req)),
+        storyService.analytics(req.libraryId, branchFilter(req, 'branchIds')),
         storyService.topStories(req.libraryId)
     ]);
     ApiResponse.ok(res, { summary, topStories: top }, 'Story analytics retrieved successfully');
@@ -38,7 +38,7 @@ exports.getStoryById = catchAsync(async (req, res) => {
 });
 
 exports.updateStory = catchAsync(async (req, res) => {
-    if (req.body.branchId !== undefined) req.body.branchId = await branchForCreate(req, req.libraryId, req.body.branchId);
+    if (req.body.branchIds !== undefined) req.body.branchIds = await branchesForCreate(req, req.libraryId, req.body.branchIds);
     const story = await storyService.updateStory(req.params.id, req.libraryId, req.body, req.file || null);
     if (!story) throw new ApiError(404, 'Story not found');
     audit(req, 'story.update', 'Story', story._id);

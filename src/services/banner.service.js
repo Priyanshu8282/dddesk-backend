@@ -3,7 +3,7 @@ const Banner = require('../models/banner.model');
 const ApiError = require('../utils/ApiError');
 const escapeRegex = require('../utils/escapeRegex');
 const pick = require('../utils/pick');
-const { branchVisibility } = require('../utils/branchScope');
+const { branchIdsVisibility } = require('../utils/branchScope');
 const { startOfDayIST, endOfDayIST } = require('../utils/time');
 const { removeUploadedFile } = require('../utils/fileCleanup');
 
@@ -12,7 +12,7 @@ const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 const parseStart = (v) => (DATE_ONLY.test(String(v)) ? startOfDayIST(new Date(v)) : new Date(v));
 const parseEnd = (v) => (DATE_ONLY.test(String(v)) ? endOfDayIST(new Date(v)) : new Date(v));
 
-const FIELDS = ['title', 'description', 'bannerType', 'ctaText', 'ctaUrl', 'displayLocation', 'displayOrder', 'priority', 'isActive', 'branchId']; // branchId validated by the controller (null = all branches)
+const FIELDS = ['title', 'description', 'bannerType', 'ctaText', 'ctaUrl', 'displayLocation', 'displayOrder', 'priority', 'isActive', 'branchIds']; // branchIds validated by the controller (empty = all branches)
 
 const assertId = (id) => {
     if (!mongoose.Types.ObjectId.isValid(id)) throw new ApiError(400, 'Invalid banner ID');
@@ -71,12 +71,12 @@ const queryBanners = async (libraryId, { page = 1, limit = 10, search = '', stat
     if (displayLocation) query.displayLocation = { $in: [displayLocation, 'both'] };
     if (from) query.endDate = { ...(query.endDate || {}), $gte: DATE_ONLY.test(String(from)) ? startOfDayIST(new Date(from)) : new Date(from) };
     if (to) query.startDate = { ...(query.startDate || {}), $lte: DATE_ONLY.test(String(to)) ? endOfDayIST(new Date(to)) : new Date(to) };
-    if (scope.branchId) query.$and = [{ $or: [{ branchId: null }, scope] }];
+    if (scope.branchIds) query.$and = [{ $or: [{ branchIds: { $size: 0 } }, scope] }];
     if (search) query.title = new RegExp(escapeRegex(String(search).trim()), 'i');
 
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
-    const inScope = { libraryId, ...(scope.branchId ? { $or: [{ branchId: null }, scope] } : {}) }; // summary matches the list for branch-limited staff
+    const inScope = { libraryId, ...(scope.branchIds ? { $or: [{ branchIds: { $size: 0 } }, scope] } : {}) }; // summary matches the list for branch-limited staff
     const [banners, totalResults, total, active, scheduled, expired] = await Promise.all([
         Banner.find(query).populate('createdBy', 'name userType').sort(BANNER_SORTS[sort] || sortSpec).skip((p - 1) * l).limit(l).lean(),
         Banner.countDocuments(query),
@@ -144,7 +144,7 @@ const getActiveBanners = async (libraryId, location, branchId) => {
     // The student app shows every banner except website-only ones; older banners saved without a location count as app banners
     if (location === 'app') filter.displayLocation = { $ne: 'website' };
     else if (location === 'website') filter.displayLocation = { $in: ['website', 'both'] };
-    if (branchId !== undefined) filter.$and = [branchVisibility(branchId)];
+    if (branchId !== undefined) filter.$and = [branchIdsVisibility(branchId)];
     return Banner.find(filter)
         .select('title description bannerType image ctaText ctaUrl redirectUrl displayLocation priority displayOrder startDate endDate')
         .sort(sortSpec).lean();
