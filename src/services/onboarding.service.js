@@ -27,7 +27,7 @@ const serializePlan = (p) => ({
     id: String(p._id), name: p.name, slug: p.slug, description: p.description || '',
     monthlyPrice: p.monthlyPrice, annualPrice: p.annualPrice || 0,
     gstPercent: p.gstPercent, pricesIncludeGst: false,
-    isPopular: !!p.isPopular, trialDays: p.trialDays,
+    isPopular: !!p.isPopular, isDefault: !!p.isDefault, trialDays: p.trialDays,
     limits: { students: p.maxStudents, seats: p.maxSeats, staff: p.maxStaff, branches: p.maxBranches || 0 },
     features: Array.isArray(p.features) ? p.features.slice(0, 40) : [],
     sortOrder: p.sortOrder || 0,
@@ -190,21 +190,36 @@ const completeRegistration = async ({ token, body, ip, issueSession }) => {
     try {
         const data = claimed.data.toObject ? claimed.data.toObject() : claimed.data;
         const missing = missingFields(data);
-        if (!claimed.planId) missing.push('planId');
         if (missing.length) throw coded(422, 'DRAFT_INCOMPLETE', 'Some details are still missing.', { missing });
 
         if (await isMobileTaken(mobile)) throw coded(409, 'ALREADY_REGISTERED', 'This number is already registered. Please sign in.');
 
-        const plan = await PlatformPlan.findOne({ _id: claimed.planId, isActive: true, isDeleted: false });
-        if (!plan) throw coded(409, 'PLAN_UNAVAILABLE', 'The selected plan is no longer available. Please choose another plan.');
+        // name/ownerName are schema-required on Library/Admin; fall back to a clear placeholder so sign-up
+        // never blocks on them. The setup checklist (buildChecklist -> 'profile' item) prompts the owner to
+        // replace these later from the dashboard.
+        const name = (data.name || '').trim() || `Library ${mobile.slice(-4)}`;
+        const ownerName = (data.ownerName || '').trim() || 'Owner';
+
+        // Plan is optional at sign-up now: use whatever was chosen in the wizard, else the platform's
+        // configured default (PlatformPlan.isDefault), else no plan at all. A library with no plan isn't
+        // broken: Library.planLimits/subscriptionPlan already default to sane free-tier values at the
+        // schema level, and the dashboard checklist below surfaces "Choose your plan" as a next step.
+        let plan = null;
+        if (claimed.planId) {
+            plan = await PlatformPlan.findOne({ _id: claimed.planId, isActive: true, isDeleted: false });
+            if (!plan) throw coded(409, 'PLAN_UNAVAILABLE', 'The selected plan is no longer available. Please choose another plan.');
+        } else {
+            plan = await PlatformPlan.findOne({ isDefault: true, isActive: true, isDeleted: false });
+        }
 
         const consent = { terms: true, privacy: true, marketing: !!body.consent.marketing, version: await require('./legal.service').consentVersion(PRIVACY_POLICY_VERSION), at: new Date(), ip: ip || null };
         let created;
         try {
             created = await require('./admin.service').createLibraryWithAdmin({
-                ...data, mobile, email: data.email || undefined,
+                ...data, name, ownerName, mobile, email: data.email || undefined,
                 password: body.otpOnly ? undefined : body.password,
-                subscriptionPlan: plan, billingCycle: claimed.billingCycle, registrationConsent: consent,
+                ...(plan ? { subscriptionPlan: plan, billingCycle: claimed.billingCycle } : {}),
+                registrationConsent: consent,
             }, null, null);
         } catch (e) {
             // Only blame the e-mail when the clash really is on the e-mail the owner typed (not the placeholder, not another index)
@@ -235,7 +250,7 @@ const completeRegistration = async ({ token, body, ip, issueSession }) => {
         const result = {
             status: library.status,
             library: { id: String(library._id), name: library.name, status: library.status, libraryCode: library.libraryCode },
-            plan: { id: String(plan._id), name: plan.name, billingCycle: claimed.billingCycle, trialEndsAt: library.trialEndsAt || null },
+            plan: plan ? { id: String(plan._id), name: plan.name, billingCycle: claimed.billingCycle, trialEndsAt: library.trialEndsAt || null } : null,
             admin: { id: String(admin._id), name: admin.name, mobile },
             tour: { pending: true },
             setup: { defaultPlanCreated },
@@ -245,7 +260,7 @@ const completeRegistration = async ({ token, body, ip, issueSession }) => {
             { _id: claimed._id },
             { $set: { status: 'completed', result, data: {}, consent: { terms: true, privacy: true, marketing: !!body.consent.marketing, version: consent.version, at: consent.at, ip: null }, completingAt: null, expiresAt: new Date(Date.now() + RegistrationDraft.DONE_TTL_MS) } },
         );
-        try { require('../utils/systemAudit')(library._id, 'library.self_registered', 'Library', library._id, { status: library.status, plan: plan.name, otpOnly: !!body.otpOnly }); } catch (_) { /* audit must not break sign-up */ }
+        try { require('../utils/systemAudit')(library._id, 'library.self_registered', 'Library', library._id, { status: library.status, plan: plan ? plan.name : null, otpOnly: !!body.otpOnly }); } catch (_) { /* audit must not break sign-up */ }
 
         return withSession(result, admin._id, library.status === 'active', issueSession);
     } catch (e) {
@@ -300,9 +315,10 @@ const profileState = (lib) => {
     return { done: requiredMissing.length === 0, missing: [...requiredMissing, ...optionalMissing] };
 };
 
-const buildChecklist = ({ counts, profile, trialEndsAt, now = Date.now() }) => {
+const buildChecklist = ({ counts, profile, trialEndsAt, hasSubscriptionPlan = true, now = Date.now() }) => {
     const items = [
         { key: 'profile', label: 'Complete library profile', done: profile.done, href: '/dashboard/settings' },
+        { key: 'billing', label: 'Choose your subscription plan', done: !!hasSubscriptionPlan, href: '/dashboard/billing' },
         { key: 'plan', label: 'Create a membership plan', done: counts.plans > 0, href: '/dashboard/plans/add' },
         { key: 'seats', label: 'Add seats', done: counts.seats > 0, href: '/dashboard/seats' },
         { key: 'student', label: 'Add your first student', done: counts.students > 0, href: '/dashboard/students/add' },
@@ -327,14 +343,14 @@ const checklist = async (req) => {
     const Student = require('../models/student.model');
     const PaymentTransaction = require('../models/paymentTransaction.model');
     const [lib, plans, seats, students, payments] = await Promise.all([
-        Library.findById(libId).select('name ownerName address city state pincode seatCapacity workingHours logo gstNumber description trialEndsAt').lean(),
+        Library.findById(libId).select('name ownerName address city state pincode seatCapacity workingHours logo gstNumber description trialEndsAt subscriptionPlanId').lean(),
         Plan.countDocuments({ libraryId: libId, isDeleted: false }),
         Seat.countDocuments({ libraryId: libId, ...bf }),
         Student.countDocuments({ libraryId: libId, ...bf }),
         PaymentTransaction.countDocuments({ libraryId: libId, status: 'success' }),
     ]);
     if (!lib) throw new ApiError(404, 'Library not found');
-    return buildChecklist({ counts: { plans, seats, students, payments }, profile: profileState(lib), trialEndsAt: lib.trialEndsAt });
+    return buildChecklist({ counts: { plans, seats, students, payments }, profile: profileState(lib), trialEndsAt: lib.trialEndsAt, hasSubscriptionPlan: !!lib.subscriptionPlanId });
 };
 
 /** Public website contact form: stored, and the platform owners are alerted (in-app + e-mail). */

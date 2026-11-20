@@ -19,6 +19,8 @@ const platformPlanSchema = new mongoose.Schema({
     maxBranches: { type: Number, default: 0, min: 0 }, // 0 = unlimited
     features: [{ type: String }],
     isActive: { type: Boolean, default: true },
+    // The plan auto-assigned at self-registration when the owner doesn't pick one. Only one plan may hold this at a time.
+    isDefault: { type: Boolean, default: false },
     isDeleted: { type: Boolean, default: false },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
 }, { timestamps: true });

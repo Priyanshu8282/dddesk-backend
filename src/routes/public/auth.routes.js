@@ -6,7 +6,7 @@ const validate = require('../../middlewares/validate.middleware');
 const { authValidation } = require('../../validations');
 const libraryValidation = require('../../validations/library.validation');
 const upload = require('../../middlewares/upload.middleware');
-const { requireHuman, requireHumanSilent, requireHumanLegacy, requireHumanMobile, acceptHumanMobile } = require('../../middlewares/humanCheck.middleware');
+const { requireHuman, requireHumanSilent, requireHumanLegacy, requireHumanMobile, acceptHumanMobile, requireHumanRegistration } = require('../../middlewares/humanCheck.middleware');
 
 const router = express.Router();
 
@@ -26,7 +26,7 @@ router.get('/admin-image/:id', authController.getPublicProfileImage);
 router.get('/library-image/:id', authController.getPublicProfileImage);
 
 // Public Library Registration (Self-onboarding). Always creates a PENDING library; role is resolved server side.
-router.post('/register/send-otp', otpLimiter, accountOtpLimiter, requireHuman, validate(libraryValidation.regSendOtp), adminController.sendRegistrationOtp);
+router.post('/register/send-otp', otpLimiter, accountOtpLimiter, requireHumanRegistration, validate(libraryValidation.regSendOtp), adminController.sendRegistrationOtp);
 router.post('/register/verify-otp', otpVerifyLimiter, accountOtpVerifyLimiter, validate(libraryValidation.regVerifyOtp), adminController.verifyRegistrationOtp);
 router.post('/register', registerLimiter, requireHumanLegacy, upload.publicFields([{ name: 'profileImage', maxCount: 1 }, { name: 'logo', maxCount: 1 }, { name: 'photos', maxCount: 5 }]), validate(libraryValidation.register), adminController.registerLibrary);
 

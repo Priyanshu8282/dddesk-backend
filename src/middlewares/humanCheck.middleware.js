@@ -4,6 +4,11 @@ const { isMobileClient } = require('../utils/clientPlatform');
 
 // Express middlewares for human verification (contract: backend/doc/onboarding-contract.md section 2).
 
+// Owner decision 2026-11-19: disabled for registration only (web sign-up, both /register/send-otp and
+// /register/complete), to remove a friction step from the mobile-only sign-up flow. Login, forgot-password,
+// contact and the legacy multipart /register route are untouched. Flip to false to re-enable.
+const REGISTRATION_HUMAN_CHECK_DISABLED = true;
+
 const tokenOf = (req) => (req.body && req.body.humanToken) || req.headers['x-human-token'] || '';
 
 const denyRequired = (res) =>
@@ -89,4 +94,13 @@ const requireHumanAfterFailures = async (req, res, next) => {
 const requireHumanLegacy = (req, res, next) =>
     (String(process.env.HUMAN_CHECK_ENFORCE_LEGACY || '').toLowerCase() === 'true' ? run(req, res, next) : next());
 
-module.exports = { requireHuman, requireHumanSilent, requireHumanAfterFailures, requireHumanLegacy, requireHumanMobile, acceptHumanMobile };
+/** Same as requireHuman, but skipped while REGISTRATION_HUMAN_CHECK_DISABLED is true (see flag above). */
+const requireHumanRegistration = (req, res, next) => {
+    if (REGISTRATION_HUMAN_CHECK_DISABLED) {
+        if (req.body && typeof req.body === 'object') { delete req.body.humanToken; delete req.body.hp_website; delete req.body.fillMs; }
+        return next();
+    }
+    return run(req, res, next);
+};
+
+module.exports = { requireHuman, requireHumanSilent, requireHumanAfterFailures, requireHumanLegacy, requireHumanMobile, acceptHumanMobile, requireHumanRegistration };

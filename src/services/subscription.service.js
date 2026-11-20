@@ -167,7 +167,7 @@ exports.listAvailablePlans = async () => {
         const monthly = withGst(planPrice(p, 'monthly'), p.gstPercent);
         const annual = withGst(planPrice(p, 'annual'), p.gstPercent);
         return {
-            _id: p._id, name: p.name, slug: p.slug, description: p.description, isPopular: !!p.isPopular,
+            _id: p._id, name: p.name, slug: p.slug, description: p.description, isPopular: !!p.isPopular, isDefault: !!p.isDefault,
             gstPercent: monthly.gstPercent, trialDays: p.trialDays,
             limits: { maxStudents: p.maxStudents, maxSeats: p.maxSeats, maxStaff: p.maxStaff, maxBranches: p.maxBranches || 0 },
             features: p.features || [],

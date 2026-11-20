@@ -69,18 +69,11 @@ const completeBody = z.object({
     }).refine((b) => b.otpOnly === true || !!b.password, { message: 'Set a password or choose OTP-only sign-in', path: ['password'] }),
 });
 
-// Final completeness check of the stored draft (required for creating the library)
-const completeData = z.object({
-    name: z.string().trim().min(2).max(120),
-    ownerName: z.string().trim().min(2).max(100),
-    email: emptyToUndef(z.string().trim().toLowerCase().email().optional()),
-    address: z.string().trim().min(3).max(300),
-    city: z.string().trim().min(2).max(80),
-    state: z.string().trim().min(2).max(80),
-    pincode: z.string().trim().regex(/^[1-9]\d{5}$/),
-    seatCapacity: z.coerce.number().int().min(1).max(100000),
-    workingHours: z.object({ openingTime: timeStr.min(1), closingTime: timeStr.min(1) }),
-});
+// Final completeness check of the stored draft (required for creating the library).
+// Only mobile + OTP + consent are ever required to finish sign-up (enforced elsewhere); every
+// library-detail field here is optional and deferred to the dashboard's setup checklist instead
+// of blocking registration. Values that ARE supplied are still validated (same rules as the draft).
+const completeData = draftData;
 
 // Public contact form (website). Human check fields are stripped by the middleware before this runs.
 const contact = z.object({

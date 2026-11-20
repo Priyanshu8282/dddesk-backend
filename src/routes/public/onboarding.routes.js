@@ -1,7 +1,7 @@
 const express = require('express');
 const ctrl = require('../../controllers/onboarding.controller');
 const validate = require('../../middlewares/validate.middleware');
-const { requireHuman, requireHumanSilent } = require('../../middlewares/humanCheck.middleware');
+const { requireHumanSilent, requireHumanRegistration } = require('../../middlewares/humanCheck.middleware');
 const { limiter, otpVerifyLimiter } = require('../../middlewares/rateLimit.middleware');
 const v = require('../../validations/onboarding.validation');
 
@@ -28,6 +28,6 @@ router.get('/human-challenge', humanLimiter, ctrl.humanChallenge);
 // Signup wizard (all need the registration token from /register/verify-otp)
 router.get('/register/draft', draftLimiter, ctrl.getDraft);
 router.patch('/register/draft', draftLimiter, validate(v.patchDraft), ctrl.patchDraft);
-router.post('/register/complete', completeLimiter, otpVerifyLimiter, requireHuman, validate(v.completeBody), ctrl.complete);
+router.post('/register/complete', completeLimiter, otpVerifyLimiter, requireHumanRegistration, validate(v.completeBody), ctrl.complete);
 
 module.exports = router;

@@ -9,7 +9,13 @@ const slugify = (s = '') =>
 const err = (msg, status) => Object.assign(new Error(msg), { status });
 
 const FIELDS = ['name', 'description', 'monthlyPrice', 'annualPrice', 'gstPercent', 'isPopular', 'sortOrder', 'trialDays', 'graceDays',
-  'maxStudents', 'maxSeats', 'maxStaff', 'maxBranches', 'features', 'isActive'];
+  'maxStudents', 'maxSeats', 'maxStaff', 'maxBranches', 'features', 'isActive', 'isDefault'];
+
+// Only one plan may be the self-registration default at a time.
+const clearOtherDefaults = (exceptId) => PlatformPlan.updateMany(
+  exceptId ? { _id: { $ne: exceptId }, isDefault: true } : { isDefault: true },
+  { $set: { isDefault: false } },
+);
 const LIMIT_FIELDS = ['maxStudents', 'maxSeats', 'maxStaff', 'maxBranches'];
 
 const uniqueSlug = async (name) => {
@@ -53,8 +59,9 @@ exports.get = async (id) => {
 exports.create = async (req) => {
   const body = pick(req.body, FIELDS);
   await assertUniqueName(body.name);
+  if (body.isDefault) await clearOtherDefaults();
   const plan = await PlatformPlan.create({ ...body, slug: await uniqueSlug(body.name), createdBy: req.user._id });
-  await audit(req, 'platform_plan.create', 'PlatformPlan', plan._id, { name: plan.name });
+  await audit(req, 'platform_plan.create', 'PlatformPlan', plan._id, { name: plan.name, isDefault: !!plan.isDefault });
   return plan;
 };
 
@@ -63,6 +70,7 @@ exports.update = async (req, id) => {
   const body = pick(req.body, FIELDS);
   if (!Object.keys(body).length) throw err('No valid fields to update.', 400);
   await assertUniqueName(body.name, id);
+  if (body.isDefault === true) await clearOtherDefaults(id);
   const plan = await PlatformPlan.findOneAndUpdate(
     { _id: id, isDeleted: false }, { $set: body }, { new: true, runValidators: true }
   );

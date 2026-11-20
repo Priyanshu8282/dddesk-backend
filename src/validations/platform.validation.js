@@ -97,6 +97,7 @@ const planFields = {
     maxBranches: z.coerce.number().int().min(0),
     features: z.array(z.string().trim().min(1).max(100)).max(100),
     isActive: z.boolean(),
+    isDefault: z.boolean(),
 };
 const createPlatformPlan = z.object({
     body: z.object(planFields).partial().required({ name: true, monthlyPrice: true })
