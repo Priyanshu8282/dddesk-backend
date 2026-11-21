@@ -19,7 +19,7 @@ const DEFAULTS = Object.freeze({
   general: { platformName: 'DDdesk', tagline: 'Smart workspace for modern libraries', companyName: '', supportEmail: '', supportPhone: '', gstin: '', address: '' },
   branding: { logoPath: null, faviconPath: null, primaryColor: '#1063e0' },
   urls: { frontendUrl: '', backendUrl: '' },
-  onboarding: { registrationEnabled: true, autoApproveNewLibraries: false, defaultTrialDays: 14, defaultGraceDays: 7 },
+  onboarding: { registrationEnabled: true, autoApproveNewLibraries: true, defaultTrialDays: 14, defaultGraceDays: 7 },
   // See utils/maintenance.js for the meaning of every field. `enabled` is kept for older readers (true only for mode 'on').
   maintenance: {
     enabled: false, mode: 'off', message: maintenanceRules.DEFAULT_MESSAGE,

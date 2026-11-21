@@ -2,6 +2,7 @@ const Library = require('../models/library.model');
 const Student = require('../models/student.model');
 const Seat = require('../models/seat.model');
 const Admin = require('../models/admin.model');
+const PlatformPlan = require('../models/platformPlan.model');
 const ApiError = require('../utils/ApiError');
 const pick = require('../utils/pick');
 const audit = require('../utils/audit');
@@ -103,6 +104,16 @@ exports.getMyPlan = async (libraryId) => {
     .populate('subscriptionPlanId', 'name description monthlyPrice annualPrice features trialDays graceDays');
   if (!lib) throw new ApiError(404, 'Library not found');
 
+  // No plan linked yet (fast-track sign-up): show the real Free/Basic plan's own name, not the legacy "free" string field
+  let freePlanName = null;
+  if (!lib.subscriptionPlanId) {
+    const freePlan = await PlatformPlan.findOne({ isActive: true, isDeleted: false, monthlyPrice: 0 })
+      .sort({ isDefault: -1, sortOrder: 1 })
+      .select('name')
+      .lean();
+    freePlanName = freePlan?.name || null;
+  }
+
   const subscription = getSubscriptionState(lib);
   const [students, seats, staff] = await Promise.all([
     Student.countDocuments({ libraryId: lib._id, isDeleted: false }),
@@ -112,6 +123,7 @@ exports.getMyPlan = async (libraryId) => {
   const limits = lib.planLimits || {};
   return {
     ...lib.toObject(),
+    subscriptionPlan: freePlanName || lib.subscriptionPlan,
     isExpired: subscription.isExpired,
     subscription,
     usage: {

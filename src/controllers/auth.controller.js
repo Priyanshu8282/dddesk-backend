@@ -193,7 +193,14 @@ exports.getMe = catchAsync(async (req, res) => {
   // Owners and staff both need this (staff cannot read the billing routes) for the renew / contact-your-owner banner
   let subscription = null;
   if (lib && req.userType !== 'student') {
-    const plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId).select('name graceDays monthlyPrice annualPrice trialDays').lean() : null;
+    let plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId).select('name graceDays monthlyPrice annualPrice trialDays').lean() : null;
+    // No plan linked yet (fast-track sign-up): show the real Free/Basic plan's own name, not the legacy "free" string field
+    if (!plan) {
+      plan = await PlatformPlan.findOne({ isActive: true, isDeleted: false, monthlyPrice: 0 })
+        .sort({ isDefault: -1, sortOrder: 1 })
+        .select('name graceDays monthlyPrice annualPrice trialDays')
+        .lean();
+    }
     const s = getSubscriptionState(lib, plan);
     const cycle = lib.billingCycle || 'monthly';
     // The header shows the plan name to everyone, and a countdown for paid plans and trials.

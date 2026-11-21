@@ -14,7 +14,10 @@ exports.provisionLibrary = async (library, { approvedBy = null } = {}) => {
 
   const plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId) : null;
   await require('./platformSettings.service').ensureFresh();
-  const trialDays = plan?.trialDays ?? require('./platformSettings.service').defaultTrialDays() ?? DEFAULT_TRIAL_DAYS;
+  // A free (₹0) plan, or no plan at all, has nothing to trial into paying for — it stays free with no countdown.
+  // Only a genuinely paid plan gets a trial window (its own trialDays, else the platform default).
+  const isPaidPlan = !!plan && Number(plan.monthlyPrice) > 0;
+  const trialDays = isPaidPlan ? (plan?.trialDays ?? require('./platformSettings.service').defaultTrialDays() ?? DEFAULT_TRIAL_DAYS) : 0;
   const set = {};
   if (!lib.trialEndsAt && !lib.subscriptionExpiry && trialDays > 0) {
     set.trialEndsAt = new Date(Date.now() + trialDays * DAY);

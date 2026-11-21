@@ -203,7 +203,8 @@ const completeRegistration = async ({ token, body, ip, issueSession }) => {
         // Plan is optional at sign-up now: use whatever was chosen in the wizard, else the platform's
         // configured default (PlatformPlan.isDefault), else no plan at all. A library with no plan isn't
         // broken: Library.planLimits/subscriptionPlan already default to sane free-tier values at the
-        // schema level, and the dashboard checklist below surfaces "Choose your plan" as a next step.
+        // schema level, and getMe/getSubscription/getMyPlan all resolve the real Free plan's name for display
+        // even when nothing is linked yet. Picking a plan is never a required setup-checklist step.
         let plan = null;
         if (claimed.planId) {
             plan = await PlatformPlan.findOne({ _id: claimed.planId, isActive: true, isDeleted: false });
@@ -315,10 +316,11 @@ const profileState = (lib) => {
     return { done: requiredMissing.length === 0, missing: [...requiredMissing, ...optionalMissing] };
 };
 
-const buildChecklist = ({ counts, profile, trialEndsAt, hasSubscriptionPlan = true, now = Date.now() }) => {
+// Picking a plan is never a setup task: every library is on the Free plan unless and until the owner chooses to
+// upgrade from the Billing page, which stays available any time — it is not something to "complete" here.
+const buildChecklist = ({ counts, profile, trialEndsAt, now = Date.now() }) => {
     const items = [
         { key: 'profile', label: 'Complete library profile', done: profile.done, href: '/dashboard/settings' },
-        { key: 'billing', label: 'Choose your subscription plan', done: !!hasSubscriptionPlan, href: '/dashboard/billing' },
         { key: 'plan', label: 'Create a membership plan', done: counts.plans > 0, href: '/dashboard/plans/add' },
         { key: 'seats', label: 'Add seats', done: counts.seats > 0, href: '/dashboard/seats' },
         { key: 'student', label: 'Add your first student', done: counts.students > 0, href: '/dashboard/students/add' },
@@ -343,14 +345,14 @@ const checklist = async (req) => {
     const Student = require('../models/student.model');
     const PaymentTransaction = require('../models/paymentTransaction.model');
     const [lib, plans, seats, students, payments] = await Promise.all([
-        Library.findById(libId).select('name ownerName address city state pincode seatCapacity workingHours logo gstNumber description trialEndsAt subscriptionPlanId').lean(),
+        Library.findById(libId).select('name ownerName address city state pincode seatCapacity workingHours logo gstNumber description trialEndsAt').lean(),
         Plan.countDocuments({ libraryId: libId, isDeleted: false }),
         Seat.countDocuments({ libraryId: libId, ...bf }),
         Student.countDocuments({ libraryId: libId, ...bf }),
         PaymentTransaction.countDocuments({ libraryId: libId, status: 'success' }),
     ]);
     if (!lib) throw new ApiError(404, 'Library not found');
-    return buildChecklist({ counts: { plans, seats, students, payments }, profile: profileState(lib), trialEndsAt: lib.trialEndsAt, hasSubscriptionPlan: !!lib.subscriptionPlanId });
+    return buildChecklist({ counts: { plans, seats, students, payments }, profile: profileState(lib), trialEndsAt: lib.trialEndsAt });
 };
 
 /** Public website contact form: stored, and the platform owners are alerted (in-app + e-mail). */

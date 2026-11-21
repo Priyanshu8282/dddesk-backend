@@ -30,7 +30,12 @@ const planBrief = (p, cycle) => (p ? {
 /** GET /libraries/subscription */
 exports.getSubscription = async (libraryId) => {
     const lib = await loadLibrary(libraryId);
-    const plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId).lean() : null;
+    let plan = lib.subscriptionPlanId ? await PlatformPlan.findById(lib.subscriptionPlanId).lean() : null;
+    // No plan linked yet (fast-track sign-up): use the real Free/Basic plan's own name, features and limits,
+    // not the legacy "free" string field, so the billing page shows an actual plan, not a bare stub.
+    if (!plan) {
+        plan = await PlatformPlan.findOne({ isActive: true, isDeleted: false, monthlyPrice: 0 }).sort({ isDefault: -1, sortOrder: 1 }).lean();
+    }
     const st = getSubscriptionState(lib, plan);
     const pending = lib.pendingPlanChange && lib.pendingPlanChange.platformPlanId
         ? await PlatformPlan.findById(lib.pendingPlanChange.platformPlanId).lean() : null;
