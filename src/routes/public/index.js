@@ -30,4 +30,7 @@ router.use('/locations', require('./location.routes'));
 // Razorpay webhook (signature-verified, no JWT): /v1/public/razorpay/webhook
 router.use('/razorpay', require('./razorpay.routes'));
 
+// Public marketing-site chatbot (no account/session, no private data): POST /v1/public/chat
+router.use('/chat', require('./chat.routes'));
+
 module.exports = router;
