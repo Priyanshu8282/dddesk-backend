@@ -527,7 +527,7 @@ const recordPayment = async ({
 }) => {
     if (!libraryId) throw new ApiError(400, 'libraryId is required');
     if (!isId(studentId)) throw new ApiError(400, 'Valid studentId is required');
-    if (!['cash', 'upi', 'online', 'bank_transfer', 'other'].includes(method)) throw new ApiError(400, 'Invalid payment method');
+    if (!['cash', 'upi', 'online', 'bank_transfer', 'cheque', 'card', 'other'].includes(method)) throw new ApiError(400, 'Invalid payment method');
     const amt = validAmount(amount);
     const reqKey = cleanRequestKey(collectRequestId);
     if (reqKey && !attempt) {

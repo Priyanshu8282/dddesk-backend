@@ -60,10 +60,13 @@ exports.updateProfile = async (req, libraryId) => {
   // Images
   const logo = files.find((f) => f.fieldname === 'logo');
   const cover = files.find((f) => f.fieldname === 'coverImage');
+  const paymentQr = files.find((f) => f.fieldname === 'paymentQr');
   if (logo) $set.logo = normPath(logo.path);
   else if (REMOVE_FLAGS.includes(body.logo)) $set.logo = null;
   if (cover) $set.coverImage = normPath(cover.path);
   else if (REMOVE_FLAGS.includes(body.coverImage)) $set.coverImage = null;
+  if (paymentQr) $set.paymentQr = normPath(paymentQr.path);
+  else if (REMOVE_FLAGS.includes(body.paymentQr)) $set.paymentQr = null;
 
   const newPhotos = files.filter((f) => f.fieldname === 'photos').map((f) => normPath(f.path));
   if (newPhotos.length || body.existingPhotos !== undefined) {
@@ -88,6 +91,7 @@ exports.updateProfile = async (req, libraryId) => {
   // Clean up whatever file(s) this update just replaced or removed
   if ('logo' in $set && library.logo && library.logo !== $set.logo) removeUploadedFile(library.logo).catch(() => {});
   if ('coverImage' in $set && library.coverImage && library.coverImage !== $set.coverImage) removeUploadedFile(library.coverImage).catch(() => {});
+  if ('paymentQr' in $set && library.paymentQr && library.paymentQr !== $set.paymentQr) removeUploadedFile(library.paymentQr).catch(() => {});
   if ('photos' in $set) {
     const dropped = (library.photos || []).filter((p) => !$set.photos.includes(p));
     if (dropped.length) removeUploadedFiles(dropped).catch(() => {});

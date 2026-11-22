@@ -1,9 +1,11 @@
 const express = require('express');
 const paymentController = require('../../controllers/payment.controller');
 const razorpayController = require('../../controllers/razorpay.controller');
+const claimController = require('../../controllers/paymentClaim.controller');
 const validate = require('../../middlewares/validate.middleware');
 const { requireStaff, requireStudent, requirePermission, allow } = require('../../middlewares/access.middleware');
 const { paymentValidation } = require('../../validations');
+const claimValidation = require('../../validations/paymentClaim.validation');
 const { paymentWriteLimiter, refundLimiter, exportLimiter } = require('../../middlewares/rateLimit.middleware');
 
 const router = express.Router();
@@ -21,6 +23,16 @@ router.use((req, res, next) => (req.method === 'GET' || req.method === 'HEAD' ? 
 // ── Student-facing (own data only) ────────────────────────────────────────────
 router.get('/my', requireStudent, paymentController.getMyLedger);
 router.get('/my/receipts/:paymentId', requireStudent, validate(paymentValidation.idOnly), paymentController.getMyReceipt);
+
+// Owner's own UPI QR (scan-and-pay, no gateway) + the claim a student files after paying it
+router.get('/my/payment-qr', requireStudent, claimController.getMyPaymentQr);
+router.get('/my/claims', requireStudent, validate(claimValidation.listClaims), claimController.listMyClaims);
+router.post('/claims', requireStudent, validate(claimValidation.submitClaim), claimController.submitClaim);
+
+// ── UPI QR payment claims (owner/staff review) ────────────────────────────────
+router.get('/claims', requireStaff, requirePermission(...COLLECT), validate(claimValidation.listClaims), claimController.listClaims);
+router.post('/claims/:id/approve', requireStaff, requirePermission(...COLLECT), validate(claimValidation.approveClaim), claimController.approveClaim);
+router.post('/claims/:id/reject', requireStaff, requirePermission(...COLLECT), validate(claimValidation.rejectClaim), claimController.rejectClaim);
 
 // ── Razorpay online payments (student pays own dues; staff on behalf of a student) ──
 router.post('/razorpay/create-order', ...anyPayer, validate(paymentValidation.createRazorpayOrder), razorpayController.createOrder);

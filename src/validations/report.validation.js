@@ -15,7 +15,7 @@ const common = {
     type: text(30).optional(),
     planId: objectId.optional(),
     status: text(30).optional(),
-    method: z.enum(['cash', 'upi', 'online', 'bank_transfer', 'other']).optional(),
+    method: z.enum(['cash', 'upi', 'online', 'bank_transfer', 'cheque', 'card', 'other']).optional(),
     paymentType: z.enum(['new', 'renewal', 'partial', 'advance']).optional(),
     source: z.enum(['website', 'walk-in', 'referral', 'phone', 'other']).optional(),
     category: text(30).optional(),

@@ -1,6 +1,6 @@
 const { z } = require('zod');
 
-const methods = ['cash', 'upi', 'online', 'bank_transfer', 'other'];
+const methods = ['cash', 'upi', 'online', 'bank_transfer', 'cheque', 'card', 'other'];
 const objectId = z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid id');
 const money = z.coerce.number().positive('Amount must be greater than 0').max(10000000);
 const optDate = z.string().refine((v) => !Number.isNaN(new Date(v).getTime()), 'Invalid date');

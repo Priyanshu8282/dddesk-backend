@@ -240,6 +240,22 @@ const TEMPLATES = {
         audience: 'admins', type: 'review_alert',
         title: 'New review: {{rating}}★',
         body: '{{fromName}}: {{comment}}'
+    },
+    // Owner's own UPI QR code: student scans and pays outside the app, then submits the transaction id
+    'payment-claim-submitted': {
+        audience: 'admins', type: 'payment_claim_alert',
+        title: 'New UPI payment to verify',
+        body: '{{studentName}} says they paid Rs. {{amount}} by UPI (ref {{transactionId}}). Please verify and approve.'
+    },
+    'payment-claim-approved': {
+        audience: 'students', type: 'payment_alert',
+        title: 'Payment approved',
+        body: 'Hi {{studentName}}, your UPI payment of Rs. {{amount}} was verified and recorded. Receipt: {{receiptNo}}.'
+    },
+    'payment-claim-rejected': {
+        audience: 'students', type: 'payment_alert',
+        title: 'Payment could not be verified',
+        body: 'Hi {{studentName}}, your UPI payment claim of Rs. {{amount}} could not be verified.{{reasonSuffix}} Please check with the library.'
     }
 };
 

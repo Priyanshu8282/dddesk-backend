@@ -72,6 +72,10 @@ const librarySchema = new mongoose.Schema(
 
     coverImage: { type: String },
 
+    // Owner's own UPI QR code (a plain scan-and-pay image, not a payment gateway). Students scan it, pay the
+    // owner directly in their own UPI app, then submit the transaction id back as a PaymentClaim for approval.
+    paymentQr: { type: String },
+
     profileImage: {
       type: String
     },

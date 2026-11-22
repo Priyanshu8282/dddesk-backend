@@ -127,7 +127,7 @@ const createPlanCharge = async ({ libraryId, student, plan, amount, joiningFee =
     return { pendingCharge: true, charge };
 };
 
-const LEDGER_METHODS = ['cash', 'upi', 'online', 'bank_transfer', 'other'];
+const LEDGER_METHODS = ['cash', 'upi', 'online', 'bank_transfer', 'cheque', 'card', 'other'];
 const ledgerMethod = (m) => (LEDGER_METHODS.includes(m) ? m : 'other');
 
 const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;

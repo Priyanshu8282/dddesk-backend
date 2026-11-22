@@ -161,6 +161,7 @@ const profileBody = z.object({
     // image handling flags / helpers (files themselves come through multer)
     logo: z.string().max(500),
     coverImage: z.string().max(500),
+    paymentQr: z.string().max(500),
     existingPhotos: z.string().max(10000),
 }).partial();
 

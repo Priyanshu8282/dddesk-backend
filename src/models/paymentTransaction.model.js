@@ -36,7 +36,7 @@ const transactionSchema = new mongoose.Schema({
     // pending/processing = online attempt not yet confirmed
     status: { type: String, enum: ['pending', 'processing', 'success', 'failed'], default: 'success', index: true },
     amount: { type: Number, required: true, min: 0 },
-    method: { type: String, enum: ['cash', 'upi', 'online', 'bank_transfer', 'other'], default: 'cash' },
+    method: { type: String, enum: ['cash', 'upi', 'online', 'bank_transfer', 'cheque', 'card', 'other'], default: 'cash' },
     reference: { type: String },
     note: { type: String },
     paymentDate: { type: Date, default: Date.now },

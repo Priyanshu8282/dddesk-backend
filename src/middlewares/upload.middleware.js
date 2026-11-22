@@ -100,6 +100,8 @@ const getTargetDirectory = (req, file, cb) => {
         subDir += 'branding/';
     } else if (file.fieldname === 'logo') {
         subDir += 'logos/';
+    } else if (file.fieldname === 'paymentQr') {
+        subDir += 'payment-qr/';
     } else if (file.fieldname === 'photos') {
         subDir += 'photos/';
     } else if (file.fieldname === 'aadhaarCardImage' || file.fieldname === 'documents' || /^docFile_\d+$/.test(file.fieldname)) {
