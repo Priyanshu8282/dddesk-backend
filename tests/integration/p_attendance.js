@@ -24,8 +24,8 @@ module.exports = (H) => {
     await Student().collection.updateOne({ _id: new (L.breq('mongoose').Types.ObjectId)(sid) }, { $set: { joiningDate: startOfDayIST(new Date()) } });
     return sid;
   };
-  const punch = async (studentId, type, time) => {
-    const r = await api('POST', P('/attendance/manual'), { ...owner(), body: { studentId, type, ...(time ? { time: time.toISOString() } : {}) } });
+  const punch = async (studentId, type, time, allowWithoutPlan = true) => {
+    const r = await api('POST', P('/attendance/manual'), { ...owner(), body: { studentId, type, allowWithoutPlan, ...(time ? { time: time.toISOString() } : {}) } });
     ok(r, 'manual ' + type);
     return data(r).attendance;
   };

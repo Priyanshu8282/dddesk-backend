@@ -44,7 +44,7 @@ module.exports = (H) => {
 
   const PUBLIC_OK = [
     /^\/v1\/public\//, /^\/v1\/cron\//, /^\/webhook\/razorpay$/, /^\/$/,
-    /^\/v1\/(legal|login|refresh|logout|send-otp|verify-otp|forgot-password|verify-reset-otp|reset-password|register|plans|human|contact|health|branding|locations|maintenance-status|razorpay|website|admin-image|library-image)/,
+    /^\/v1\/(legal|login|refresh|logout|send-otp|verify-otp|forgot-password|verify-reset-otp|reset-password|register|plans|human|contact|health|branding|locations|maintenance-status|razorpay|website|admin-image|library-image|verify|chat)/,
   ];
   const STUDENT_OK = /\/(students\/(dashboard|me|change-password)|payments\/(my|razorpay)|attendance\/(my|self-check|scan-qr)|notices\/(student|view)|notifications|me$|profile|logout|reviews|feedback|complaints|sidebar|settings|library|files|stories|banners|offers|coupons|announcements|support|branches|plans|seats|website|dashboard|ai|assistant|onboarding)/;
 

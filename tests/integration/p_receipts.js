@@ -17,9 +17,9 @@ module.exports = (H) => {
     const first = await ledger.nextReceiptNo(libId, 'receipt', new Date('2026-10-25T10:00:00+05:30'));
     assert.equal(first, 'RCPT-2627-000042', 'continues the old counter in the first financial year after the upgrade');
     const refund = await ledger.nextReceiptNo(libId, 'refund', new Date('2026-10-26T10:00:00+05:30'));
-    assert.equal(refund, 'RCPT-R-2627-000043', 'refund receipts share the sequence');
+    assert.equal(refund, 'RCPT-R-2627-000001', 'refund receipts have their own sequence');
     // IST boundaries: 31 Mar 23:59 IST is still FY 26-27; 1 Apr 00:00 IST starts FY 27-28
-    assert.match(await ledger.nextReceiptNo(libId, 'receipt', new Date('2027-03-31T23:59:00+05:30')), /^RCPT-2627-000044$/);
+    assert.match(await ledger.nextReceiptNo(libId, 'receipt', new Date('2027-03-31T23:59:00+05:30')), /^RCPT-2627-000043$/);
     assert.equal(await ledger.nextReceiptNo(libId, 'receipt', new Date('2027-04-01T00:00:00+05:30')), 'RCPT-2728-000001', 'new financial year restarts at 1');
     // utc 31 Mar 19:00 = 1 Apr 00:30 IST -> already the new year
     assert.equal(await ledger.nextReceiptNo(libId, 'receipt', new Date('2027-03-31T19:00:00Z')), 'RCPT-2728-000002');

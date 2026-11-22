@@ -4,10 +4,9 @@ const { isMobileClient } = require('../utils/clientPlatform');
 
 // Express middlewares for human verification (contract: backend/doc/onboarding-contract.md section 2).
 
-// Owner decision 2026-11-19: disabled for registration only (web sign-up, both /register/send-otp and
-// /register/complete), to remove a friction step from the mobile-only sign-up flow. Login, forgot-password,
-// contact and the legacy multipart /register route are untouched. Flip to false to re-enable.
-const REGISTRATION_HUMAN_CHECK_DISABLED = true;
+// Owner decision 2026-11-19: configurable for registration (web sign-up, both /register/send-otp and
+// /register/complete). When false (or unset), standard provider rules apply (skipped when HUMAN_CHECK_PROVIDER=off).
+const REGISTRATION_HUMAN_CHECK_DISABLED = String(process.env.REGISTRATION_HUMAN_CHECK_DISABLED || 'false').toLowerCase() === 'true';
 
 const tokenOf = (req) => (req.body && req.body.humanToken) || req.headers['x-human-token'] || '';
 

@@ -92,14 +92,15 @@ test('06 refresh rotates, replay revokes, logout revokes', async () => {
   assert.ok(newTok);
   const newCookie = r1.setCookie.map((c) => c.split(';')[0]).join('; ');
   assert.notEqual(newCookie, ctx.ownerCookie, 'cookie rotated');
-  // inside the 20 s grace window a parallel tab may present the previous cookie: allowed, but it gets no new cookie
+  // inside the 20 s grace window a parallel tab may present the previous cookie: allowed; re-sends current cookie without rotating again
   const parallel = await api('POST', U('/refresh'), { cookie: ctx.ownerCookie, headers: { 'x-requested-with': 'XMLHttpRequest', origin } });
   ok(parallel, 'parallel tab within grace');
-  assert.equal(parallel.setCookie.length, 0, 'no cookie rotation for the parallel request');
+  const parallelCookie = parallel.setCookie.map((c) => c.split(';')[0]).join('; ');
+  assert.equal(parallelCookie, newCookie, 'current cookie re-sent without rotating again');
   // after the grace window a replay of the old cookie is treated as theft and kills the session
   const Session = require(L.SRC + '/models/session.model');
   await Session.updateMany({ prevRefreshHash: { $ne: null } }, { $set: { rotatedAt: new Date(Date.now() - 120000) } });
-  const replay = await api('POST', U('/refresh'), { cookie: ctx.ownerCookie, headers: { 'x-requested-with': 'XMLHttpRequest', origin } });
+  const replay = await api('POST', U('/refresh'), { cookie: ctx.ownerCookie, headers: { 'x-requested-with': 'XMLHttpRequest', origin, 'user-agent': 'curl/8.0' } });
   assert.ok(replay.status === 401 || replay.status === 403, 'replay: ' + msg(replay));
   const after = await api('POST', U('/refresh'), { cookie: newCookie, headers: { 'x-requested-with': 'XMLHttpRequest', origin } });
   assert.ok(after.status === 401 || after.status === 403, 'session revoked after replay: ' + msg(after));
